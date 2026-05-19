@@ -1,0 +1,329 @@
+version: "2"
+
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/arcjet/arcjet-go
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # Only flag new issues vs main — makes strict linting adoptable on an
+  # existing codebase. Remove this once the baseline is clean.
+  new-from-rev: origin/main
+  whole-files: false
+
+run:
+  modules-download-mode: readonly
+  relative-path-mode: gomod
+  tests: true
+  timeout: 10m
+
+linters:
+  default: none
+  enable:
+    # ── Bugs and correctness ──────────────────────────────────────────────
+
+    # Trojan-source CVE class (invisible unicode direction overrides)
+    - bidichk
+    # Unclosed HTTP response bodies — resource leak
+    - bodyclose
+    # Functions not propagating context — breaks cancellation/tracing
+    - contextcheck
+    # time.Duration multiplication gotchas (e.g., time.Second * int)
+    - durationcheck
+    # Unchecked errors — the #1 Go bug class
+    - errcheck
+    # json.Marshal with types that can't fail — unchecked error noise reduction
+    - errchkjson
+    # %w usage, errors.Is/As correctness — catches silent error-matching bugs
+    - errorlint
+    # Enum switch coverage — catches missing cases
+    - exhaustive
+    # context.WithValue accumulating in loops — memory leak
+    - fatcontext
+    # Invalid //go: compiler directives
+    - gocheckcompilerdirectives
+    # Security-oriented static analysis
+    - gosec
+    # Catches real mistakes, essentially free
+    - govet
+    # Detects assignments to variables that are never used
+    - ineffassign
+    # Structured logger argument correctness (e.g., slog key/value pairs)
+    - loggercheck
+    # append to make([]T, n) — silently prepends n zero values
+    - makezero
+    # Struct tags required by marshaling libs (json, yaml, etc.)
+    - musttag
+    # Returning nil when err != nil — real bugs
+    - nilerr
+    # Related nil-after-error-check class
+    - nilnesserr
+    # HTTP requests without context — prevents cancellation
+    - noctx
+    # Proto field access via getter methods — nil safety on proto messages
+    - protogetter
+    # Reassignment of package-level variables
+    - reassign
+    # Mixed value/pointer receivers on same type
+    - recvcheck
+    # Unchecked sql.Rows.Err() — silent data corruption
+    - rowserrcheck
+    # OTel span.End() not called on all paths — memory/trace leak
+    - spancheck
+    # Unclosed sql.Rows/Stmt — connection pool leak
+    - sqlclosecheck
+    # SA* checks from the staticcheck suite
+    - staticcheck
+    # Testify best practices (require vs assert, suite patterns)
+    - testifylint
+    # Unused function parameters
+    - unparam
+    # Detects unused code
+    - unused
+    # Assignments to variables that are never subsequently read
+    - wastedassign
+
+    # ── Additional correctness (zero issues currently, cheap to run) ──────
+
+    # Checks that pass(...) is not used in append-like functions
+    - asasalint
+    # Detects non-ASCII identifiers that look like ASCII (homoglyphs)
+    - asciicheck
+    # Finds duplicate words in comments (e.g., "the the")
+    - dupword
+    # Validates nolint directives have correct linter names
+    - nolintlint
+    # Validates slog call arguments (key/value pairs)
+    - sloglint
+
+    # ── Modernization (low false-positive, mostly autofixable) ────────────
+
+    # Go 1.22+ loop variable capture no longer needed
+    - copyloopvar
+    # x/exp → stdlib migrations — autofixable
+    - exptostd
+    # Go 1.22+ integer range idiom
+    - intrange
+    # Stdlib modernization (strings.Cut, errors.Join, etc.) — autofixable
+    - modernize
+    # Cheap perf wins (fmt.Sprintf → strconv, etc.) — autofixable
+    - perfsprint
+    # Use stdlib constants (http.StatusOK, time.Monday, etc.)
+    - usestdlibvars
+    # Use testing helpers (t.Context, t.Setenv, etc.)
+    - usetesting
+
+    # ── Style with high signal-to-noise ───────────────────────────────────
+
+    # HTTP header keys in non-canonical form — bugs with direct map access
+    - canonicalheader
+    # Error type naming conventions (ErrFoo, not ErrorFoo)
+    - errname
+    # Large collection of checks, scoped to diagnostic+performance+style tags
+    - gocritic
+    # Wrong argument order in copy/append
+    - mirror
+    # Spelling mistakes in comments, strings, variable names
+    - misspell
+    # Naked returns in functions longer than a few lines
+    - nakedret
+    # Use net.JoinHostPort instead of fmt.Sprintf("%s:%d", ...)
+    - nosprintfhostport
+    # Variable/param shadows a predeclared identifier (e.g., len, error)
+    - predeclared
+    # Missing t.Helper() in test helper functions
+    - thelper
+    # Missing t.Parallel in test subtests
+    - tparallel
+    # Unnecessary type conversions
+    - unconvert
+    # Unnecessary leading/trailing whitespace in functions
+    - whitespace
+
+    # ── Documentation ─────────────────────────────────────────────────────
+
+    # Enforces Go doc comment conventions (symbol name prefix, package docs)
+    - godoclint
+    # Ensures testable examples have expected output comments
+    - testableexamples
+
+    # ── Complexity guardrails (tuned, not aspirational) ───────────────────
+
+    # Cognitive complexity (considers nesting, switches, etc.)
+    - gocognit
+    # Cyclomatic complexity (number of independent paths)
+    - gocyclo
+    # Deeply nested if statements
+    - nestif
+
+  # ── Disabled linters (with rationale) ─────────────────────────────────
+  #
+  # --- Not applicable to this codebase ---
+  # arangolint        — ArangoDB-specific checks; we don't use ArangoDB
+  # ginkgolinter      — Ginkgo test framework; not used here
+  # promlinter        — Prometheus metric naming; not used in this codebase
+  # zerologlint       — zerolog-specific; not used here
+  #
+  # --- Too noisy / low signal-to-noise ---
+  # containedctx      — flags context.Context in structs; sometimes correct design
+  # cyclop            — redundant with gocyclo/gocognit
+  # dogsled           — flags _ assignments; idiomatic Go uses blank identifiers
+  # err113            — requires all errors be wrapped or predeclared; too strict
+  # exhaustruct       — requires all struct fields be set; extremely noisy with options patterns
+  # forbidigo         — bans specific functions (fmt.Println, etc.); no policy yet
+  # forcetypeassert   — flags all unchecked type assertions; noisy in test code
+  # funlen            — function length is poor proxy for complexity; gocognit/gocyclo are better
+  # gochecknoglobals  — bans all global variables; breaks registration/config patterns
+  # gochecknoinits    — bans all init() functions; breaks legitimate initialization patterns
+  # goconst           — flags repeated strings as constants; very noisy
+  # godot             — requires periods at end of comments; pure style
+  # godox             — flags TODO/FIXME comments; these are fine, enforced in code review
+  # gosmopolitan      — flags string literals for i18n; not relevant
+  # grouper           — enforces import/const/var grouping style; opinion
+  # iface             — flags interface compliance issues; experimental
+  # importas          — enforces import aliases; no policy to encode
+  # inamedparam       — requires named params in interfaces; opinion, hurts readability
+  # interfacebloat    — flags large interfaces; sometimes they're correct
+  # ireturn           — flags concrete types returned as interfaces; very noisy
+  # lll               — line length limit; formatter handles what matters
+  # maintidx          — maintainability index; redundant with gocognit/gocyclo
+  # mnd               — magic number detector; false positives vastly outweigh signal
+  # nilnil            — flags returning (nil, nil); sometimes intentional
+  # nlreturn          — requires blank line before return; pure whitespace opinion
+  # noinlineerr       — flags inline error creation; extremely noisy
+  # nonamedreturns    — bans all named returns; nakedret handles the dangerous case
+  # paralleltest      — stricter version of tparallel; tparallel is sufficient
+  # prealloc          — suggests slice preallocation; noisy without profiling data
+  # varnamelen        — enforces variable name length; fights idiomatic Go (i, ok, r, w)
+  # wrapcheck         — requires all errors be wrapped; generates hundreds of issues
+  # wsl / wsl_v5      — whitespace style linting; formatter handles what matters
+  #
+  # --- Useful but not yet configured ---
+  # depguard          — bans specific imports; enable once we have a real import policy
+  # goheader          — enforces file headers (license); enable when we add headers
+  # gomoddirectives   — restricts go.mod directives; enable if needed
+  # gomodguard        — restricts specific module versions; enable if needed
+  # revive            — configurable meta-linter; enable with specific rules when needed
+  # tagalign          — aligns struct tags; pure formatting preference
+  # tagliatelle       — enforces JSON tag naming convention; enable with a real policy
+  # testpackage       — enforces _test package for black-box tests; valid but large migration
+  #
+  # --- Niche / experimental ---
+  # decorder                 — enforces declaration order in files; opinion
+  # dupl                     — code duplication detector; useful in sweeps, too noisy for CI
+  # embeddedstructfieldcheck — checks embedded struct field access; experimental
+  # funcorder                — enforces function ordering; opinion
+  # gochecksumtype           — sum type exhaustiveness; requires //sumtype:decl annotations
+  # goprintffuncname         — printf-style function naming; not widely needed
+  # iotamixing               — flags mixed iota/non-iota in const blocks; niche
+  # unqueryvet               — checks sql query parameters; experimental
+  #
+  # --- Formatters (disabled, using goimports only) ---
+  # gci               — redundant with goimports
+  # gofmt             — goimports is a superset
+  # gofumpt           — stricter formatting; would require large reformatting sweep
+  # golines           — line-length formatter; not needed
+
+  settings:
+    errcheck:
+      check-blank: true
+      check-type-assertions: true
+      exclude-functions:
+        - (io.Closer).Close
+        - (*database/sql.Rows).Close
+        - fmt.Fprintf(os.Stderr)
+        - fmt.Fprintln(os.Stderr)
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    gocognit:
+      min-complexity: 30
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        # Noisy without profiling data
+        - hugeParam
+        # Often clearer than a switch
+        - ifElseChain
+        # Premature optimization without measurement
+        - rangeValCopy
+        # Opinion on named return values
+        - unnamedResult
+
+    gocyclo:
+      min-complexity: 20
+
+    gosec:
+      confidence: medium
+      excludes:
+        # errcheck handles this better
+        - G104
+        # file-path-from-variable: too many false positives
+        - G304
+      severity: medium
+
+    govet:
+      enable-all: true
+      disable:
+        # Micro-optimization, hostile to readability
+        - fieldalignment
+        # Too noisy; staticcheck SA4006 covers the dangerous cases
+        - shadow
+
+    nestif:
+      min-complexity: 6
+
+    perfsprint:
+      # strconcat suggestions hurt readability
+      strconcat: false
+
+    staticcheck:
+      checks:
+        - all
+        # Package comments — not enforced
+        - -ST1000
+        # Naming conventions — revive does this better if needed
+        - -ST1003
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # Tests get more leeway
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocognit
+          - gocyclo
+          - gosec
+          - nestif
+          - noctx
+          - unparam
+      # Generated protobuf bindings
+      - path: internal/proto/
+        linters:
+          - errcheck
+          - gocognit
+          - gocyclo
+          - gosec
+          - musttag
+          - nestif
+          - protogetter
+          - recvcheck
+          - staticcheck
+          - unparam
+          - unused
+    warn-unused: false
