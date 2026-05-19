@@ -46,7 +46,7 @@ func (c *decisionCache) get(key string) *decidev1.Decision {
 	if !ok {
 		return nil
 	}
-	cloned.Id = newTypeID("dec")
+	cloned.Id = newTypeID("lreq")
 	remaining := time.Until(entry.expiresAt).Round(time.Second) / time.Second
 	ttl := safeUint32(int(remaining))
 	if ttl == 0 {

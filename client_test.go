@@ -50,7 +50,7 @@ func (h *testDecideHandler) Decide(ctx context.Context, req *connect.Request[dec
 	}
 	return connect.NewResponse(&decidev1.DecideResponse{
 		Decision: &decidev1.Decision{
-			Id:         "dec_test",
+			Id:         "req_test",
 			Conclusion: decidev1.Conclusion_CONCLUSION_DENY,
 			Reason: &decidev1.Reason{Reason: &decidev1.Reason_RateLimit{
 				RateLimit: &decidev1.RateLimitReason{
@@ -488,7 +488,7 @@ func TestReportRedactsSensitiveInputsButDecideDoesNot(t *testing.T) {
 		handler := &testDecideHandler{
 			reportCh: make(chan struct{}, 2),
 			decision: &decidev1.Decision{
-				Id:         "dec_remote",
+				Id:         "req_remote",
 				Conclusion: decidev1.Conclusion_CONCLUSION_DENY,
 				Reason: &decidev1.Reason{Reason: &decidev1.Reason_RateLimit{
 					RateLimit: &decidev1.RateLimitReason{Max: 10},
@@ -687,7 +687,7 @@ func TestProtectCachesRemoteDenyAndReportsCacheHit(t *testing.T) {
 	handler := &testDecideHandler{
 		reportCh: make(chan struct{}, 1),
 		decision: &decidev1.Decision{
-			Id:         "dec_remote",
+			Id:         "req_remote",
 			Conclusion: decidev1.Conclusion_CONCLUSION_DENY,
 			Reason: &decidev1.Reason{Reason: &decidev1.Reason_RateLimit{
 				RateLimit: &decidev1.RateLimitReason{Max: 10},
@@ -749,7 +749,7 @@ func TestProtectCachesRemoteDenyAndReportsCacheHit(t *testing.T) {
 	if decideCalls != 1 || reportCalls != 1 {
 		t.Fatalf("expected one decide and one cache-hit report, decide=%d report=%d", decideCalls, reportCalls)
 	}
-	if reportSeen.GetDecision().GetId() == "dec_remote" {
+	if reportSeen.GetDecision().GetId() == "req_remote" {
 		t.Fatal("expected cache-hit report to use a fresh local decision id")
 	}
 }

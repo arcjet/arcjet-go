@@ -228,7 +228,7 @@ func localDeny(ruleID string, mode Mode, ttl uint32, reason *decidev1.Reason) *l
 		Ttl:        ttl,
 	}
 	return &localDecision{decision: &decidev1.Decision{
-		Id:          newTypeID("dec"),
+		Id:          newTypeID("lreq"),
 		Conclusion:  aggregate,
 		Reason:      reason,
 		RuleResults: []*decidev1.RuleResult{result},
