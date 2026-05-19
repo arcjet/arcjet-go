@@ -4,7 +4,7 @@
 <img src="https://arcjet.com/logo/arcjet-light-lockup-voyage-horizontal.svg"
   alt="Arcjet Logo" height="128" width="auto"> </picture> </a>
 
-# arcjet
+# Arcjet - Go SDK
 
 > [!IMPORTANT]
 > The Go SDK is pre-release and unstable.
