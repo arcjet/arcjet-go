@@ -3,6 +3,7 @@ package arcjet
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 // Version is the Arcjet Go SDK version sent with Decide and Guard requests.
@@ -48,6 +49,9 @@ func guardMode(mode Mode) string {
 	return "GUARD_RULE_MODE_DRY_RUN"
 }
 
+// LogValue implements [slog.LogValuer] so Mode logs as its string form.
+func (m Mode) LogValue() slog.Value { return slog.StringValue(string(m)) }
+
 // Conclusion is the top-level Arcjet decision outcome.
 //
 // Conclusion values are normalized when JSON-decoded: both the bare wire
@@ -78,6 +82,9 @@ func (c *Conclusion) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// LogValue implements [slog.LogValuer] so Conclusion logs as its string form.
+func (c Conclusion) LogValue() slog.Value { return slog.StringValue(string(c)) }
+
 // ReasonType identifies the rule family or condition behind a decision.
 type ReasonType string
 
@@ -106,6 +113,9 @@ const (
 	ReasonCustom ReasonType = "CUSTOM"
 )
 
+// LogValue implements [slog.LogValuer] so ReasonType logs as its string form.
+func (r ReasonType) LogValue() slog.Value { return slog.StringValue(string(r)) }
+
 // RuleState is the lifecycle state of a per-rule evaluation in a Decision.
 type RuleState string
 
@@ -121,6 +131,9 @@ const (
 	// RuleStateCached means the rule result was served from cache.
 	RuleStateCached RuleState = "RULE_STATE_CACHED"
 )
+
+// LogValue implements [slog.LogValuer] so RuleState logs as its string form.
+func (s RuleState) LogValue() slog.Value { return slog.StringValue(string(s)) }
 
 // GuardRuleType identifies a Guard rule family in a GuardRuleResult.
 type GuardRuleType string
@@ -141,6 +154,9 @@ const (
 	// GuardRuleTypeLocalCustom identifies a custom local Guard rule.
 	GuardRuleTypeLocalCustom GuardRuleType = "LOCAL_CUSTOM"
 )
+
+// LogValue implements [slog.LogValuer] so GuardRuleType logs as its string form.
+func (g GuardRuleType) LogValue() slog.Value { return slog.StringValue(string(g)) }
 
 // EmailType classifies an email address for ValidateEmail rules.
 //
@@ -164,9 +180,15 @@ func (e *EmailType) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// LogValue implements [slog.LogValuer] so EmailType logs as its string form.
+func (e EmailType) LogValue() slog.Value { return slog.StringValue(string(e)) }
+
 // EntityType classifies a sensitive-information entity. See constants.go for
 // the supported constants.
 type EntityType string
+
+// LogValue implements [slog.LogValuer] so EntityType logs as its string form.
+func (e EntityType) LogValue() slog.Value { return slog.StringValue(string(e)) }
 
 // ArcjetError describes an error returned by Arcjet or a local guard rule.
 type ArcjetError struct {
