@@ -61,6 +61,7 @@ type Client struct {
 	sdkVersion      string
 	userAgent       string
 	proxies         []trustedProxy
+	platform        hostingPlatform
 	local           *localEvaluator
 	cache           *decisionCache
 }
@@ -108,6 +109,7 @@ func NewClient(cfg Config) (*Client, error) {
 		sdkVersion:      version,
 		userAgent:       ua,
 		proxies:         proxies,
+		platform:        detectPlatform(os.Getenv),
 		decideClient:    decidev1alpha1connect.NewDecideServiceClient(httpClient, baseURL),
 		local:           local,
 		cache:           newDecisionCache(),
@@ -269,7 +271,7 @@ func (c *Client) Protect(ctx context.Context, r *http.Request, opts ...ProtectOp
 	if r == nil {
 		return Decision{}, fmt.Errorf("arcjet: %w", ErrNilRequest)
 	}
-	details := detailsFromRequest(r, c.proxies)
+	details := detailsFromRequest(r, c.proxies, c.platform)
 	return c.ProtectDetails(ctx, details, opts...)
 }
 
@@ -454,12 +456,14 @@ func buildRequestRule(rule Rule) (*decidev1.Rule, error) {
 // DetailsFromRequest extracts Arcjet request details from an HTTP request.
 //
 // It uses Request.RemoteAddr for the source IP. Configure Config.Proxies and use
-// Client.Protect when Arcjet should trust X-Forwarded-For from known proxies.
+// Client.Protect when Arcjet should trust X-Forwarded-For from known proxies,
+// or when running on a supported hosting platform (Fly.io, Vercel, Render,
+// Firebase, Railway) where Client.Protect reads the platform's signed headers.
 func DetailsFromRequest(r *http.Request) ProtectDetails {
-	return detailsFromRequest(r, nil)
+	return detailsFromRequest(r, nil, platformNone)
 }
 
-func detailsFromRequest(r *http.Request, proxies []trustedProxy) ProtectDetails {
+func detailsFromRequest(r *http.Request, proxies []trustedProxy, platform hostingPlatform) ProtectDetails {
 	headers := make(map[string]string, len(r.Header))
 	for k, values := range r.Header {
 		headers[strings.ToLower(k)] = strings.Join(values, ", ")
@@ -469,7 +473,7 @@ func detailsFromRequest(r *http.Request, proxies []trustedProxy) ProtectDetails 
 		host = r.URL.Host
 	}
 	return ProtectDetails{
-		IP:       clientIP(r, proxies),
+		IP:       clientIP(r, proxies, platform),
 		Method:   r.Method,
 		Protocol: r.Proto,
 		Host:     host,
@@ -512,15 +516,26 @@ func parseTrustedProxies(values []string) ([]trustedProxy, error) {
 
 // clientIP returns the request's source IP.
 //
-// When the direct peer (RemoteAddr) is a configured trusted proxy, the X-
-// Forwarded-For header is walked right-to-left and the first entry that is
-// itself not a trusted proxy is returned. This matches @arcjet/ip's findIp
+// When a hosting platform is detected, its signed headers are trusted directly
+// (e.g. Fly-Client-Ip on Fly.io, X-Real-IP on Vercel/Railway). The platform's
+// edge is the only ingress, so its headers are the authoritative source and
+// take precedence over any RemoteAddr/X-Forwarded-For walk.
+//
+// Otherwise, when the direct peer (RemoteAddr) is a configured trusted proxy,
+// the X-Forwarded-For header is walked right-to-left and the first entry that
+// is itself not a trusted proxy is returned. This matches @arcjet/ip's findIp
 // behavior — the rightmost untrusted entry is the closest hop our proxies
 // observed and is the hardest for the user to spoof. Walking left-to-right
 // instead would trust whatever the original client wrote in.
 //
 // If RemoteAddr is not a trusted proxy, X-Forwarded-For is ignored entirely.
-func clientIP(r *http.Request, proxies []trustedProxy) string {
+func clientIP(r *http.Request, proxies []trustedProxy, platform hostingPlatform) string {
+	if platform != platformNone {
+		if ip := platformIP(r, platform, proxies); ip != "" {
+			return ip
+		}
+		return remoteIP(r.RemoteAddr)
+	}
 	remote := remoteIP(r.RemoteAddr)
 	if len(proxies) == 0 || !isTrustedProxy(remote, proxies) {
 		return remote

@@ -288,7 +288,7 @@ func TestProtectIgnoresForwardedForFromUntrustedProxy(t *testing.T) {
 	req.RemoteAddr = "203.0.113.10:1234"
 	req.Header.Set("X-Forwarded-For", "198.51.100.44")
 
-	details := detailsFromRequest(req, []trustedProxy{{network: mustCIDR(t, "10.0.0.0/8")}})
+	details := detailsFromRequest(req, []trustedProxy{{network: mustCIDR(t, "10.0.0.0/8")}}, platformNone)
 	if details.IP != "203.0.113.10" {
 		t.Fatalf("ip = %q", details.IP)
 	}
@@ -302,19 +302,19 @@ func TestClientIPWalksXFFRightToLeftSkippingTrustedProxies(t *testing.T) {
 	req.RemoteAddr = "10.99.0.1:443"
 	req.Header.Set("X-Forwarded-For", "1.2.3.4, 198.51.100.44, 10.0.0.5, 10.99.0.1")
 
-	if got := clientIP(req, proxies); got != "198.51.100.44" {
+	if got := clientIP(req, proxies, platformNone); got != "198.51.100.44" {
 		t.Fatalf("expected rightmost non-trusted hop, got %q", got)
 	}
 
 	// All XFF entries are trusted — fall back to remote.
 	req.Header.Set("X-Forwarded-For", "10.0.0.5, 10.99.0.1")
-	if got := clientIP(req, proxies); got != "10.99.0.1" {
+	if got := clientIP(req, proxies, platformNone); got != "10.99.0.1" {
 		t.Fatalf("all-trusted should fall back to remote, got %q", got)
 	}
 
 	// Empty XFF, trusted peer, no override — still remote.
 	req.Header.Set("X-Forwarded-For", "")
-	if got := clientIP(req, proxies); got != "10.99.0.1" {
+	if got := clientIP(req, proxies, platformNone); got != "10.99.0.1" {
 		t.Fatalf("empty XFF should fall back to remote, got %q", got)
 	}
 }
@@ -846,11 +846,11 @@ func TestClientIPBlankXFFFallsBackToRemote(t *testing.T) {
 	proxies := []trustedProxy{{network: mustCIDR(t, "10.0.0.0/8")}}
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.RemoteAddr = "10.0.0.5:1234"
-	if got := clientIP(req, proxies); got != "10.0.0.5" {
+	if got := clientIP(req, proxies, platformNone); got != "10.0.0.5" {
 		t.Errorf("missing XFF should fall back to remote, got %q", got)
 	}
 	req.Header.Set("X-Forwarded-For", ", ,  ")
-	if got := clientIP(req, proxies); got != "10.0.0.5" {
+	if got := clientIP(req, proxies, platformNone); got != "10.0.0.5" {
 		t.Errorf("blank XFF should fall back to remote, got %q", got)
 	}
 }
