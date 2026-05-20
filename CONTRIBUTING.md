@@ -22,6 +22,7 @@ All commands run from the repo root.
 | Build | `go build ./...` |
 | Test | `go test ./...` |
 | Test (CI-equivalent) | `go test -race -shuffle=on ./...` |
+| Benchmark | `go test -run=^$ -bench=. -benchmem ./...` |
 | Lint | `go tool -modfile=tools/go.mod golangci-lint run ./...` |
 | Auto-fix lint issues | `go tool -modfile=tools/go.mod golangci-lint run --fix ./...` |
 | Format | `go tool -modfile=tools/go.mod golangci-lint fmt ./...` |
@@ -41,6 +42,32 @@ Configured in [`.golangci.yml`](.golangci.yml). Two things worth knowing:
 - **Comprehensive linter set** with per-linter rationale comments. If a check
   is wrong for a specific file, prefer a narrow `//nolint:<linter> // reason`
   over disabling the linter globally.
+
+## Benchmarks
+
+Benchmarks live alongside the code they exercise (`client_bench_test.go`,
+`guard_bench_test.go`, `cache_bench_test.go`) and cover the public hot paths:
+`Client.Protect` / `Client.ProtectDetails` (cache hit, cache miss, local
+Wasm-deny), `Client.WithRule`, `DetailsFromRequest`, `GuardClient.Guard`,
+Guard rule input binding, and the cache and hashing primitives shared by
+both clients. All Connect RPCs are served in-process via `handlerTransport`,
+so the benchmarks make no network calls and are safe to run anywhere.
+
+- Run everything: `go test -run=^$ -bench=. -benchmem ./...`. The `-run=^$`
+  skips ordinary tests so only `Benchmark*` functions execute; `-benchmem`
+  prints allocations per op alongside ns/op.
+- Run one: `go test -run=^$ -bench=BenchmarkProtect$ -benchmem` (anchor
+  with `$` to avoid matching `BenchmarkProtectDetails*`).
+- Compare two revisions: install `benchstat`
+  (`go install golang.org/x/perf/cmd/benchstat@latest`), capture
+  `-count=10 -benchtime=2s` output before and after your change, then
+  diff with `benchstat before.txt after.txt`. Single runs are noisy —
+  always use `benchstat` for any conclusion you want to act on.
+
+When adding a benchmark, call `b.ReportAllocs()` and keep the setup outside
+the timed loop with `b.ResetTimer()`. The benchmarks here are also
+implicit smoke tests of the in-process Connect wiring, so they need to
+keep passing in CI even though CI does not run them.
 
 ## Bumping pinned tool versions
 
