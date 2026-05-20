@@ -1,7 +1,10 @@
 # Contributing to arcjet-go
 
-This guide covers the local
-development workflow.
+External pull requests are disabled on this repo; contributions must be made via
+forks. Please open an issue to discuss any significant changes before
+implementing them.
+
+This guide covers the local development workflow.
 
 ## Layout
 
