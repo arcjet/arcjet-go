@@ -53,9 +53,7 @@ func BenchmarkMakeDecisionCacheKey(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		if _, err := makeDecisionCacheKey(details, rulesHash, options); err != nil {
-			b.Fatal(err)
-		}
+		_ = makeDecisionCacheKey(details, rulesHash, options)
 	}
 }
 

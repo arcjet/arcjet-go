@@ -679,14 +679,28 @@ func (f guardRuleInputFunc) guardSubmission(ctx context.Context) (guardRuleSubmi
 }
 
 func hashKey(parts ...string) string {
-	h := sha256.New()
-	for i, p := range parts {
-		if i > 0 {
-			h.Write([]byte{0})
+	// Common case: a single key. sha256.Sum256 returns a value-typed
+	// [Size]byte without heap-allocating an internal digest, which is the
+	// dominant cost in the variadic loop below.
+	var sum [sha256.Size]byte
+	if len(parts) == 1 {
+		sum = sha256.Sum256([]byte(parts[0]))
+	} else {
+		h := sha256.New()
+		for i, p := range parts {
+			if i > 0 {
+				h.Write([]byte{0})
+			}
+			h.Write([]byte(p))
 		}
-		h.Write([]byte(p))
+		h.Sum(sum[:0])
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	// Encode into a stack buffer so the only heap allocation is the
+	// returned string itself; hex.EncodeToString would allocate twice
+	// (intermediate slice + string).
+	var buf [sha256.Size * 2]byte
+	hex.Encode(buf[:], sum[:])
+	return string(buf[:])
 }
 
 func guardConclusion(c Conclusion) string {

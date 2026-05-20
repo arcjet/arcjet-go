@@ -3,6 +3,7 @@ package arcjet
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
 	"github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1/decidev1alpha1connect"
@@ -323,13 +325,7 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	// WithSensitiveInfoValue.
 
 	rules := c.builtRules
-	cacheKey, err := makeDecisionCacheKey(details, c.rulesHash, options)
-	if err != nil {
-		// makeDecisionCacheKey only fails on json.Marshal, which our types
-		// can't trigger. Disable cache for this call rather than failing the
-		// request; the next call will retry caching.
-		cacheKey = ""
-	}
+	cacheKey := makeDecisionCacheKey(details, c.rulesHash, options)
 	if cached := c.cache.get(cacheKey); cached != nil {
 		c.reportLocal(ctx, details, rules, cached)
 		return decisionFromProto(cached), nil
@@ -340,12 +336,15 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 		return decisionFromProto(local.decision), nil
 	}
 
+	// c.characteristics is set once during NewClient / WithRule and never
+	// mutated; the proto only reads from the slice during serialization,
+	// so sharing the backing array is safe.
 	req := connect.NewRequest(&decidev1.DecideRequest{
 		SdkStack:        decidev1.SDKStack_SDK_STACK_UNSPECIFIED,
 		SdkVersion:      c.sdkVersion,
 		Details:         details.toProto(),
 		Rules:           rules,
-		Characteristics: append([]string(nil), c.characteristics...),
+		Characteristics: c.characteristics,
 	})
 	req.Header().Set("Authorization", "Bearer "+c.key)
 	req.Header().Set("User-Agent", c.userAgent)
@@ -388,7 +387,7 @@ func (c *Client) reportLocal(ctx context.Context, details ProtectDetails, rules 
 			Details:         reportDetails.toProto(),
 			Decision:        decision,
 			Rules:           rules,
-			Characteristics: append([]string(nil), c.characteristics...),
+			Characteristics: c.characteristics,
 		})
 		req.Header().Set("Authorization", "Bearer "+c.key)
 		req.Header().Set("User-Agent", c.userAgent)
@@ -649,22 +648,30 @@ func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// hashRules returns a stable digest of the built rule set. The digest is
+// only used as a cache key namespace, so canonicalisation across processes
+// is not required — within a single process, identical rule sets must hash
+// the same. proto.Marshal with Deterministic=true is sufficient and far
+// cheaper than the previous protojson-via-json.RawMessage approach.
 func hashRules(rules []*decidev1.Rule) (string, error) {
 	if len(rules) == 0 {
 		return "", nil
 	}
-	ruleJSON := make([]json.RawMessage, 0, len(rules))
+	h := sha256.New()
+	var lenBuf [4]byte
+	opts := proto.MarshalOptions{Deterministic: true}
 	for _, rule := range rules {
-		data, err := protojson.Marshal(rule)
+		data, err := opts.Marshal(rule)
 		if err != nil {
 			return "", err
 		}
-		ruleJSON = append(ruleJSON, json.RawMessage(data))
+		binary.BigEndian.PutUint32(lenBuf[:], safeUint32(len(data)))
+		h.Write(lenBuf[:])
+		h.Write(data)
 	}
-	data, err := jsonMarshal(ruleJSON)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
+	var buf [sha256.Size * 2]byte
+	hex.Encode(buf[:], sum[:])
+	return string(buf[:]), nil
 }
