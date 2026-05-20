@@ -2,6 +2,8 @@ package arcjet
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -64,6 +66,7 @@ type Client struct {
 	platform        hostingPlatform
 	local           *localEvaluator
 	cache           *decisionCache
+	rulesHash       string
 }
 
 // NewClient creates a reusable request protection client.
@@ -97,6 +100,10 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	rulesHash, err := hashRules(builtRules)
+	if err != nil {
+		return nil, err
+	}
 	local, err := newLocalEvaluator(context.Background(), cfg.Rules)
 	if err != nil {
 		return nil, err
@@ -113,6 +120,7 @@ func NewClient(cfg Config) (*Client, error) {
 		decideClient:    decidev1alpha1connect.NewDecideServiceClient(httpClient, baseURL),
 		local:           local,
 		cache:           newDecisionCache(),
+		rulesHash:       rulesHash,
 	}, nil
 }
 
@@ -135,6 +143,11 @@ func (c *Client) WithRule(rule Rule) (*Client, error) {
 		next.builtRules = append(next.builtRules, wireRule)
 	}
 	next.characteristics = append([]string(nil), c.characteristics...)
+	rulesHash, err := hashRules(next.builtRules)
+	if err != nil {
+		return nil, err
+	}
+	next.rulesHash = rulesHash
 	return &next, nil
 }
 
@@ -310,7 +323,7 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	// WithSensitiveInfoValue.
 
 	rules := c.builtRules
-	cacheKey, err := makeDecisionCacheKey(details, rules, options)
+	cacheKey, err := makeDecisionCacheKey(details, c.rulesHash, options)
 	if err != nil {
 		// makeDecisionCacheKey only fails on json.Marshal, which our types
 		// can't trigger. Disable cache for this call rather than failing the
@@ -634,4 +647,24 @@ func cloneMap(in map[string]string) map[string]string {
 
 func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
+}
+
+func hashRules(rules []*decidev1.Rule) (string, error) {
+	if len(rules) == 0 {
+		return "", nil
+	}
+	ruleJSON := make([]json.RawMessage, 0, len(rules))
+	for _, rule := range rules {
+		data, err := protojson.Marshal(rule)
+		if err != nil {
+			return "", err
+		}
+		ruleJSON = append(ruleJSON, json.RawMessage(data))
+	}
+	data, err := jsonMarshal(ruleJSON)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }

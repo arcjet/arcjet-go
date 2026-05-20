@@ -3,11 +3,9 @@ package arcjet
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"sync"
 	"time"
 
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
@@ -79,23 +77,15 @@ func (c *decisionCache) set(key string, decision *decidev1.Decision) {
 	}
 }
 
-func makeDecisionCacheKey(details ProtectDetails, rules []*decidev1.Rule, options ProtectOptions) (string, error) {
-	ruleJSON := make([]json.RawMessage, 0, len(rules))
-	for _, rule := range rules {
-		data, err := protojson.Marshal(rule)
-		if err != nil {
-			return "", err
-		}
-		ruleJSON = append(ruleJSON, json.RawMessage(data))
-	}
+func makeDecisionCacheKey(details ProtectDetails, rulesHash string, options ProtectOptions) (string, error) {
 	data, err := jsonMarshal(struct {
 		Details     ProtectDetails    `json:"details"`
 		FilterLocal map[string]string `json:"filterLocal,omitempty"`
-		Rules       []json.RawMessage `json:"rules"`
+		RulesHash   string            `json:"rulesHash,omitempty"`
 	}{
 		Details:     details,
 		FilterLocal: options.FilterLocal,
-		Rules:       ruleJSON,
+		RulesHash:   rulesHash,
 	})
 	if err != nil {
 		return "", err
