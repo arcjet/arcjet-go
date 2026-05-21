@@ -49,9 +49,8 @@ arm64).
    ```
 2. Install the protection skill:
    ```sh
-   npx skills add arcjet/skills --skill add-request-protection
+   npx skills add arcjet/skills
    ```
-   For guard protection: `--skill add-guard-protection`
 3. Tell your agent what to protect — it handles the rest.
 
 ### Manual setup
