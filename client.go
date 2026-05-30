@@ -245,11 +245,8 @@ func WithDetectPromptInjectionMessage(s string) ProtectOption {
 }
 
 // WithSensitiveInfoValue sets the text scanned by sensitive information
-// detection.
-//
-// Currently a no-op — pair with [SensitiveInfo]. The value is still recorded
-// on ProtectOptions for forward compatibility but is not forwarded to Arcjet
-// while the analyzer is unimplemented.
+// detection. Pair with [SensitiveInfo]; the value is evaluated locally and
+// never leaves the SDK.
 func WithSensitiveInfoValue(s string) ProtectOption {
 	return func(o *ProtectOptions) { o.SensitiveInfoValue = s }
 }
