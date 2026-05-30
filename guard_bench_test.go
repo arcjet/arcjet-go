@@ -152,7 +152,7 @@ func BenchmarkGuardTokenBucketKey(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		input := rule.Key("user_123", 1)
-		if _, err := input.guardSubmission(ctx); err != nil {
+		if _, err := input.guardSubmission(ctx, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -176,7 +176,7 @@ func BenchmarkGuardPromptInjectionText(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		input := rule.Text(text)
-		if _, err := input.guardSubmission(ctx); err != nil {
+		if _, err := input.guardSubmission(ctx, nil); err != nil {
 			b.Fatal(err)
 		}
 	}

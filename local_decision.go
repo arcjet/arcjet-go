@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"sync"
+	"time"
 
 	"github.com/arcjet/arcjet-go/internal/local/jsreq"
 	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
@@ -38,29 +39,34 @@ func (d *localDecision) liveDeny() bool {
 type localEvaluator struct {
 	mu      sync.Mutex
 	factory *jsreq.JsReqFactory
+	closed  bool
 }
 
-// newLocalEvaluator compiles the shared js_req factory once, but only when
-// at least one rule needs local WebAssembly evaluation. Module compilation
-// is the expensive step; per-request work is limited to instantiation.
+// newLocalEvaluator returns an evaluator and eagerly compiles the shared
+// js_req factory when any rule needs local evaluation. The Guard path
+// uses `newLazyLocalEvaluator` instead, since Guard rules arrive
+// per-request rather than at client construction.
 func newLocalEvaluator(ctx context.Context, rules []Rule) (*localEvaluator, error) {
+	evaluator := newLazyLocalEvaluator()
 	var kinds localKind
 	for _, rule := range rules {
 		if rule != nil {
 			kinds |= rule.localKind()
 		}
 	}
-	evaluator := &localEvaluator{}
 	if kinds == 0 {
 		return evaluator, nil
 	}
-	factory, err := jsreq.NewFactory(ctx, jsreq.Callbacks{})
-	if err != nil {
+	if _, err := evaluator.factoryLazy(ctx); err != nil {
 		return nil, err
 	}
-	evaluator.factory = factory
 	return evaluator, nil
 }
+
+// newLazyLocalEvaluator returns an evaluator that defers wasm compilation
+// until the first call that needs it. Used by GuardClient, which doesn't
+// see its rules until each Guard call.
+func newLazyLocalEvaluator() *localEvaluator { return &localEvaluator{} }
 
 func (e *localEvaluator) validateEmail(ctx context.Context, opts EmailOptions, details ProtectDetails, protectOpts ProtectOptions) (*localDecision, error) {
 	email := details.Email
@@ -175,24 +181,45 @@ func (e *localEvaluator) detectSensitiveInfo(ctx context.Context, opts Sensitive
 	if protectOpts.SensitiveInfoValue == "" {
 		return nil, nil
 	}
-	inst, release, err := e.instance(ctx)
+	outcome, err := e.scanSensitiveInfo(ctx, protectOpts.SensitiveInfoValue, opts.Allow, opts.Deny)
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-
-	config := sensitiveInfoConfig(opts)
-	result := inst.DetectSensitiveInfo(ctx, protectOpts.SensitiveInfoValue, config)
-	if len(result.Denied) == 0 {
+	if len(outcome.Denied) == 0 {
 		return nil, nil
 	}
 	reason := &decidev1.Reason{Reason: &decidev1.Reason_SensitiveInfo{
 		SensitiveInfo: &decidev1.SensitiveInfoReason{
-			Allowed: identifiedEntitiesWire(result.Allowed),
-			Denied:  identifiedEntitiesWire(result.Denied),
+			Allowed: identifiedEntitiesWire(outcome.Allowed),
+			Denied:  identifiedEntitiesWire(outcome.Denied),
 		},
 	}}
 	return localDeny("local_sensitive_info", opts.Mode, 0, reason), nil
+}
+
+// sensitiveInfoOutcome is the shared shape both the HTTP-path
+// `SensitiveInfo` rule and the Guard `GuardSensitiveInfoRule.Text`
+// callback use after running the wasm analyzer.
+type sensitiveInfoOutcome struct {
+	Allowed   []jsreq.DetectedSensitiveInfoEntity
+	Denied    []jsreq.DetectedSensitiveInfoEntity
+	ElapsedMs uint64
+}
+
+func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, allow, deny []EntityType) (sensitiveInfoOutcome, error) {
+	inst, release, err := e.instance(ctx)
+	if err != nil {
+		return sensitiveInfoOutcome{}, err
+	}
+	defer release()
+
+	start := time.Now()
+	result := inst.DetectSensitiveInfo(ctx, text, sensitiveInfoConfig(allow, deny))
+	return sensitiveInfoOutcome{
+		Allowed:   result.Allowed,
+		Denied:    result.Denied,
+		ElapsedMs: safeUint64FromInt64(time.Since(start).Milliseconds()),
+	}, nil
 }
 
 func localDeny(ruleID string, mode Mode, ttl uint32, reason *decidev1.Reason) *localDecision {
@@ -224,11 +251,9 @@ func localDeny(ruleID string, mode Mode, ttl uint32, reason *decidev1.Reason) *l
 // stays cached on the evaluator. Instantiation runs outside the lock so
 // concurrent requests don't serialize on it.
 func (e *localEvaluator) instance(ctx context.Context) (*jsreq.JsReqInstance, func(), error) {
-	e.mu.Lock()
-	factory := e.factory
-	e.mu.Unlock()
-	if factory == nil {
-		return nil, func() {}, fmt.Errorf("arcjet: %w", ErrWasmClosed)
+	factory, err := e.factoryLazy(ctx)
+	if err != nil {
+		return nil, func() {}, err
 	}
 	inst, err := factory.Instantiate(ctx)
 	if err != nil {
@@ -237,12 +262,33 @@ func (e *localEvaluator) instance(ctx context.Context) (*jsreq.JsReqInstance, fu
 	return inst, func() { inst.Close(ctx) }, nil
 }
 
+// factoryLazy returns the shared js_req factory, compiling it on first
+// access. After `close` has run, returns ErrWasmClosed so post-teardown
+// requests don't silently reopen the module.
+func (e *localEvaluator) factoryLazy(ctx context.Context) (*jsreq.JsReqFactory, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return nil, fmt.Errorf("arcjet: %w", ErrWasmClosed)
+	}
+	if e.factory != nil {
+		return e.factory, nil
+	}
+	factory, err := jsreq.NewFactory(ctx, jsreq.Callbacks{})
+	if err != nil {
+		return nil, err
+	}
+	e.factory = factory
+	return factory, nil
+}
+
 func (e *localEvaluator) close(ctx context.Context) error {
 	if e == nil {
 		return nil
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.closed = true
 	if e.factory != nil {
 		e.factory.Close(ctx)
 		e.factory = nil
@@ -312,15 +358,15 @@ func emailConfig(opts EmailOptions) jsreq.EmailValidationConfig {
 	}
 }
 
-func sensitiveInfoConfig(opts SensitiveInfoOptions) jsreq.SensitiveInfoConfig {
+func sensitiveInfoConfig(allow, deny []EntityType) jsreq.SensitiveInfoConfig {
 	// Allow and Deny are mutually exclusive (validated upstream). An empty
 	// deny list — the default — means "deny nothing", so the deny variant
 	// is the right shape whenever Allow is unset.
 	var entities jsreq.SensitiveInfoEntities = jsreq.SensitiveInfoEntitiesDeny{
-		Value: sensitiveInfoEntitiesWire(opts.Deny),
+		Value: sensitiveInfoEntitiesWire(deny),
 	}
-	if len(opts.Allow) > 0 {
-		entities = jsreq.SensitiveInfoEntitiesAllow{Value: sensitiveInfoEntitiesWire(opts.Allow)}
+	if len(allow) > 0 {
+		entities = jsreq.SensitiveInfoEntitiesAllow{Value: sensitiveInfoEntitiesWire(allow)}
 	}
 	return jsreq.SensitiveInfoConfig{
 		Entities:         entities,
@@ -389,6 +435,29 @@ func identifiedEntitiesWire(entities []jsreq.DetectedSensitiveInfoEntity) []*dec
 			End:            e.End,
 			IdentifiedType: identifiedEntityType(e.IdentifiedType),
 		}
+	}
+	return out
+}
+
+// identifiedEntityTypes projects detected entities down to their type
+// names, deduplicating in encounter order. Used by Guard submissions
+// which carry only the type list, not start/end indices.
+func identifiedEntityTypes(entities []jsreq.DetectedSensitiveInfoEntity) []string {
+	if len(entities) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(entities))
+	out := make([]string, 0, len(entities))
+	for _, e := range entities {
+		t := identifiedEntityType(e.IdentifiedType)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
 	}
 	return out
 }
