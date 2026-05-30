@@ -293,16 +293,19 @@ func (d Decision) IsMissingUserAgent() bool {
 	return d.anyActiveReason(isMissingUserAgentMessage)
 }
 
-// anyActiveReason reports whether the top-level reason or any non-dry-run rule
-// result satisfies pred.
+// anyActiveReason reports whether any enforced (non-dry-run) rule result
+// satisfies pred, falling back to the top-level reason only when there are no
+// rule results to consult (e.g. some cached or error decisions). A dry-run rule
+// still populates Results, so the fallback never reports a dry-run-only
+// detection — matching @arcjet/inspect, which inspects only active results.
 func (d Decision) anyActiveReason(pred func(Reason) bool) bool {
-	if pred(d.Reason) {
-		return true
-	}
 	for _, r := range d.Results {
 		if r.State != RuleStateDryRun && pred(r.Reason) {
 			return true
 		}
+	}
+	if len(d.Results) == 0 {
+		return pred(d.Reason)
 	}
 	return false
 }

@@ -24,6 +24,27 @@ func TestSetRateLimitHeadersFromResults(t *testing.T) {
 	}
 }
 
+func TestSetRateLimitHeadersKeepsDistinctPoliciesSharingAMax(t *testing.T) {
+	// Two policies with the same max but different windows are distinct and must
+	// both appear (dedup key is (max, window), not max alone).
+	d := Decision{
+		Results: []RuleResult{
+			{State: RuleStateRun, Reason: Reason{Type: ReasonRateLimit, RateLimit: &RateLimitReason{Max: 100, Remaining: 50, ResetInSeconds: 30, WindowInSeconds: 60}}},
+			{State: RuleStateRun, Reason: Reason{Type: ReasonRateLimit, RateLimit: &RateLimitReason{Max: 100, Remaining: 90, ResetInSeconds: 3000, WindowInSeconds: 3600}}},
+		},
+	}
+	rec := httptest.NewRecorder()
+	SetRateLimitHeaders(rec, d)
+
+	if got, want := rec.Header().Get("RateLimit-Policy"), "100;w=60, 100;w=3600"; got != want {
+		t.Fatalf("RateLimit-Policy = %q, want %q", got, want)
+	}
+	// Nearest-to-exhausted is the lower-remaining (50) one.
+	if got, want := rec.Header().Get("RateLimit"), "limit=100, remaining=50, reset=30"; got != want {
+		t.Fatalf("RateLimit = %q, want %q", got, want)
+	}
+}
+
 func TestSetRateLimitHeadersFallsBackToTopLevelReason(t *testing.T) {
 	d := Decision{Reason: Reason{Type: ReasonRateLimit, RateLimit: &RateLimitReason{Max: 5, Remaining: 1, ResetInSeconds: 30, WindowInSeconds: 30}}}
 	rec := httptest.NewRecorder()

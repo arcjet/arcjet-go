@@ -14,11 +14,16 @@ package redact
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	wasmredact "github.com/arcjet/arcjet-go/internal/local/redact"
 )
+
+// ErrClosed is returned by Redact when the Redactor has been closed.
+var ErrClosed = errors.New("arcjet/redact: redactor is closed")
 
 // Standard sensitive-information entity names recognised by the component. Any
 // other string passed in Options.Entities or returned from Options.Detect is
@@ -51,6 +56,11 @@ type Options struct {
 	// the entity name and the matched plaintext. Return ok=false to fall back to
 	// the component's built-in redaction (e.g. "<Redacted email #0>"). When nil,
 	// the built-in redaction is always used.
+	//
+	// For Unredact to round-trip, replacements must be non-empty and unique per
+	// distinct original value; the built-in redaction guarantees this with a
+	// "#N" suffix. Empty or duplicated replacements cannot be reversed and are
+	// dropped from the Unredact mapping.
 	Replace func(entity, plaintext string) (replacement string, ok bool)
 }
 
@@ -60,13 +70,20 @@ type Options struct {
 // response.
 type Unredact func(string) string
 
-// Redactor redacts sensitive information using the Arcjet wasm component.
+// Redactor redacts sensitive information using the Arcjet wasm component. It is
+// safe for concurrent use: many Redact calls may run at once, and Close waits
+// for in-flight calls to finish before tearing down the runtime.
 type Redactor struct {
 	factory           *wasmredact.RedactFactory
 	entities          *[]wasmredact.SensitiveInfoEntity
 	contextWindowSize uint32
 	skipDetect        bool
 	skipReplace       bool
+
+	// mu guards against Close racing with in-flight Redact calls: Redact holds
+	// it for read (so calls run concurrently), Close holds it for write.
+	mu     sync.RWMutex
+	closed bool
 }
 
 // New compiles the redact component and returns a reusable Redactor. Compiling
@@ -124,9 +141,16 @@ func New(ctx context.Context, opts Options) (*Redactor, error) {
 	return r, nil
 }
 
-// Close releases the wasm runtime backing the Redactor. The Redactor must not
-// be used after Close returns.
+// Close releases the wasm runtime backing the Redactor. It blocks until any
+// in-flight Redact calls finish; subsequent Redact calls return ErrClosed.
+// Close is idempotent.
 func (r *Redactor) Close(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
+	r.closed = true
 	r.factory.Close(ctx)
 	return nil
 }
@@ -135,21 +159,28 @@ func (r *Redactor) Close(ctx context.Context) error {
 // with an Unredact function that restores the original values. When nothing is
 // detected, candidate is returned unchanged and Unredact is the identity.
 func (r *Redactor) Redact(ctx context.Context, candidate string) (redacted string, unredact Unredact, err error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return "", nil, ErrClosed
+	}
+
+	// The generated bindings panic on wasm memory errors; convert that into an
+	// error so a malformed input can't crash the caller. Registered before the
+	// instance defer so it runs last and also covers a panic from inst.Close.
+	defer func() {
+		if rec := recover(); rec != nil {
+			redacted = ""
+			unredact = nil
+			err = fmt.Errorf("arcjet/redact: %v", rec)
+		}
+	}()
+
 	inst, err := r.factory.Instantiate(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("arcjet/redact: instantiate component: %w", err)
 	}
 	defer inst.Close(ctx)
-
-	// The generated bindings panic on wasm memory errors; convert that into an
-	// error so a malformed input can't crash the caller.
-	defer func() {
-		if r := recover(); r != nil {
-			redacted = ""
-			unredact = nil
-			err = fmt.Errorf("arcjet/redact: %v", r)
-		}
-	}()
 
 	cfg := wasmredact.RedactSensitiveInfoConfig{
 		Entities:          r.entities,
@@ -159,21 +190,38 @@ func (r *Redactor) Redact(ctx context.Context, candidate string) (redacted strin
 	}
 	redactions := inst.Redact(ctx, candidate, cfg)
 
-	// Apply replacements from the end so earlier byte offsets stay valid. The
-	// component reports start/end as byte offsets into candidate, matching Go's
-	// string indexing.
-	redacted = candidate
-	for i := len(redactions) - 1; i >= 0; i-- {
-		e := redactions[i]
-		redacted = redacted[:e.Start] + e.Redacted + redacted[e.End:]
+	// Rebuild the string in one forward pass. start/end are byte offsets into
+	// candidate (matching Go indexing), and the component returns spans in
+	// ascending, non-overlapping order; an out-of-order/out-of-range span would
+	// panic on the slice and surface as an error rather than corrupt output.
+	var b strings.Builder
+	b.Grow(len(candidate))
+	pos := 0
+	for _, e := range redactions {
+		b.WriteString(candidate[pos:e.Start])
+		b.WriteString(e.Redacted)
+		pos = int(e.End)
 	}
+	b.WriteString(candidate[pos:])
+	redacted = b.String()
 
-	unredact = func(input string) string {
-		for _, e := range redactions {
-			input = strings.ReplaceAll(input, e.Redacted, e.Original)
+	// Build the reverse mapping once. Skip empty or duplicate redaction markers:
+	// they can't be reversed unambiguously, and an empty marker would otherwise
+	// make Replacer splice the original between every byte.
+	seen := make(map[string]struct{}, len(redactions))
+	pairs := make([]string, 0, len(redactions)*2)
+	for _, e := range redactions {
+		if e.Redacted == "" {
+			continue
 		}
-		return input
+		if _, dup := seen[e.Redacted]; dup {
+			continue
+		}
+		seen[e.Redacted] = struct{}{}
+		pairs = append(pairs, e.Redacted, e.Original)
 	}
+	replacer := strings.NewReplacer(pairs...)
+	unredact = func(input string) string { return replacer.Replace(input) }
 	return redacted, unredact, nil
 }
 

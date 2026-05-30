@@ -116,6 +116,18 @@ func TestDecisionAndErrorHelpers(t *testing.T) {
 	if (Decision{Results: []RuleResult{{State: RuleStateDryRun, Reason: Reason{Bot: &BotReason{Verified: true}}}}}).IsVerifiedBot() {
 		t.Fatal("verified bot helper should ignore dry-run results")
 	}
+	// A dry-run rule still populates the top-level reason (see localDeny), so the
+	// helpers must not leak a dry-run-only detection through it.
+	dryRunLeak := Decision{
+		Reason:  Reason{Bot: &BotReason{Spoofed: true, Verified: true}},
+		Results: []RuleResult{{State: RuleStateDryRun, Reason: Reason{Bot: &BotReason{Spoofed: true, Verified: true}}}},
+	}
+	if dryRunLeak.IsSpoofedBot() {
+		t.Fatal("spoofed bot helper leaked a dry-run detection via the top-level reason")
+	}
+	if dryRunLeak.IsVerifiedBot() {
+		t.Fatal("verified bot helper leaked a dry-run detection via the top-level reason")
+	}
 	if !(Decision{Reason: Reason{Type: ReasonError, Message: "bot detection requires user-agent header"}}).IsMissingUserAgent() {
 		t.Fatal("missing user agent helper (local message) failed")
 	}

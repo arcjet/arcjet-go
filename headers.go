@@ -26,27 +26,35 @@ func SetRateLimitHeaders(w http.ResponseWriter, d Decision) {
 		return
 	}
 
-	// One policy entry per distinct max, sorted by lowest max. A policy is
-	// "<max>;w=<window>" per the draft spec.
+	// One entry per distinct policy, keyed by (max, window) so two policies that
+	// share a max but differ in window are both reported. A policy renders as
+	// "<max>;w=<window>" per the draft spec, sorted by max then window.
 	type policy struct{ max, window int }
 	var policies []policy
 	for _, r := range reasons {
-		if slices.ContainsFunc(policies, func(p policy) bool { return p.max == r.Max }) {
-			continue
+		p := policy{max: r.Max, window: r.WindowInSeconds}
+		if !slices.Contains(policies, p) {
+			policies = append(policies, p)
 		}
-		policies = append(policies, policy{max: r.Max, window: r.WindowInSeconds})
 	}
-	slices.SortFunc(policies, func(a, b policy) int { return cmp.Compare(a.max, b.max) })
+	slices.SortFunc(policies, func(a, b policy) int {
+		return cmp.Or(cmp.Compare(a.max, b.max), cmp.Compare(a.window, b.window))
+	})
 
 	parts := make([]string, len(policies))
 	for i, p := range policies {
 		parts[i] = fmt.Sprintf("%d;w=%d", p.max, p.window)
 	}
 
-	nearest := reasons[0]
-	for _, r := range reasons[1:] {
-		nearest = nearerLimit(nearest, r)
-	}
+	// Report the limit nearest to being exhausted: lowest remaining, then
+	// soonest reset, then smallest max.
+	nearest := slices.MinFunc(reasons, func(a, b RateLimitReason) int {
+		return cmp.Or(
+			cmp.Compare(a.Remaining, b.Remaining),
+			cmp.Compare(a.ResetInSeconds, b.ResetInSeconds),
+			cmp.Compare(a.Max, b.Max),
+		)
+	})
 
 	header := w.Header()
 	header.Set("RateLimit", fmt.Sprintf("limit=%d, remaining=%d, reset=%d", nearest.Max, nearest.Remaining, nearest.ResetInSeconds))
@@ -67,25 +75,4 @@ func (d Decision) rateLimitReasons() []RateLimitReason {
 		reasons = append(reasons, *d.Reason.RateLimit)
 	}
 	return reasons
-}
-
-// nearerLimit returns whichever rate limit is closer to being exhausted:
-// lowest remaining wins, then soonest reset, then smallest max.
-func nearerLimit(current, next RateLimitReason) RateLimitReason {
-	if current.Remaining != next.Remaining {
-		if current.Remaining < next.Remaining {
-			return current
-		}
-		return next
-	}
-	if current.ResetInSeconds != next.ResetInSeconds {
-		if current.ResetInSeconds < next.ResetInSeconds {
-			return current
-		}
-		return next
-	}
-	if current.Max < next.Max {
-		return current
-	}
-	return next
 }

@@ -272,6 +272,7 @@ func TestProtectUsesPlatformHeaderWhenEnvSet(t *testing.T) {
 	t.Setenv("FLY_APP_NAME", "")
 	t.Setenv("VERCEL", "")
 	t.Setenv("RENDER", "")
+	t.Setenv("CF_PAGES", "") // outranks RAILWAY in detectPlatform; clear so it can't shadow
 	t.Setenv("RAILWAY_PROJECT_ID", "proj_test")
 
 	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)
