@@ -208,16 +208,20 @@ func (e ArcjetError) Error() string {
 	return e.Code
 }
 
-// Is reports whether target is an ArcjetError with the same Code. Use it
-// with errors.Is to detect specific Arcjet error codes:
+// Is reports whether target is an ArcjetError with the same, non-empty Code.
+// Use it with errors.Is to detect specific Arcjet error codes:
 //
 //	if errors.Is(err, ArcjetError{Code: "AJ1100"}) { ... }
+//
+// A target with an empty Code matches nothing, so ArcjetError{} is not a
+// wildcard for "any Arcjet error" — use errors.As for that. This matters
+// because Decision.Err returns a code-less ArcjetError.
 func (e ArcjetError) Is(target error) bool {
 	other, ok := target.(ArcjetError)
 	if !ok {
 		return false
 	}
-	return e.Code == other.Code
+	return other.Code != "" && e.Code == other.Code
 }
 
 // Decision is the result of evaluating request protection rules.

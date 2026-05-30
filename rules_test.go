@@ -355,4 +355,14 @@ func TestArcjetErrorIsByCode(t *testing.T) {
 	if errors.Is(err, errors.New("not an arcjet error")) {
 		t.Error("errors.Is should not match non-ArcjetError")
 	}
+	// An empty-Code target must not act as a wildcard for any ArcjetError.
+	if errors.Is(err, ArcjetError{}) {
+		t.Error("errors.Is should not match a code-less target")
+	}
+	// Decision.Err returns a code-less ArcjetError; matching it against a bare
+	// ArcjetError{} must be false, not a spurious wildcard hit.
+	decErr := (Decision{Conclusion: ConclusionError, Reason: Reason{Message: "boom"}}).Err()
+	if errors.Is(decErr, ArcjetError{}) {
+		t.Error("errors.Is(Decision.Err(), ArcjetError{}) should be false")
+	}
 }

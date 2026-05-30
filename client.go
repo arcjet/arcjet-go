@@ -343,9 +343,9 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 		details.Extra["detectPromptInjectionMessage"] = options.DetectPromptInjectionMessage
 	}
 	// options.SensitiveInfoValue is intentionally not forwarded: the
-	// sensitive-info analyzer is not yet shipped in this SDK, so sending
-	// the value would only leak user input without any benefit. See
-	// WithSensitiveInfoValue.
+	// sensitive-info rule runs locally in the SDK (see evaluateLocal ->
+	// detectSensitiveInfo), so the raw value never needs to reach Decide or
+	// Report and is kept in-process for privacy. See WithSensitiveInfoValue.
 
 	rules := c.builtRules
 	cacheKey := makeDecisionCacheKey(details, c.rulesHash, options)
@@ -420,11 +420,13 @@ func (c *Client) reportLocal(ctx context.Context, details ProtectDetails, rules 
 	}()
 }
 
-// redactReportDetails returns a copy of details with prompt-injection and
-// sensitive-info inputs replaced with "<redacted>". The raw values are needed
-// by the Decide RPC (server-side inference / scanning), but Report is
-// dashboard telemetry and must not leak the user-supplied text. Mirrors
-// https://github.com/arcjet/arcjet-py/pull/118.
+// redactReportDetails returns a copy of details with the prompt-injection input
+// (and, defensively, any sensitive-info value) replaced with "<redacted>". The
+// raw prompt-injection text is needed by the Decide RPC for server-side
+// inference, but Report is dashboard telemetry and must not leak it. The
+// sensitive-info value is evaluated locally and never placed in Extra today, so
+// its branch is a guard against a future code path forwarding it under this
+// key. Mirrors https://github.com/arcjet/arcjet-py/pull/118.
 func redactReportDetails(d ProtectDetails) ProtectDetails {
 	if d.Extra == nil {
 		return d
