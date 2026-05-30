@@ -340,6 +340,30 @@ func Filter(opts FilterOptions) Rule {
 	}
 }
 
+// ProtectSignupOptions configures the ProtectSignup composite rule.
+type ProtectSignupOptions struct {
+	// RateLimit configures the sliding-window rate limit applied to the signup
+	// form, typically keyed on the source IP.
+	RateLimit SlidingWindowOptions
+	// Bots configures bot detection for the signup form.
+	Bots BotOptions
+	// Email configures validation of the submitted email address.
+	Email EmailOptions
+}
+
+// ProtectSignup bundles the rules commonly used to protect a signup form: a
+// sliding-window rate limit, bot detection, and email validation. It is sugar
+// over SlidingWindow, DetectBot, and ValidateEmail; the returned rules can be
+// passed directly to Client.Protect alongside any others. Mirrors
+// protectSignup in arcjet-js.
+func ProtectSignup(opts ProtectSignupOptions) []Rule {
+	return []Rule{
+		SlidingWindow(opts.RateLimit),
+		DetectBot(opts.Bots),
+		ValidateEmail(opts.Email),
+	}
+}
+
 func validateBotOptions(opts BotOptions) error {
 	if err := validateMode(opts.Mode); err != nil {
 		return err

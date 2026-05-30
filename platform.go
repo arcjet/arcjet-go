@@ -18,6 +18,7 @@ const (
 	platformFlyIo
 	platformVercel
 	platformRender
+	platformCloudflare
 	platformRailway
 )
 
@@ -40,6 +41,11 @@ func detectPlatform(getenv func(string) string) hostingPlatform {
 	}
 	if getenv("RENDER") == "true" {
 		return platformRender
+	}
+	// Cloudflare Pages sets CF_PAGES=1 in its build and Functions runtime.
+	// https://developers.cloudflare.com/pages/configuration/build-configuration/#environment-variables
+	if getenv("CF_PAGES") == "1" {
+		return platformCloudflare
 	}
 	if getenv("RAILWAY_PROJECT_ID") != "" {
 		return platformRailway
@@ -73,6 +79,15 @@ func platformIP(r *http.Request, platform hostingPlatform, proxies []trustedProx
 		return rightmostUntrustedXFF(r.Header.Get("X-Forwarded-For"), proxies)
 	case platformRender:
 		return strings.TrimSpace(r.Header.Get("True-Client-Ip"))
+	case platformCloudflare:
+		// Cloudflare signs CF-Connecting-IP(v6) on every proxied request and
+		// strips client-supplied copies, so they can be trusted directly.
+		// IPv6 is preferred when present, matching @arcjet/ip.
+		// https://developers.cloudflare.com/fundamentals/reference/http-request-headers/#cf-connecting-ip
+		if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IPv6")); ip != "" {
+			return ip
+		}
+		return strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))
 	case platformRailway:
 		// Railway sets X-Real-IP to the original client IP.
 		// https://docs.railway.com/networking/public-networking/specs-and-limits#technical-specifications

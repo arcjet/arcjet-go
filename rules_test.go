@@ -46,6 +46,31 @@ func TestRequestRuleBuilders(t *testing.T) {
 	}
 }
 
+func TestProtectSignupComposesRules(t *testing.T) {
+	rules := ProtectSignup(ProtectSignupOptions{
+		RateLimit: SlidingWindowOptions{Mode: ModeLive, Interval: time.Minute, MaxRequests: 5},
+		Bots:      BotOptions{Mode: ModeLive, Deny: []string{"CURL"}},
+		Email:     EmailOptions{Mode: ModeLive, Deny: []EmailType{EmailTypeDisposable}},
+	})
+	if len(rules) != 3 {
+		t.Fatalf("ProtectSignup returned %d rules, want 3", len(rules))
+	}
+	client, err := NewClient(Config{Key: "ajkey_test", Rules: rules})
+	if err != nil {
+		t.Fatal(err)
+	}
+	built := client.builtRules
+	if built[0].GetRateLimit().GetInterval() != 60 {
+		t.Fatalf("sliding window not first: %#v", built[0])
+	}
+	if built[1].GetBotV2().GetDeny()[0] != "CURL" {
+		t.Fatalf("bot rule not second: %#v", built[1])
+	}
+	if built[2].GetEmail().GetDeny()[0].String() != "EMAIL_TYPE_DISPOSABLE" {
+		t.Fatalf("email rule not third: %#v", built[2])
+	}
+}
+
 func TestRequestRuleBuilderRejectsConflicts(t *testing.T) {
 	rules := []Rule{
 		DetectBot(BotOptions{Allow: []string{"A"}, Deny: []string{"B"}}),
@@ -75,6 +100,24 @@ func TestDecisionAndErrorHelpers(t *testing.T) {
 	}
 	if !(Decision{Reason: Reason{Bot: &BotReason{Spoofed: true}}}).IsSpoofedBot() {
 		t.Fatal("spoofed bot helper failed")
+	}
+	if !(Decision{Reason: Reason{Bot: &BotReason{Verified: true}}}).IsVerifiedBot() {
+		t.Fatal("verified bot helper (top-level reason) failed")
+	}
+	if !(Decision{Results: []RuleResult{{State: RuleStateRun, Reason: Reason{Bot: &BotReason{Verified: true}}}}}).IsVerifiedBot() {
+		t.Fatal("verified bot helper (rule result) failed")
+	}
+	if (Decision{Results: []RuleResult{{State: RuleStateDryRun, Reason: Reason{Bot: &BotReason{Verified: true}}}}}).IsVerifiedBot() {
+		t.Fatal("verified bot helper should ignore dry-run results")
+	}
+	if !(Decision{Reason: Reason{Type: ReasonError, Message: "bot detection requires user-agent header"}}).IsMissingUserAgent() {
+		t.Fatal("missing user agent helper (local message) failed")
+	}
+	if !(Decision{Results: []RuleResult{{State: RuleStateRun, Reason: Reason{Type: ReasonError, Message: "the request was missing User-Agent header"}}}}).IsMissingUserAgent() {
+		t.Fatal("missing user agent helper (server message) failed")
+	}
+	if (Decision{Reason: Reason{Type: ReasonError, Message: "some other error"}}).IsMissingUserAgent() {
+		t.Fatal("missing user agent helper should not match unrelated errors")
 	}
 	if (ArcjetError{Code: "AJ1", Message: "bad"}).Error() != "AJ1: bad" {
 		t.Fatal("unexpected error formatting")

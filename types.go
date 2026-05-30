@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // Version is the Arcjet Go SDK version sent with Decide and Guard requests.
@@ -268,6 +269,48 @@ func (d Decision) Err() error {
 // IsSpoofedBot reports whether a bot rule detected a spoofed verified bot.
 func (d Decision) IsSpoofedBot() bool {
 	return d.Reason.Bot != nil && d.Reason.Bot.Spoofed
+}
+
+// IsVerifiedBot reports whether a bot rule confirmed the request came from a
+// verified bot (for example a search engine crawler whose IP matches its
+// published ranges). You may want to allow such requests even when other
+// signals would otherwise deny them.
+func (d Decision) IsVerifiedBot() bool {
+	return d.anyActiveReason(func(r Reason) bool {
+		return r.Bot != nil && r.Bot.Verified
+	})
+}
+
+// IsMissingUserAgent reports whether a bot rule denied the request because it
+// had no User-Agent header. A missing User-Agent is a common indicator of an
+// automated client, since IETF HTTP Semantics (RFC 9110) recommends sending
+// one. Mirrors @arcjet/inspect's isMissingUserAgent in arcjet-js.
+func (d Decision) IsMissingUserAgent() bool {
+	return d.anyActiveReason(isMissingUserAgentMessage)
+}
+
+// anyActiveReason reports whether the top-level reason or any non-dry-run rule
+// result satisfies pred.
+func (d Decision) anyActiveReason(pred func(Reason) bool) bool {
+	if pred(d.Reason) {
+		return true
+	}
+	for _, r := range d.Results {
+		if r.State != RuleStateDryRun && pred(r.Reason) {
+			return true
+		}
+	}
+	return false
+}
+
+// isMissingUserAgentMessage reports whether an error reason carries one of the
+// missing-User-Agent messages matched by @arcjet/inspect's isMissingUserAgent.
+func isMissingUserAgentMessage(r Reason) bool {
+	if r.Type != ReasonError {
+		return false
+	}
+	return strings.Contains(r.Message, "missing User-Agent header") ||
+		strings.Contains(r.Message, "requires user-agent header")
 }
 
 // Reason contains typed details about why Arcjet reached a decision.

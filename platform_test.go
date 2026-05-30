@@ -20,6 +20,8 @@ func TestDetectPlatformFromEnv(t *testing.T) {
 		{"vercel wrong value", map[string]string{"VERCEL": "true"}, platformNone},
 		{"render exact value true", map[string]string{"RENDER": "true"}, platformRender},
 		{"render wrong value", map[string]string{"RENDER": "1"}, platformNone},
+		{"cloudflare pages exact value 1", map[string]string{"CF_PAGES": "1"}, platformCloudflare},
+		{"cloudflare pages wrong value", map[string]string{"CF_PAGES": "true"}, platformNone},
 		{"railway", map[string]string{"RAILWAY_PROJECT_ID": "00000000-0000-0000-0000-000000000000"}, platformRailway},
 		{"railway empty value is none", map[string]string{"RAILWAY_PROJECT_ID": ""}, platformNone},
 		{
@@ -33,9 +35,14 @@ func TestDetectPlatformFromEnv(t *testing.T) {
 			platformVercel,
 		},
 		{
-			"precedence render beats railway",
-			map[string]string{"RENDER": "true", "RAILWAY_PROJECT_ID": "p"},
+			"precedence render beats cloudflare",
+			map[string]string{"RENDER": "true", "CF_PAGES": "1"},
 			platformRender,
+		},
+		{
+			"precedence cloudflare beats railway",
+			map[string]string{"CF_PAGES": "1", "RAILWAY_PROJECT_ID": "p"},
+			platformCloudflare,
 		},
 	}
 	for _, tt := range tests {
@@ -121,6 +128,21 @@ func TestPlatformIP(t *testing.T) {
 			platform: platformRender,
 			headers:  map[string]string{"True-Client-Ip": "203.0.113.60"},
 			want:     "203.0.113.60",
+		},
+		{
+			name:     "cloudflare cf-connecting-ip",
+			platform: platformCloudflare,
+			headers:  map[string]string{"CF-Connecting-IP": "203.0.113.65"},
+			want:     "203.0.113.65",
+		},
+		{
+			name:     "cloudflare prefers ipv6",
+			platform: platformCloudflare,
+			headers: map[string]string{
+				"CF-Connecting-IPv6": "2001:db8::1",
+				"CF-Connecting-IP":   "203.0.113.65",
+			},
+			want: "2001:db8::1",
 		},
 		{
 			name:     "railway x-real-ip",

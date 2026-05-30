@@ -372,6 +372,11 @@ if decision.IsSpoofedBot() {
 }
 ```
 
+`decision.IsVerifiedBot()` reports the opposite — a crawler whose IP matched
+its published ranges — which you may want to allow even when other signals
+would deny. `decision.IsMissingUserAgent()` reports a request a bot rule denied
+for having no `User-Agent` header, a common sign of an automated client.
+
 See the [Bot Protection docs](https://docs.arcjet.com/bot-protection) for more
 details.
 
@@ -444,6 +449,43 @@ arcjet.SlidingWindow(arcjet.SlidingWindowOptions{
 See the [Rate Limiting docs](https://docs.arcjet.com/rate-limiting) for more
 details.
 
+### Rate limit response headers
+
+Call `arcjet.SetRateLimitHeaders(w, decision)` to advertise the limit to
+clients using the IETF [RateLimit header fields for HTTP][ratelimit-draft]
+(`RateLimit` and `RateLimit-Policy`). It is a no-op when the decision carries
+no rate limit, so you can call it unconditionally:
+
+```go
+decision, _ := aj.Protect(r.Context(), r)
+arcjet.SetRateLimitHeaders(w, decision)
+if decision.IsDenied() {
+	http.Error(w, "Rate limited", http.StatusTooManyRequests)
+	return
+}
+```
+
+[ratelimit-draft]: https://ietf-wg-httpapi.github.io/ratelimit-headers/draft-ietf-httpapi-ratelimit-headers.html
+
+## Protecting a signup form
+
+`arcjet.ProtectSignup` bundles the rules commonly used on a signup form — a
+sliding-window rate limit, bot detection, and email validation — into one
+slice you can hand to `Config.Rules`:
+
+```go
+aj, err := arcjet.NewClient(arcjet.Config{
+	Key: arcjetKey,
+	Rules: arcjet.ProtectSignup(arcjet.ProtectSignupOptions{
+		RateLimit: arcjet.SlidingWindowOptions{Mode: arcjet.ModeLive, Interval: time.Hour, MaxRequests: 5},
+		Bots:      arcjet.BotOptions{Mode: arcjet.ModeLive, Allow: nil}, // block all bots
+		Email:     arcjet.EmailOptions{Mode: arcjet.ModeLive, Deny: []arcjet.EmailType{arcjet.EmailTypeDisposable, arcjet.EmailTypeInvalid, arcjet.EmailTypeNoMXRecords}},
+	}),
+})
+```
+
+The returned rules can be combined with others using `append`.
+
 ## Sensitive information detection
 
 > [!IMPORTANT]
@@ -482,6 +524,37 @@ details.
 > See the [Sensitive Information docs](https://docs.arcjet.com/sensitive-info)
 > for the planned behavior. For PII enforcement today, scan the input
 > yourself before passing it to your model.
+
+## Redacting sensitive information
+
+The `github.com/arcjet/arcjet-go/redact` package detects and redacts sensitive
+information — emails, phone numbers, IP addresses, credit card numbers, and
+custom entities — entirely in-process. The text is never sent to Arcjet, which
+makes it suitable for scrubbing prompts before they reach a third-party LLM and
+restoring the values in the response. It runs the same WebAssembly component as
+`@arcjet/redact` and `arcjet.redact`, so all three SDKs redact identically.
+
+```go
+import "github.com/arcjet/arcjet-go/redact"
+
+r, err := redact.New(ctx, redact.Options{})
+if err != nil {
+	log.Fatal(err)
+}
+defer r.Close(ctx)
+
+redacted, unredact, err := r.Redact(ctx, "Contact me at test@example.com")
+// redacted == "Contact me at <Redacted email #0>"
+
+// ...send `redacted` to the model, then restore the originals in the reply:
+answer := unredact(modelResponse)
+```
+
+`redact.New` compiles the component once; reuse the `Redactor` across calls.
+Use `Options.Entities` to limit which entity types are redacted, and
+`Options.Detect` / `Options.Replace` to plug in custom detection and
+replacement logic. See the [Redaction docs](https://docs.arcjet.com/redact) for
+more details.
 
 ## Shield WAF
 
