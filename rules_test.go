@@ -99,7 +99,13 @@ func TestDecisionAndErrorHelpers(t *testing.T) {
 		t.Fatal("reason error helper failed")
 	}
 	if !(Decision{Reason: Reason{Bot: &BotReason{Spoofed: true}}}).IsSpoofedBot() {
-		t.Fatal("spoofed bot helper failed")
+		t.Fatal("spoofed bot helper (top-level reason) failed")
+	}
+	if !(Decision{Results: []RuleResult{{State: RuleStateRun, Reason: Reason{Bot: &BotReason{Spoofed: true}}}}}).IsSpoofedBot() {
+		t.Fatal("spoofed bot helper (rule result) failed")
+	}
+	if (Decision{Results: []RuleResult{{State: RuleStateDryRun, Reason: Reason{Bot: &BotReason{Spoofed: true}}}}}).IsSpoofedBot() {
+		t.Fatal("spoofed bot helper should ignore dry-run results")
 	}
 	if !(Decision{Reason: Reason{Bot: &BotReason{Verified: true}}}).IsVerifiedBot() {
 		t.Fatal("verified bot helper (top-level reason) failed")

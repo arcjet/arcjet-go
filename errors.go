@@ -24,6 +24,9 @@ var (
 	ErrAllowDenyConflict = errors.New("allow and deny are mutually exclusive")
 	// ErrInvalidProxy is returned when a trusted proxy IP or CIDR is invalid.
 	ErrInvalidProxy = errors.New("invalid trusted proxy")
+	// ErrInvalidPlatform is returned when Config.Platform is not a recognized
+	// Platform value.
+	ErrInvalidPlatform = errors.New("invalid platform")
 	// ErrInvalidLabel is returned when a Guard label fails validation.
 	ErrInvalidLabel = errors.New("invalid guard label")
 	// ErrInvalidRateLimit is returned when rate-limit options are invalid.

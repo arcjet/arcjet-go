@@ -1,6 +1,7 @@
 package arcjet
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -203,6 +204,66 @@ func TestClientIPFallsBackToRemoteWhenPlatformHeaderMissing(t *testing.T) {
 
 	if got := clientIP(req, nil, platformFlyIo); got != "10.99.0.1" {
 		t.Fatalf("fallback ip = %q, want remote", got)
+	}
+}
+
+func TestPlatformToHostingPlatform(t *testing.T) {
+	tests := []struct {
+		platform Platform
+		want     hostingPlatform
+		ok       bool
+	}{
+		{PlatformFirebase, platformFirebase, true},
+		{PlatformFlyIo, platformFlyIo, true},
+		{PlatformVercel, platformVercel, true},
+		{PlatformRender, platformRender, true},
+		{PlatformCloudflare, platformCloudflare, true},
+		{PlatformRailway, platformRailway, true},
+		{Platform("nope"), platformNone, false},
+		{Platform(""), platformNone, false},
+	}
+	for _, tt := range tests {
+		got, ok := tt.platform.toHostingPlatform()
+		if got != tt.want || ok != tt.ok {
+			t.Fatalf("Platform(%q).toHostingPlatform() = (%d, %t), want (%d, %t)", tt.platform, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestConfigPlatformOverridesEnvDetection(t *testing.T) {
+	// Render is detected from the environment, but the explicit Config.Platform
+	// must win so a Cloudflare-fronted service reads CF-Connecting-IP instead of
+	// Render's True-Client-Ip.
+	t.Setenv("FIREBASE_CONFIG", "")
+	t.Setenv("FLY_APP_NAME", "")
+	t.Setenv("VERCEL", "")
+	t.Setenv("RENDER", "true")
+	t.Setenv("CF_PAGES", "")
+	t.Setenv("RAILWAY_PROJECT_ID", "")
+
+	client, err := NewClient(Config{Key: "ajkey_test", Platform: PlatformCloudflare})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.platform != platformCloudflare {
+		t.Fatalf("client platform = %d, want cloudflare (%d)", client.platform, platformCloudflare)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)
+	req.RemoteAddr = "10.0.0.1:443"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.65")
+	req.Header.Set("True-Client-Ip", "203.0.113.99") // Render header must be ignored
+
+	details := detailsFromRequest(req, client.proxies, client.platform)
+	if details.IP != "203.0.113.65" {
+		t.Fatalf("cloudflare override IP = %q, want 203.0.113.65", details.IP)
+	}
+}
+
+func TestConfigPlatformRejectsUnknownValue(t *testing.T) {
+	_, err := NewClient(Config{Key: "ajkey_test", Platform: Platform("heroku")})
+	if !errors.Is(err, ErrInvalidPlatform) {
+		t.Fatalf("err = %v, want ErrInvalidPlatform", err)
 	}
 }
 

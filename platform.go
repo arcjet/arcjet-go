@@ -7,9 +7,9 @@ import (
 )
 
 // hostingPlatform identifies a managed hosting provider whose proxy headers
-// the SDK can trust without an explicit Config.Proxies entry. Detection
-// mirrors the JS SDK's @arcjet/env package so request IPs are extracted
-// consistently across stacks.
+// the SDK can trust without an explicit Config.Proxies entry. It is set either
+// by environment auto-detection (detectPlatform) or explicitly via
+// Config.Platform.
 type hostingPlatform int
 
 const (
@@ -21,6 +21,44 @@ const (
 	platformCloudflare
 	platformRailway
 )
+
+// Platform names a managed hosting platform whose proxy headers Arcjet can
+// trust to determine the client IP. Set Config.Platform to one of these to
+// select a platform explicitly when its environment isn't auto-detected — most
+// importantly a Go service behind the Cloudflare CDN, which does not set the
+// CF_PAGES variable detectPlatform looks for. The names mirror the platform
+// values accepted by arcjet-js's @arcjet/ip.
+type Platform string
+
+const (
+	PlatformFirebase   Platform = "firebase"
+	PlatformFlyIo      Platform = "fly-io"
+	PlatformVercel     Platform = "vercel"
+	PlatformRender     Platform = "render"
+	PlatformCloudflare Platform = "cloudflare"
+	PlatformRailway    Platform = "railway"
+)
+
+// toHostingPlatform maps a public Platform to its internal value, reporting
+// false when p is not a recognized Platform.
+func (p Platform) toHostingPlatform() (hostingPlatform, bool) {
+	switch p {
+	case PlatformFirebase:
+		return platformFirebase, true
+	case PlatformFlyIo:
+		return platformFlyIo, true
+	case PlatformVercel:
+		return platformVercel, true
+	case PlatformRender:
+		return platformRender, true
+	case PlatformCloudflare:
+		return platformCloudflare, true
+	case PlatformRailway:
+		return platformRailway, true
+	default:
+		return platformNone, false
+	}
+}
 
 // detectPlatform infers the hosting platform from environment variables.
 //

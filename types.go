@@ -266,9 +266,13 @@ func (d Decision) Err() error {
 	return ArcjetError{Message: msg}
 }
 
-// IsSpoofedBot reports whether a bot rule detected a spoofed verified bot.
+// IsSpoofedBot reports whether a bot rule detected a spoofed verified bot — one
+// claiming to be a well-known crawler but originating from an IP outside that
+// crawler's published ranges.
 func (d Decision) IsSpoofedBot() bool {
-	return d.Reason.Bot != nil && d.Reason.Bot.Spoofed
+	return d.anyActiveReason(func(r Reason) bool {
+		return r.Bot != nil && r.Bot.Spoofed
+	})
 }
 
 // IsVerifiedBot reports whether a bot rule confirmed the request came from a

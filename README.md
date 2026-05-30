@@ -1124,6 +1124,26 @@ aj, err := arcjet.NewClient(arcjet.Config{
 })
 ```
 
+### Hosting platform
+
+When deployed on a managed hosting platform, Arcjet reads the client IP from
+that platform's signed headers. Fly.io, Vercel, Render, Firebase, Railway, and
+Cloudflare Pages are auto-detected from their environment variables. If your
+service runs behind a platform that isn't auto-detected — most importantly a Go
+origin behind the **Cloudflare CDN**, which doesn't set `CF_PAGES` — set
+`Config.Platform` explicitly so Arcjet trusts the platform header (e.g.
+`CF-Connecting-IP`) instead of guessing:
+
+```go
+aj, err := arcjet.NewClient(arcjet.Config{
+	Key:      arcjetKey,
+	Rules:    []arcjet.Rule{...},
+	Platform: arcjet.PlatformCloudflare,
+})
+```
+
+`NewClient` returns `ErrInvalidPlatform` for an unrecognized value.
+
 ### `Protect` parameter reference
 
 All options are optional and passed alongside the `*http.Request`:

@@ -50,6 +50,11 @@ type Config struct {
 	SDKVersion string
 	// Proxies are trusted proxy IPs or CIDRs used to trust X-Forwarded-For.
 	Proxies []string
+	// Platform selects a managed hosting platform explicitly, overriding the
+	// environment auto-detection. Set it when running behind a platform whose
+	// environment variables aren't present — most importantly a Go service
+	// behind the Cloudflare CDN. Leave empty to auto-detect.
+	Platform Platform
 	// SensitiveInfoDetect, if set, classifies tokens the bundled analyzer
 	// didn't recognise. Shared across every SensitiveInfo rule on this
 	// Client — the same callback model as arcjet-py's
@@ -111,6 +116,14 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	platform := detectPlatform(os.Getenv)
+	if cfg.Platform != "" {
+		p, ok := cfg.Platform.toHostingPlatform()
+		if !ok {
+			return nil, fmt.Errorf("arcjet: %w: %q", ErrInvalidPlatform, cfg.Platform)
+		}
+		platform = p
+	}
 	builtRules, err := buildRequestRules(cfg.Rules)
 	if err != nil {
 		return nil, err
@@ -131,7 +144,7 @@ func NewClient(cfg Config) (*Client, error) {
 		sdkVersion:      version,
 		userAgent:       ua,
 		proxies:         proxies,
-		platform:        detectPlatform(os.Getenv),
+		platform:        platform,
 		decideClient:    decidev1alpha1connect.NewDecideServiceClient(httpClient, baseURL),
 		local:           local,
 		cache:           newDecisionCache(),
