@@ -2,27 +2,22 @@ package arcjet
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"maps"
-	"strings"
 	"sync"
+	"time"
 
-	localbot "github.com/arcjet/arcjet-go/internal/local/bot"
-	localemail "github.com/arcjet/arcjet-go/internal/local/emailvalidator"
-	localfilter "github.com/arcjet/arcjet-go/internal/local/filter"
+	"github.com/arcjet/arcjet-go/internal/local/jsreq"
 	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
 )
 
 // Local WebAssembly evaluation.
 //
-// This package matches the pattern used by the @arcjet/analyze module in
-// arcjet-js: a compiled Wasm factory is created once per kind (bot, email,
-// filter) and reused across requests, but a fresh module instance is created
-// for every evaluation and closed when the call returns. The factory cache
-// amortizes compilation; per-call instantiation gives clean isolation between
-// concurrent requests at acceptable cost on wazero. See
-// https://github.com/arcjet/arcjet-js/tree/main/analyze for the reference
-// implementation.
+// Mirrors arcjet-py and arcjet-js: the bindings_js_req WebAssembly
+// component is the single source of truth for bot detection, email
+// validation, filter matching, and sensitive-info detection. The factory
+// is compiled once at client construction time and instances are
+// created per request for clean concurrent isolation.
 
 type localDecision struct {
 	decision *decidev1.Decision
@@ -34,6 +29,7 @@ const (
 	localKindEmail localKind = 1 << iota
 	localKindBot
 	localKindFilter
+	localKindSensitiveInfo
 )
 
 func (d *localDecision) liveDeny() bool {
@@ -41,50 +37,69 @@ func (d *localDecision) liveDeny() bool {
 }
 
 type localEvaluator struct {
-	emailMu      sync.Mutex
-	emailFactory *localemail.EmailValidatorFactory
-	emailErr     error
-
-	botMu      sync.Mutex
-	botFactory *localbot.BotFactory
-	botErr     error
-
-	filterMu      sync.Mutex
-	filterFactory *localfilter.FilterFactory
-	filterErr     error
+	mu        sync.Mutex
+	factory   *jsreq.JsReqFactory
+	closed    bool
+	callbacks jsreq.Callbacks
 }
 
-func newLocalEvaluator(ctx context.Context, rules []Rule) (*localEvaluator, error) {
-	evaluator := &localEvaluator{}
-	if err := evaluator.warm(ctx, rules); err != nil {
-		return nil, err
-	}
-	return evaluator, nil
-}
-
-func (e *localEvaluator) warm(ctx context.Context, rules []Rule) error {
+// newLocalEvaluator returns an evaluator and eagerly compiles the shared
+// js_req factory when any rule needs local evaluation. The Guard path
+// uses `newLazyLocalEvaluator` instead, since Guard rules arrive
+// per-request rather than at client construction.
+func newLocalEvaluator(ctx context.Context, rules []Rule, detect SensitiveInfoDetect) (*localEvaluator, error) {
+	evaluator := newLazyLocalEvaluator(detect)
 	var kinds localKind
 	for _, rule := range rules {
 		if rule != nil {
 			kinds |= rule.localKind()
 		}
 	}
-	if kinds&localKindEmail != 0 {
-		if _, err := e.email(ctx); err != nil {
-			return err
-		}
+	if kinds == 0 {
+		return evaluator, nil
 	}
-	if kinds&localKindBot != 0 {
-		if _, err := e.bot(ctx); err != nil {
-			return err
-		}
+	if _, err := evaluator.factoryLazy(ctx); err != nil {
+		return nil, err
 	}
-	if kinds&localKindFilter != 0 {
-		if _, err := e.filter(ctx); err != nil {
-			return err
-		}
+	return evaluator, nil
+}
+
+// newLazyLocalEvaluator returns an evaluator that defers wasm compilation
+// until the first call that needs it. Used by GuardClient, which doesn't
+// see its rules until each Guard call.
+func newLazyLocalEvaluator(detect SensitiveInfoDetect) *localEvaluator {
+	return &localEvaluator{callbacks: jsreqCallbacks(detect)}
+}
+
+// hasCustomDetect reports whether a user-supplied sensitive-info detect
+// callback is wired. The wasm config uses this to flip
+// `SkipCustomDetect` — leaving it true saves cycles when there's
+// nothing to call.
+func (e *localEvaluator) hasCustomDetect() bool {
+	return e.callbacks.DetectSensitiveInfo != nil
+}
+
+// jsreqCallbacks wraps the public SensitiveInfoDetect callback in the
+// jsreq-shaped form. Empty EntityType slots map to nil (unclassified);
+// any other value maps to the matching built-in variant or a
+// `SensitiveInfoEntityCustom{Value: ...}` for custom labels.
+func jsreqCallbacks(detect SensitiveInfoDetect) jsreq.Callbacks {
+	if detect == nil {
+		return jsreq.Callbacks{}
 	}
-	return nil
+	return jsreq.Callbacks{
+		DetectSensitiveInfo: func(ctx context.Context, tokens []string) []jsreq.SensitiveInfoEntity {
+			classified := detect(ctx, tokens)
+			out := make([]jsreq.SensitiveInfoEntity, len(tokens))
+			for i := 0; i < len(tokens) && i < len(classified); i++ {
+				if classified[i] == "" {
+					continue
+				}
+				out[i] = sensitiveInfoEntityWire(classified[i])
+			}
+			return out
+		},
+	}
 }
 
 func (e *localEvaluator) validateEmail(ctx context.Context, opts EmailOptions, details ProtectDetails, protectOpts ProtectOptions) (*localDecision, error) {
@@ -95,47 +110,35 @@ func (e *localEvaluator) validateEmail(ctx context.Context, opts EmailOptions, d
 	if email == "" {
 		return nil, nil
 	}
-	factory, err := e.email(ctx)
+	inst, release, err := e.instance(ctx)
 	if err != nil {
 		return nil, err
 	}
-	inst, err := factory.Instantiate(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer inst.Close(ctx)
+	defer release()
 
-	config := emailConfig(opts)
-	result, err := inst.IsValidEmail(ctx, email, config)
+	result, err := inst.IsValidEmail(ctx, email, emailConfig(opts))
 	if err != nil {
 		return nil, err
 	}
-	var decision struct {
-		Decision string   `json:"decision"`
-		Blocked  []string `json:"blocked"`
-	}
-	if err := json.Unmarshal([]byte(result), &decision); err != nil {
-		return nil, err
-	}
-	if !strings.EqualFold(decision.Decision, "Denied") {
+	// `Validity` is a sealed Go enum: `Valid` and `Invalid` are typed
+	// constants of an unexported int type that both satisfy
+	// `EmailValidity`. Comparing against the constants is the only way
+	// to discriminate.
+	if result.Validity != jsreq.Invalid {
 		return nil, nil
 	}
 	reason := &decidev1.Reason{Reason: &decidev1.Reason_Email{
-		Email: &decidev1.EmailReason{EmailTypes: emailTypes(decision.Blocked)},
+		Email: &decidev1.EmailReason{EmailTypes: emailTypes(result.Blocked)},
 	}}
 	return localDeny("local_email", opts.Mode, 0, reason), nil
 }
 
 func (e *localEvaluator) detectBot(ctx context.Context, opts BotOptions, details ProtectDetails) (*localDecision, error) {
-	factory, err := e.bot(ctx)
+	inst, release, err := e.instance(ctx)
 	if err != nil {
 		return nil, err
 	}
-	inst, err := factory.Instantiate(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer inst.Close(ctx)
+	defer release()
 
 	request, err := jsonMarshal(localBotRequest(details))
 	if err != nil {
@@ -143,11 +146,11 @@ func (e *localEvaluator) detectBot(ctx context.Context, opts BotOptions, details
 	}
 	var config any
 	if len(opts.Deny) > 0 {
-		config = localbot.DeniedBotConfig{Entities: botEntities(opts.Deny)}
+		config = jsreq.DeniedBotConfig{Entities: stringSlice(opts.Deny)}
 	} else {
-		config = localbot.AllowedBotConfig{Entities: botEntities(opts.Allow)}
+		config = jsreq.AllowedBotConfig{Entities: stringSlice(opts.Allow)}
 	}
-	result, err := inst.Detect(ctx, string(request), config)
+	result, err := inst.DetectBot(ctx, string(request), config)
 	if err != nil {
 		return nil, err
 	}
@@ -169,15 +172,11 @@ func (e *localEvaluator) matchFilter(ctx context.Context, opts FilterOptions, de
 	if len(opts.Allow) == 0 && len(opts.Deny) == 0 {
 		return nil, nil
 	}
-	factory, err := e.filter(ctx)
+	inst, release, err := e.instance(ctx)
 	if err != nil {
 		return nil, err
 	}
-	inst, err := factory.Instantiate(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer inst.Close(ctx)
+	defer release()
 
 	request, err := jsonMarshal(localRequest(details))
 	if err != nil {
@@ -212,6 +211,51 @@ func (e *localEvaluator) matchFilter(ctx context.Context, opts FilterOptions, de
 	return localDeny("local_filter", opts.Mode, 60, reason), nil
 }
 
+func (e *localEvaluator) detectSensitiveInfo(ctx context.Context, opts SensitiveInfoOptions, _ ProtectDetails, protectOpts ProtectOptions) (*localDecision, error) {
+	if protectOpts.SensitiveInfoValue == "" {
+		return nil, nil
+	}
+	outcome, err := e.scanSensitiveInfo(ctx, protectOpts.SensitiveInfoValue, opts.Allow, opts.Deny)
+	if err != nil {
+		return nil, err
+	}
+	if len(outcome.Denied) == 0 {
+		return nil, nil
+	}
+	reason := &decidev1.Reason{Reason: &decidev1.Reason_SensitiveInfo{
+		SensitiveInfo: &decidev1.SensitiveInfoReason{
+			Allowed: identifiedEntitiesWire(outcome.Allowed),
+			Denied:  identifiedEntitiesWire(outcome.Denied),
+		},
+	}}
+	return localDeny("local_sensitive_info", opts.Mode, 0, reason), nil
+}
+
+// sensitiveInfoOutcome is the shared shape both the HTTP-path
+// `SensitiveInfo` rule and the Guard `GuardSensitiveInfoRule.Text`
+// callback use after running the wasm analyzer.
+type sensitiveInfoOutcome struct {
+	Allowed   []jsreq.DetectedSensitiveInfoEntity
+	Denied    []jsreq.DetectedSensitiveInfoEntity
+	ElapsedMs uint64
+}
+
+func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, allow, deny []EntityType) (sensitiveInfoOutcome, error) {
+	inst, release, err := e.instance(ctx)
+	if err != nil {
+		return sensitiveInfoOutcome{}, err
+	}
+	defer release()
+
+	start := time.Now()
+	result := inst.DetectSensitiveInfo(ctx, text, sensitiveInfoConfig(allow, deny, e.hasCustomDetect()))
+	return sensitiveInfoOutcome{
+		Allowed:   result.Allowed,
+		Denied:    result.Denied,
+		ElapsedMs: safeUint64FromInt64(time.Since(start).Milliseconds()),
+	}, nil
+}
+
 func localDeny(ruleID string, mode Mode, ttl uint32, reason *decidev1.Reason) *localDecision {
 	state := decidev1.RuleState_RULE_STATE_RUN
 	conclusion := decidev1.Conclusion_CONCLUSION_DENY
@@ -236,84 +280,55 @@ func localDeny(ruleID string, mode Mode, ttl uint32, reason *decidev1.Reason) *l
 	}}
 }
 
-func (e *localEvaluator) email(ctx context.Context) (*localemail.EmailValidatorFactory, error) {
-	e.emailMu.Lock()
-	defer e.emailMu.Unlock()
-	if e.emailFactory != nil || e.emailErr != nil {
-		return e.emailFactory, e.emailErr
+// instance returns a fresh wazero instance plus a release callback. Callers
+// `defer release()` to drop the instance — the underlying compiled module
+// stays cached on the evaluator. Instantiation runs outside the lock so
+// concurrent requests don't serialize on it.
+func (e *localEvaluator) instance(ctx context.Context) (*jsreq.JsReqInstance, func(), error) {
+	factory, err := e.factoryLazy(ctx)
+	if err != nil {
+		return nil, func() {}, err
 	}
-	e.emailFactory, e.emailErr = localemail.NewEmailValidatorFactory(ctx, failOpenEmailOverrides{})
-	return e.emailFactory, e.emailErr
+	inst, err := factory.Instantiate(ctx)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return inst, func() { inst.Close(ctx) }, nil
 }
 
-func (e *localEvaluator) bot(ctx context.Context) (*localbot.BotFactory, error) {
-	e.botMu.Lock()
-	defer e.botMu.Unlock()
-	if e.botFactory != nil || e.botErr != nil {
-		return e.botFactory, e.botErr
+// factoryLazy returns the shared js_req factory, compiling it on first
+// access. After `close` has run, returns ErrWasmClosed so post-teardown
+// requests don't silently reopen the module.
+func (e *localEvaluator) factoryLazy(ctx context.Context) (*jsreq.JsReqFactory, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return nil, fmt.Errorf("arcjet: %w", ErrWasmClosed)
 	}
-	e.botFactory, e.botErr = localbot.NewBotFactory(ctx, noopBotIdentifier{}, noopBotVerifier{})
-	return e.botFactory, e.botErr
-}
-
-func (e *localEvaluator) filter(ctx context.Context) (*localfilter.FilterFactory, error) {
-	e.filterMu.Lock()
-	defer e.filterMu.Unlock()
-	if e.filterFactory != nil || e.filterErr != nil {
-		return e.filterFactory, e.filterErr
+	if e.factory != nil {
+		return e.factory, nil
 	}
-	e.filterFactory, e.filterErr = localfilter.NewFilterFactory(ctx, noopFilterOverrides{})
-	return e.filterFactory, e.filterErr
+	factory, err := jsreq.NewFactory(ctx, e.callbacks)
+	if err != nil {
+		return nil, err
+	}
+	e.factory = factory
+	return factory, nil
 }
 
 func (e *localEvaluator) close(ctx context.Context) error {
 	if e == nil {
 		return nil
 	}
-	e.emailMu.Lock()
-	if e.emailFactory != nil {
-		e.emailFactory.Close(ctx)
-		e.emailFactory = nil
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closed = true
+	if e.factory != nil {
+		e.factory.Close(ctx)
+		e.factory = nil
 	}
-	e.emailMu.Unlock()
-
-	e.botMu.Lock()
-	if e.botFactory != nil {
-		e.botFactory.Close(ctx)
-		e.botFactory = nil
-	}
-	e.botMu.Unlock()
-
-	e.filterMu.Lock()
-	if e.filterFactory != nil {
-		e.filterFactory.Close(ctx)
-		e.filterFactory = nil
-	}
-	e.filterMu.Unlock()
-
 	return nil
 }
-
-type failOpenEmailOverrides struct{}
-
-func (failOpenEmailOverrides) IsFreeEmail(context.Context, string) bool       { return false }
-func (failOpenEmailOverrides) IsDisposableEmail(context.Context, string) bool { return false }
-func (failOpenEmailOverrides) HasMxRecords(context.Context, string) bool      { return true }
-func (failOpenEmailOverrides) HasGravatar(context.Context, string) bool       { return false }
-
-type noopBotIdentifier struct{}
-
-func (noopBotIdentifier) Detect(context.Context, string) (string, bool) { return "", false }
-
-type noopBotVerifier struct{}
-
-func (noopBotVerifier) Verify(context.Context, string, string) localbot.ValidatorResponse {
-	return localbot.Unverifiable
-}
-
-type noopFilterOverrides struct{}
-
-func (noopFilterOverrides) IpLookup(context.Context, string) (string, bool) { return "", false }
 
 func localRequest(details ProtectDetails) map[string]any {
 	return cleanMapAny(map[string]any{
@@ -354,7 +369,7 @@ func cleanMapAny(in map[string]any) map[string]any {
 	return out
 }
 
-func emailConfig(opts EmailOptions) any {
+func emailConfig(opts EmailOptions) jsreq.EmailValidationConfig {
 	requireTLD := true
 	if opts.RequireTopLevelDomain != nil {
 		requireTLD = *opts.RequireTopLevelDomain
@@ -364,20 +379,38 @@ func emailConfig(opts EmailOptions) any {
 		allowDomainLiteral = *opts.AllowDomainLiteral
 	}
 	if len(opts.Allow) > 0 {
-		return localemail.AllowEmailValidationConfig{
+		return jsreq.AllowEmailValidationConfig{
 			RequireTopLevelDomain: requireTLD,
 			AllowDomainLiteral:    allowDomainLiteral,
-			Allow:                 emailWire(opts.Allow),
+			Allow:                 stringSlice(opts.Allow),
 		}
 	}
-	return localemail.DenyEmailValidationConfig{
+	return jsreq.DenyEmailValidationConfig{
 		RequireTopLevelDomain: requireTLD,
 		AllowDomainLiteral:    allowDomainLiteral,
-		Deny:                  emailWire(opts.Deny),
+		Deny:                  stringSlice(opts.Deny),
 	}
 }
 
-func emailWire(values []EmailType) []string {
+func sensitiveInfoConfig(allow, deny []EntityType, customDetect bool) jsreq.SensitiveInfoConfig {
+	// Allow and Deny are mutually exclusive (validated upstream). An empty
+	// deny list — the default — means "deny nothing", so the deny variant
+	// is the right shape whenever Allow is unset.
+	var entities jsreq.SensitiveInfoEntities = jsreq.SensitiveInfoEntitiesDeny{
+		Value: sensitiveInfoEntitiesWire(deny),
+	}
+	if len(allow) > 0 {
+		entities = jsreq.SensitiveInfoEntitiesAllow{Value: sensitiveInfoEntitiesWire(allow)}
+	}
+	return jsreq.SensitiveInfoConfig{
+		Entities:         entities,
+		SkipCustomDetect: !customDetect,
+	}
+}
+
+// stringSlice converts a slice of a string-based named type (EmailType,
+// EntityType, BotEntity, …) to []string, returning nil for empty input.
+func stringSlice[T ~string](values []T) []string {
 	if len(values) == 0 {
 		return nil
 	}
@@ -391,7 +424,7 @@ func emailWire(values []EmailType) []string {
 func emailTypes(values []string) []decidev1.EmailType {
 	out := make([]decidev1.EmailType, 0, len(values))
 	for _, value := range values {
-		key := "EMAIL_TYPE_" + strings.ToUpper(value)
+		key := "EMAIL_TYPE_" + value
 		if enum, ok := decidev1.EmailType_value[key]; ok {
 			out = append(out, decidev1.EmailType(enum))
 		}
@@ -399,9 +432,83 @@ func emailTypes(values []string) []decidev1.EmailType {
 	return out
 }
 
-func botEntities(values []string) []localbot.BotEntity {
-	// localbot.BotEntity is a string alias.
-	out := make([]localbot.BotEntity, len(values))
-	copy(out, values)
+// sensitiveInfoEntitiesWire converts the SDK's EntityType list into the
+// variant shape the wasm component expects. Custom labels fall through to
+// `SensitiveInfoEntityCustom{Value: ...}`.
+func sensitiveInfoEntitiesWire(values []EntityType) []jsreq.SensitiveInfoEntity {
+	out := make([]jsreq.SensitiveInfoEntity, len(values))
+	for i, v := range values {
+		out[i] = sensitiveInfoEntityWire(v)
+	}
 	return out
+}
+
+func sensitiveInfoEntityWire(v EntityType) jsreq.SensitiveInfoEntity {
+	switch v {
+	case SensitiveInfoEmail:
+		return jsreq.SensitiveInfoEntityEmail{}
+	case SensitiveInfoPhoneNumber:
+		return jsreq.SensitiveInfoEntityPhoneNumber{}
+	case SensitiveInfoIPAddress:
+		return jsreq.SensitiveInfoEntityIpAddress{}
+	case SensitiveInfoCreditCardNumber:
+		return jsreq.SensitiveInfoEntityCreditCardNumber{}
+	default:
+		return jsreq.SensitiveInfoEntityCustom{Value: string(v)}
+	}
+}
+
+func identifiedEntitiesWire(entities []jsreq.DetectedSensitiveInfoEntity) []*decidev1.IdentifiedEntity {
+	if len(entities) == 0 {
+		return nil
+	}
+	out := make([]*decidev1.IdentifiedEntity, len(entities))
+	for i, e := range entities {
+		out[i] = &decidev1.IdentifiedEntity{
+			Start:          e.Start,
+			End:            e.End,
+			IdentifiedType: identifiedEntityType(e.IdentifiedType),
+		}
+	}
+	return out
+}
+
+// identifiedEntityTypes projects detected entities down to their type
+// names, deduplicating in encounter order. Used by Guard submissions
+// which carry only the type list, not start/end indices.
+func identifiedEntityTypes(entities []jsreq.DetectedSensitiveInfoEntity) []string {
+	if len(entities) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(entities))
+	out := make([]string, 0, len(entities))
+	for _, e := range entities {
+		t := identifiedEntityType(e.IdentifiedType)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+func identifiedEntityType(t jsreq.SensitiveInfoEntity) string {
+	switch v := t.(type) {
+	case jsreq.SensitiveInfoEntityEmail:
+		return string(SensitiveInfoEmail)
+	case jsreq.SensitiveInfoEntityPhoneNumber:
+		return string(SensitiveInfoPhoneNumber)
+	case jsreq.SensitiveInfoEntityIpAddress:
+		return string(SensitiveInfoIPAddress)
+	case jsreq.SensitiveInfoEntityCreditCardNumber:
+		return string(SensitiveInfoCreditCardNumber)
+	case jsreq.SensitiveInfoEntityCustom:
+		return v.Value
+	default:
+		return ""
+	}
 }

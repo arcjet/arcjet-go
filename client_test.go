@@ -580,10 +580,10 @@ func TestReportRedactsSensitiveInputsButDecideDoesNot(t *testing.T) {
 	})
 }
 
-func TestProtectDoesNotForwardSensitiveInfoValueWhileNoop(t *testing.T) {
-	// Until the sensitive-info analyzer ships, WithSensitiveInfoValue must
-	// not push the user-supplied text onto the Decide RPC. Otherwise we
-	// would leak raw PII for no benefit — there is nothing to analyze with.
+func TestProtectDoesNotForwardSensitiveInfoValueToServer(t *testing.T) {
+	// Sensitive-info scanning runs locally via the bundled wasm analyzer;
+	// the raw text passed to WithSensitiveInfoValue must never appear on
+	// the Decide RPC wire (only the locally-computed decision does).
 	handler := &testDecideHandler{}
 	path, h := decidev1alpha1connect.NewDecideServiceHandler(handler)
 	mux := http.NewServeMux()
@@ -611,13 +611,16 @@ func TestProtectDoesNotForwardSensitiveInfoValueWhileNoop(t *testing.T) {
 	}
 	extra := handler.seen.GetDetails().GetExtra()
 	if v, ok := extra["sensitiveInfoValue"]; ok {
-		t.Errorf("sensitiveInfoValue must not be sent while noop, got %q", v)
+		t.Errorf("sensitiveInfoValue must not be sent to the server, got %q", v)
 	}
 }
 
-func TestSensitiveInfoRuleProducesNoWirePayload(t *testing.T) {
-	// SensitiveInfo is currently a noop: it should not appear in the
-	// per-Client builtRules slice, so the Decide RPC sees no such rule.
+func TestSensitiveInfoRulePublishesWireConfig(t *testing.T) {
+	// The local analyzer makes the decision, but the rule config still
+	// needs to reach Arcjet so the dashboard/report path knows how the
+	// rule was set. Mode + allow/deny are forwarded; the scanned text
+	// stays in the SDK (asserted by
+	// TestProtectDoesNotForwardSensitiveInfoValueToServer).
 	client, err := NewClient(Config{
 		Key: "ajkey_test",
 		Rules: []Rule{
@@ -631,11 +634,25 @@ func TestSensitiveInfoRuleProducesNoWirePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(client.builtRules); got != 1 {
-		t.Fatalf("expected only Shield in builtRules, got %d entries", got)
+	if got := len(client.builtRules); got != 2 {
+		t.Fatalf("expected Shield + SensitiveInfo in builtRules, got %d entries", got)
 	}
-	if client.builtRules[0].GetSensitiveInfo() != nil {
-		t.Errorf("builtRules unexpectedly contains a sensitiveInfo wire entry")
+	var sensitive *decidev1.SensitiveInfoRule
+	for _, r := range client.builtRules {
+		if s := r.GetSensitiveInfo(); s != nil {
+			sensitive = s
+			break
+		}
+	}
+	if sensitive == nil {
+		t.Fatal("expected a sensitiveInfo wire entry in builtRules")
+	}
+	if sensitive.GetMode() != decidev1.Mode_MODE_LIVE {
+		t.Errorf("wire mode = %v, want MODE_LIVE", sensitive.GetMode())
+	}
+	deny := sensitive.GetDeny()
+	if len(deny) != 1 || deny[0] != string(SensitiveInfoEmail) {
+		t.Errorf("wire deny = %v, want [%s]", deny, SensitiveInfoEmail)
 	}
 }
 

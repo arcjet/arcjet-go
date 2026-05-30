@@ -243,29 +243,42 @@ type SensitiveInfoOptions struct {
 	Deny []EntityType
 }
 
-// SensitiveInfo creates a sensitive information detection rule.
+// SensitiveInfo creates a sensitive information detection rule. The text
+// to scan comes from [WithSensitiveInfoValue] on each Protect call.
 //
-// Currently a no-op: this SDK does not yet bundle the WebAssembly analyzer
-// for sensitive-info detection (the analyzer in @arcjet/analyze-wasm used by
-// the JavaScript SDK has not been ported to Go yet). The function and types
-// are kept stable so calling code does not need to change once the analyzer
-// lands; until then, the rule contributes nothing to the wire request and
-// has no effect on the decision.
-//
-// Mode, Allow, and Deny are validated for shape so configuration mistakes
-// still surface at NewClient time.
+// Detection runs locally via the bundled WebAssembly analyzer (the same
+// `arcjet_analyze_js_req` component used by the JavaScript and Python
+// SDKs) — the text never leaves the SDK.
 func SensitiveInfo(opts SensitiveInfoOptions) Rule {
-	return ruleFunc{build: func() (map[string]any, error) {
-		if err := validateMode(opts.Mode); err != nil {
-			return nil, err
-		}
-		if len(opts.Allow) > 0 && len(opts.Deny) > 0 {
-			return nil, fmt.Errorf("arcjet: sensitive info: %w", ErrAllowDenyConflict)
-		}
-		// Returning a nil wire map signals buildRequestRule to skip this
-		// rule. See the godoc above for why.
-		return nil, nil
-	}}
+	return ruleFunc{
+		build: func() (map[string]any, error) {
+			if err := validateSensitiveInfoOptions(opts); err != nil {
+				return nil, err
+			}
+			return map[string]any{"sensitiveInfo": cleanMap(map[string]any{
+				"mode":  requestMode(opts.Mode),
+				"allow": stringSlice(opts.Allow),
+				"deny":  stringSlice(opts.Deny),
+			})}, nil
+		},
+		local: func(ctx context.Context, details ProtectDetails, options ProtectOptions, evaluator *localEvaluator) (*localDecision, error) {
+			if err := validateSensitiveInfoOptions(opts); err != nil {
+				return nil, err
+			}
+			return evaluator.detectSensitiveInfo(ctx, opts, details, options)
+		},
+		kind: localKindSensitiveInfo,
+	}
+}
+
+func validateSensitiveInfoOptions(opts SensitiveInfoOptions) error {
+	if err := validateMode(opts.Mode); err != nil {
+		return err
+	}
+	if len(opts.Allow) > 0 && len(opts.Deny) > 0 {
+		return fmt.Errorf("arcjet: sensitive info: %w", ErrAllowDenyConflict)
+	}
+	return nil
 }
 
 // PromptInjectionOptions configures prompt injection detection.
