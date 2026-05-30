@@ -50,7 +50,20 @@ type Config struct {
 	SDKVersion string
 	// Proxies are trusted proxy IPs or CIDRs used to trust X-Forwarded-For.
 	Proxies []string
+	// SensitiveInfoDetect, if set, classifies tokens the bundled analyzer
+	// didn't recognise. Shared across every SensitiveInfo rule on this
+	// Client — the same callback model as arcjet-py's
+	// `ImportCallbacks.sensitive_info_detect` and arcjet-js's analyzer
+	// `detect` hook.
+	SensitiveInfoDetect SensitiveInfoDetect
 }
+
+// SensitiveInfoDetect classifies tokens that the bundled wasm analyzer
+// didn't recognise. The returned slice must have one entry per input
+// token; an empty EntityType leaves the token unclassified, otherwise the
+// value is recorded — either a built-in constant (SensitiveInfoEmail,
+// SensitiveInfoPhoneNumber, …) or any custom label.
+type SensitiveInfoDetect func(ctx context.Context, tokens []string) []EntityType
 
 // Client evaluates HTTP requests with Arcjet request protection rules.
 //
@@ -106,7 +119,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	local, err := newLocalEvaluator(context.Background(), cfg.Rules)
+	local, err := newLocalEvaluator(context.Background(), cfg.Rules, cfg.SensitiveInfoDetect)
 	if err != nil {
 		return nil, err
 	}

@@ -37,17 +37,18 @@ func (d *localDecision) liveDeny() bool {
 }
 
 type localEvaluator struct {
-	mu      sync.Mutex
-	factory *jsreq.JsReqFactory
-	closed  bool
+	mu        sync.Mutex
+	factory   *jsreq.JsReqFactory
+	closed    bool
+	callbacks jsreq.Callbacks
 }
 
 // newLocalEvaluator returns an evaluator and eagerly compiles the shared
 // js_req factory when any rule needs local evaluation. The Guard path
 // uses `newLazyLocalEvaluator` instead, since Guard rules arrive
 // per-request rather than at client construction.
-func newLocalEvaluator(ctx context.Context, rules []Rule) (*localEvaluator, error) {
-	evaluator := newLazyLocalEvaluator()
+func newLocalEvaluator(ctx context.Context, rules []Rule, detect SensitiveInfoDetect) (*localEvaluator, error) {
+	evaluator := newLazyLocalEvaluator(detect)
 	var kinds localKind
 	for _, rule := range rules {
 		if rule != nil {
@@ -66,7 +67,40 @@ func newLocalEvaluator(ctx context.Context, rules []Rule) (*localEvaluator, erro
 // newLazyLocalEvaluator returns an evaluator that defers wasm compilation
 // until the first call that needs it. Used by GuardClient, which doesn't
 // see its rules until each Guard call.
-func newLazyLocalEvaluator() *localEvaluator { return &localEvaluator{} }
+func newLazyLocalEvaluator(detect SensitiveInfoDetect) *localEvaluator {
+	return &localEvaluator{callbacks: jsreqCallbacks(detect)}
+}
+
+// hasCustomDetect reports whether a user-supplied sensitive-info detect
+// callback is wired. The wasm config uses this to flip
+// `SkipCustomDetect` — leaving it true saves cycles when there's
+// nothing to call.
+func (e *localEvaluator) hasCustomDetect() bool {
+	return e.callbacks.DetectSensitiveInfo != nil
+}
+
+// jsreqCallbacks wraps the public SensitiveInfoDetect callback in the
+// jsreq-shaped form. Empty EntityType slots map to nil (unclassified);
+// any other value maps to the matching built-in variant or a
+// `SensitiveInfoEntityCustom{Value: ...}` for custom labels.
+func jsreqCallbacks(detect SensitiveInfoDetect) jsreq.Callbacks {
+	if detect == nil {
+		return jsreq.Callbacks{}
+	}
+	return jsreq.Callbacks{
+		DetectSensitiveInfo: func(ctx context.Context, tokens []string) []jsreq.SensitiveInfoEntity {
+			classified := detect(ctx, tokens)
+			out := make([]jsreq.SensitiveInfoEntity, len(tokens))
+			for i := 0; i < len(tokens) && i < len(classified); i++ {
+				if classified[i] == "" {
+					continue
+				}
+				out[i] = sensitiveInfoEntityWire(classified[i])
+			}
+			return out
+		},
+	}
+}
 
 func (e *localEvaluator) validateEmail(ctx context.Context, opts EmailOptions, details ProtectDetails, protectOpts ProtectOptions) (*localDecision, error) {
 	email := details.Email
@@ -214,7 +248,7 @@ func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, all
 	defer release()
 
 	start := time.Now()
-	result := inst.DetectSensitiveInfo(ctx, text, sensitiveInfoConfig(allow, deny))
+	result := inst.DetectSensitiveInfo(ctx, text, sensitiveInfoConfig(allow, deny, e.hasCustomDetect()))
 	return sensitiveInfoOutcome{
 		Allowed:   result.Allowed,
 		Denied:    result.Denied,
@@ -274,7 +308,7 @@ func (e *localEvaluator) factoryLazy(ctx context.Context) (*jsreq.JsReqFactory, 
 	if e.factory != nil {
 		return e.factory, nil
 	}
-	factory, err := jsreq.NewFactory(ctx, jsreq.Callbacks{})
+	factory, err := jsreq.NewFactory(ctx, e.callbacks)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +392,7 @@ func emailConfig(opts EmailOptions) jsreq.EmailValidationConfig {
 	}
 }
 
-func sensitiveInfoConfig(allow, deny []EntityType) jsreq.SensitiveInfoConfig {
+func sensitiveInfoConfig(allow, deny []EntityType, customDetect bool) jsreq.SensitiveInfoConfig {
 	// Allow and Deny are mutually exclusive (validated upstream). An empty
 	// deny list — the default — means "deny nothing", so the deny variant
 	// is the right shape whenever Allow is unset.
@@ -370,7 +404,7 @@ func sensitiveInfoConfig(allow, deny []EntityType) jsreq.SensitiveInfoConfig {
 	}
 	return jsreq.SensitiveInfoConfig{
 		Entities:         entities,
-		SkipCustomDetect: true,
+		SkipCustomDetect: !customDetect,
 	}
 }
 

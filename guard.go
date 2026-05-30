@@ -28,6 +28,10 @@ type GuardConfig struct {
 	BaseURL string
 	// SDKVersion overrides the version reported to Arcjet.
 	SDKVersion string
+	// SensitiveInfoDetect, if set, classifies tokens the bundled analyzer
+	// didn't recognise. Shared across every GuardSensitiveInfo rule on
+	// this client.
+	SensitiveInfoDetect SensitiveInfoDetect
 }
 
 // GuardClient evaluates non-HTTP inputs such as tool calls, jobs, and queues.
@@ -69,7 +73,7 @@ func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 		guardClient: decidev2connect.NewDecideServiceClient(httpClient, baseURL),
 		// Lazy: only Guard rules that evaluate locally (today just
 		// sensitive info) trigger wasm compilation.
-		local: newLazyLocalEvaluator(),
+		local: newLazyLocalEvaluator(cfg.SensitiveInfoDetect),
 	}, nil
 }
 
