@@ -1,0 +1,90 @@
+name: Wasm codegen
+
+# Verifies the committed gravity bindings (internal/local/*/bindings.go) and the
+# vendored .wasm modules are in sync — i.e. regenerating from the vendored .wasm
+# produces no diff. The Test job's TestVendoredWasmRetainsComponentTypeSection
+# only catches a stripped .wasm; this catches full bindings drift (hand-edited
+# bindings.go, or a .wasm updated without regenerating). See #8.
+#
+# Scoped to wasm-relevant paths because it builds the pinned gravity (a Rust
+# tool) from source, which is slower than the Go jobs.
+
+on:
+  merge_group:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "internal/local/**"
+      - "mise.toml"
+      - ".github/workflows/wasm-codegen.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codegen-up-to-date:
+    name: Wasm codegen up-to-date
+    runs-on: ubuntu-24.04
+    env:
+      # Trust the repo's mise.toml non-interactively so `mise install` / the
+      # `mise exec` in rebuild-bindings.sh load the pinned gravity tool.
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          disable-sudo: true
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            codeload.github.com:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            storage.googleapis.com:443
+            crates.io:443
+            index.crates.io:443
+            static.crates.io:443
+            mise.jdx.dev:443
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install pinned tooling (gravity)
+        # Builds the cargo-pinned gravity from mise.toml and caches it across runs.
+        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Verify wasm bindings are up-to-date
+        # rebuild-bindings.sh regenerates internal/local/*/bindings.go from the
+        # vendored .wasm using the pinned gravity. Nothing tracked should change:
+        # not bindings.go (stale bindings) and not the .wasm (the generator must
+        # not clobber the WIT-bearing vendored modules). Mirrors `just wasm-check`.
+        run: |
+          ./internal/local/rebuild-bindings.sh
+          files=(
+            internal/local/jsreq/bindings.go
+            internal/local/jsreq/js_req.wasm
+            internal/local/redact/bindings.go
+            internal/local/redact/redact.wasm
+          )
+          if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
+            echo "::error::Wasm bindings are out of sync with the vendored .wasm. Run 'just wasm' and commit the result."
+            git --no-pager diff -- "${files[@]}"
+            exit 1
+          fi
