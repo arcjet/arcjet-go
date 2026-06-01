@@ -147,11 +147,9 @@ func TestRedactorConcurrentRedactAndClose(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 50; j++ {
+	for range 8 {
+		wg.Go(func() {
+			for range 50 {
 				// Each call must either succeed or report ErrClosed — never race
 				// the runtime teardown or return some other error.
 				if _, _, err := r.Redact(ctx, "reach me at test@example.com"); err != nil && !errors.Is(err, ErrClosed) {
@@ -159,7 +157,7 @@ func TestRedactorConcurrentRedactAndClose(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	// Close while calls are in flight; the guard must serialize teardown.
 	if err := r.Close(ctx); err != nil {

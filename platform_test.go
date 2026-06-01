@@ -133,15 +133,15 @@ func TestPlatformIP(t *testing.T) {
 		{
 			name:     "cloudflare cf-connecting-ip",
 			platform: platformCloudflare,
-			headers:  map[string]string{"CF-Connecting-IP": "203.0.113.65"},
+			headers:  map[string]string{"Cf-Connecting-Ip": "203.0.113.65"},
 			want:     "203.0.113.65",
 		},
 		{
 			name:     "cloudflare prefers ipv6",
 			platform: platformCloudflare,
 			headers: map[string]string{
-				"CF-Connecting-IPv6": "2001:db8::1",
-				"CF-Connecting-IP":   "203.0.113.65",
+				"Cf-Connecting-Ipv6": "2001:db8::1",
+				"Cf-Connecting-Ip":   "203.0.113.65",
 			},
 			want: "2001:db8::1",
 		},
@@ -251,7 +251,7 @@ func TestConfigPlatformOverridesEnvDetection(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)
 	req.RemoteAddr = "10.0.0.1:443"
-	req.Header.Set("CF-Connecting-IP", "203.0.113.65")
+	req.Header.Set("Cf-Connecting-Ip", "203.0.113.65")
 	req.Header.Set("True-Client-Ip", "203.0.113.99") // Render header must be ignored
 
 	details := detailsFromRequest(req, client.proxies, client.platform)

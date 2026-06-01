@@ -122,10 +122,10 @@ func platformIP(r *http.Request, platform hostingPlatform, proxies []trustedProx
 		// strips client-supplied copies, so they can be trusted directly.
 		// IPv6 is preferred when present, matching @arcjet/ip.
 		// https://developers.cloudflare.com/fundamentals/reference/http-request-headers/#cf-connecting-ip
-		if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IPv6")); ip != "" {
+		if ip := strings.TrimSpace(r.Header.Get("Cf-Connecting-Ipv6")); ip != "" {
 			return ip
 		}
-		return strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))
+		return strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip"))
 	case platformRailway:
 		// Railway sets X-Real-IP to the original client IP.
 		// https://docs.railway.com/networking/public-networking/specs-and-limits#technical-specifications

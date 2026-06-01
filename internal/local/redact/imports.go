@@ -48,7 +48,7 @@ func (c customRedact) DetectSensitiveInfo(ctx context.Context, tokens []string) 
 	return out
 }
 
-func (c customRedact) RedactSensitiveInfo(ctx context.Context, entityType interface{}, plaintext string) *string {
+func (c customRedact) RedactSensitiveInfo(ctx context.Context, entityType any, plaintext string) *string {
 	if c.replace == nil {
 		return nil
 	}

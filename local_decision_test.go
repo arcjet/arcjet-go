@@ -220,8 +220,8 @@ func TestLocalSensitiveInfoDeniesConfiguredEntityType(t *testing.T) {
 	if reason == nil {
 		t.Fatal("expected SensitiveInfoReason on decision")
 	}
-	if len(reason.Denied) == 0 || reason.Denied[0].IdentifiedType != string(SensitiveInfoEmail) {
-		t.Fatalf("expected denied EMAIL entity, got %#v", reason.Denied)
+	if len(reason.GetDenied()) == 0 || reason.GetDenied()[0].GetIdentifiedType() != string(SensitiveInfoEmail) {
+		t.Fatalf("expected denied EMAIL entity, got %#v", reason.GetDenied())
 	}
 }
 
@@ -331,7 +331,7 @@ func TestSensitiveInfoDetectCallbackClassifiesCustomTokens(t *testing.T) {
 		t.Fatalf("expected deny for custom-label match, got %#v", decision)
 	}
 	denied := decision.decision.GetReason().GetSensitiveInfo().GetDenied()
-	if len(denied) == 0 || denied[0].IdentifiedType != string(customLabel) {
+	if len(denied) == 0 || denied[0].GetIdentifiedType() != string(customLabel) {
 		t.Fatalf("expected custom-label denied entity, got %#v", denied)
 	}
 }

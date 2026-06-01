@@ -57,8 +57,8 @@ func SetRateLimitHeaders(w http.ResponseWriter, d Decision) {
 	})
 
 	header := w.Header()
-	header.Set("RateLimit", fmt.Sprintf("limit=%d, remaining=%d, reset=%d", nearest.Max, nearest.Remaining, nearest.ResetInSeconds))
-	header.Set("RateLimit-Policy", strings.Join(parts, ", "))
+	header.Set("Ratelimit", fmt.Sprintf("limit=%d, remaining=%d, reset=%d", nearest.Max, nearest.Remaining, nearest.ResetInSeconds))
+	header.Set("Ratelimit-Policy", strings.Join(parts, ", "))
 }
 
 // rateLimitReasons collects every rate limit reason that drove the decision,

@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 
@@ -128,8 +129,11 @@ func New(ctx context.Context, opts Options) (*Redactor, error) {
 		skipDetect:        opts.Detect == nil,
 		skipReplace:       opts.Replace == nil,
 	}
-	if opts.ContextWindowSize > 0 {
-		r.contextWindowSize = uint32(opts.ContextWindowSize)
+	if n := opts.ContextWindowSize; n > 0 {
+		if n > math.MaxUint32 {
+			n = math.MaxUint32
+		}
+		r.contextWindowSize = uint32(n)
 	}
 	if len(opts.Entities) > 0 {
 		ents := make([]wasmredact.SensitiveInfoEntity, len(opts.Entities))
