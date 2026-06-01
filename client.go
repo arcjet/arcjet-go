@@ -50,7 +50,25 @@ type Config struct {
 	SDKVersion string
 	// Proxies are trusted proxy IPs or CIDRs used to trust X-Forwarded-For.
 	Proxies []string
+	// Platform selects a managed hosting platform explicitly, overriding the
+	// environment auto-detection. Set it when running behind a platform whose
+	// environment variables aren't present — most importantly a Go service
+	// behind the Cloudflare CDN. Leave empty to auto-detect.
+	Platform Platform
+	// SensitiveInfoDetect, if set, classifies tokens the bundled analyzer
+	// didn't recognise. Shared across every SensitiveInfo rule on this
+	// Client — the same callback model as arcjet-py's
+	// `ImportCallbacks.sensitive_info_detect` and arcjet-js's analyzer
+	// `detect` hook.
+	SensitiveInfoDetect SensitiveInfoDetect
 }
+
+// SensitiveInfoDetect classifies tokens that the bundled wasm analyzer
+// didn't recognise. The returned slice must have one entry per input
+// token; an empty EntityType leaves the token unclassified, otherwise the
+// value is recorded — either a built-in constant (SensitiveInfoEmail,
+// SensitiveInfoPhoneNumber, …) or any custom label.
+type SensitiveInfoDetect func(ctx context.Context, tokens []string) []EntityType
 
 // Client evaluates HTTP requests with Arcjet request protection rules.
 //
@@ -98,6 +116,14 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	platform := detectPlatform(os.Getenv)
+	if cfg.Platform != "" {
+		p, ok := cfg.Platform.toHostingPlatform()
+		if !ok {
+			return nil, fmt.Errorf("arcjet: %w: %q", ErrInvalidPlatform, cfg.Platform)
+		}
+		platform = p
+	}
 	builtRules, err := buildRequestRules(cfg.Rules)
 	if err != nil {
 		return nil, err
@@ -106,7 +132,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	local, err := newLocalEvaluator(context.Background(), cfg.Rules)
+	local, err := newLocalEvaluator(context.Background(), cfg.Rules, cfg.SensitiveInfoDetect)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +144,7 @@ func NewClient(cfg Config) (*Client, error) {
 		sdkVersion:      version,
 		userAgent:       ua,
 		proxies:         proxies,
-		platform:        detectPlatform(os.Getenv),
+		platform:        platform,
 		decideClient:    decidev1alpha1connect.NewDecideServiceClient(httpClient, baseURL),
 		local:           local,
 		cache:           newDecisionCache(),
@@ -245,11 +271,8 @@ func WithDetectPromptInjectionMessage(s string) ProtectOption {
 }
 
 // WithSensitiveInfoValue sets the text scanned by sensitive information
-// detection.
-//
-// Currently a no-op — pair with [SensitiveInfo]. The value is still recorded
-// on ProtectOptions for forward compatibility but is not forwarded to Arcjet
-// while the analyzer is unimplemented.
+// detection. Pair with [SensitiveInfo]; the value is evaluated locally and
+// never leaves the SDK.
 func WithSensitiveInfoValue(s string) ProtectOption {
 	return func(o *ProtectOptions) { o.SensitiveInfoValue = s }
 }
@@ -320,9 +343,9 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 		details.Extra["detectPromptInjectionMessage"] = options.DetectPromptInjectionMessage
 	}
 	// options.SensitiveInfoValue is intentionally not forwarded: the
-	// sensitive-info analyzer is not yet shipped in this SDK, so sending
-	// the value would only leak user input without any benefit. See
-	// WithSensitiveInfoValue.
+	// sensitive-info rule runs locally in the SDK (see evaluateLocal ->
+	// detectSensitiveInfo), so the raw value never needs to reach Decide or
+	// Report and is kept in-process for privacy. See WithSensitiveInfoValue.
 
 	rules := c.builtRules
 	cacheKey := makeDecisionCacheKey(details, c.rulesHash, options)
@@ -397,11 +420,13 @@ func (c *Client) reportLocal(ctx context.Context, details ProtectDetails, rules 
 	}()
 }
 
-// redactReportDetails returns a copy of details with prompt-injection and
-// sensitive-info inputs replaced with "<redacted>". The raw values are needed
-// by the Decide RPC (server-side inference / scanning), but Report is
-// dashboard telemetry and must not leak the user-supplied text. Mirrors
-// https://github.com/arcjet/arcjet-py/pull/118.
+// redactReportDetails returns a copy of details with the prompt-injection input
+// (and, defensively, any sensitive-info value) replaced with "<redacted>". The
+// raw prompt-injection text is needed by the Decide RPC for server-side
+// inference, but Report is dashboard telemetry and must not leak it. The
+// sensitive-info value is evaluated locally and never placed in Extra today, so
+// its branch is a guard against a future code path forwarding it under this
+// key. Mirrors https://github.com/arcjet/arcjet-py/pull/118.
 func redactReportDetails(d ProtectDetails) ProtectDetails {
 	if d.Extra == nil {
 		return d

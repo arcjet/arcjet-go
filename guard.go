@@ -28,6 +28,10 @@ type GuardConfig struct {
 	BaseURL string
 	// SDKVersion overrides the version reported to Arcjet.
 	SDKVersion string
+	// SensitiveInfoDetect, if set, classifies tokens the bundled analyzer
+	// didn't recognise. Shared across every GuardSensitiveInfo rule on
+	// this client.
+	SensitiveInfoDetect SensitiveInfoDetect
 }
 
 // GuardClient evaluates non-HTTP inputs such as tool calls, jobs, and queues.
@@ -38,6 +42,7 @@ type GuardClient struct {
 	key         string
 	guardClient decidev2connect.DecideServiceClient
 	userAgent   string
+	local       *localEvaluator
 }
 
 // NewGuardClient creates a reusable Guard client.
@@ -66,7 +71,19 @@ func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 		key:         key,
 		userAgent:   ua,
 		guardClient: decidev2connect.NewDecideServiceClient(httpClient, baseURL),
+		// Lazy: only Guard rules that evaluate locally (today just
+		// sensitive info) trigger wasm compilation.
+		local: newLazyLocalEvaluator(cfg.SensitiveInfoDetect),
 	}, nil
+}
+
+// Close releases the locally-compiled wasm factory, if any. Safe to call
+// even if no local Guard rule was ever used.
+func (c *GuardClient) Close(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	return c.local.close(ctx)
 }
 
 // GuardRequest is a single Guard evaluation request.
@@ -93,7 +110,7 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		if rule == nil {
 			return GuardDecision{}, fmt.Errorf("arcjet: guard request: %w", ErrNilRule)
 		}
-		wireSub, err := rule.guardSubmission(ctx)
+		wireSub, err := rule.guardSubmission(ctx, c.local)
 		if err != nil {
 			return GuardDecision{}, err
 		}
@@ -134,8 +151,12 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 }
 
 // GuardRuleInput is a rule bound to runtime input for a Guard call.
+//
+// The unexported `guardSubmission` method seals the interface so external
+// types can't implement it; SDK-provided rules use it to build the wire
+// submission, optionally running locally via the shared evaluator.
 type GuardRuleInput interface {
-	guardSubmission(context.Context) (guardRuleSubmissionWire, error)
+	guardSubmission(ctx context.Context, eval *localEvaluator) (guardRuleSubmissionWire, error)
 }
 
 type guardRuleBase struct {
@@ -242,7 +263,7 @@ func GuardTokenBucket(opts GuardTokenBucketOptions) (*GuardTokenBucketRule, erro
 
 // Key binds a token bucket key and requested token count for one Guard call.
 func (r *GuardTokenBucketRule) Key(key string, requested int) GuardRuleInput {
-	return guardRuleInputFunc(func(context.Context) (guardRuleSubmissionWire, error) {
+	return guardRuleInputFunc(func(_ context.Context, _ *localEvaluator) (guardRuleSubmissionWire, error) {
 		if key == "" {
 			return guardRuleSubmissionWire{}, fmt.Errorf("arcjet: guard token bucket: %w", ErrEmptyKey)
 		}
@@ -328,7 +349,7 @@ func GuardFixedWindow(opts GuardFixedWindowOptions) (*GuardFixedWindowRule, erro
 
 // Key binds a fixed window key and requested count for one Guard call.
 func (r *GuardFixedWindowRule) Key(key string, requested int) GuardRuleInput {
-	return guardRuleInputFunc(func(context.Context) (guardRuleSubmissionWire, error) {
+	return guardRuleInputFunc(func(_ context.Context, _ *localEvaluator) (guardRuleSubmissionWire, error) {
 		if key == "" {
 			return guardRuleSubmissionWire{}, fmt.Errorf("arcjet: guard fixed window: %w", ErrEmptyKey)
 		}
@@ -412,7 +433,7 @@ func GuardSlidingWindow(opts GuardSlidingWindowOptions) (*GuardSlidingWindowRule
 
 // Key binds a sliding window key and requested count for one Guard call.
 func (r *GuardSlidingWindowRule) Key(key string, requested int) GuardRuleInput {
-	return guardRuleInputFunc(func(context.Context) (guardRuleSubmissionWire, error) {
+	return guardRuleInputFunc(func(_ context.Context, _ *localEvaluator) (guardRuleSubmissionWire, error) {
 		if key == "" {
 			return guardRuleSubmissionWire{}, fmt.Errorf("arcjet: guard sliding window: %w", ErrEmptyKey)
 		}
@@ -477,7 +498,7 @@ func GuardPromptInjection(opts GuardPromptInjectionOptions) (*GuardPromptInjecti
 
 // Text binds text to scan for one Guard call.
 func (r *GuardPromptInjectionRule) Text(text string) GuardRuleInput {
-	return guardRuleInputFunc(func(context.Context) (guardRuleSubmissionWire, error) {
+	return guardRuleInputFunc(func(_ context.Context, _ *localEvaluator) (guardRuleSubmissionWire, error) {
 		return r.base.submission(map[string]any{"detectPromptInjection": map[string]any{
 			"inputText": text,
 		}}), nil
@@ -567,17 +588,49 @@ func (r *GuardSensitiveInfoRule) DeniedResult(d GuardDecision) *GuardSensitiveIn
 
 // Text binds text to scan for one Guard call.
 //
-// Currently a no-op: sensitive-info detection runs in a bundled WebAssembly
-// module in the JavaScript SDK (@arcjet/analyze-wasm) that has not been
-// ported to the Go SDK yet. Until then, this method returns a no-op
-// GuardRuleInput — the Guard call carries no submission for this rule and
-// the result accessors return nil. The signature is kept stable so calling
-// code does not need to change once the analyzer lands.
+// Detection runs locally via the bundled WebAssembly analyzer (the same
+// `arcjet_analyze_js_req` component used by arcjet-js and arcjet-py); the
+// text never leaves the SDK. The submission carries a SHA-256 hash of the
+// text alongside the locally-computed result so the server can correlate
+// inputs without seeing the raw value.
 func (r *GuardSensitiveInfoRule) Text(text string) GuardRuleInput {
-	_ = text // text is intentionally unused while the analyzer is unimplemented
-	return guardRuleInputFunc(func(context.Context) (guardRuleSubmissionWire, error) {
-		return guardRuleSubmissionWire{}, nil
+	allow := append([]EntityType(nil), r.allow...)
+	deny := append([]EntityType(nil), r.deny...)
+	return guardRuleInputFunc(func(ctx context.Context, eval *localEvaluator) (guardRuleSubmissionWire, error) {
+		payload := map[string]any{
+			"inputTextHash": sha256Hex(text),
+		}
+		switch {
+		case len(allow) > 0:
+			payload["configEntitiesAllow"] = map[string]any{"entities": stringSlice(allow)}
+		case len(deny) > 0:
+			payload["configEntitiesDeny"] = map[string]any{"entities": stringSlice(deny)}
+		}
+		outcome, err := eval.scanSensitiveInfo(ctx, text, allow, deny)
+		if err != nil {
+			payload["resultError"] = map[string]any{"message": err.Error(), "code": "AJ1200"}
+			// Fail open: the scan error is reported to Arcjet via resultError in
+			// the submission, so the Guard call proceeds rather than erroring.
+			return r.base.submission(map[string]any{"localSensitiveInfo": payload}), nil //nolint:nilerr // fail open (see above)
+		}
+		denied := identifiedEntityTypes(outcome.Denied)
+		conclusion := ConclusionAllow
+		if len(denied) > 0 {
+			conclusion = ConclusionDeny
+		}
+		payload["resultComputed"] = map[string]any{
+			"conclusion":          guardConclusion(conclusion),
+			"detected":            len(denied) > 0,
+			"detectedEntityTypes": denied,
+		}
+		payload["resultDurationMs"] = outcome.ElapsedMs
+		return r.base.submission(map[string]any{"localSensitiveInfo": payload}), nil
 	})
+}
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 // GuardCustomResult is the result returned by a custom local Guard rule.
@@ -648,7 +701,7 @@ func (r *GuardCustomRule) DeniedResult(d GuardDecision) *GuardLocalCustomResult 
 
 // Input binds custom rule input data for one Guard call.
 func (r *GuardCustomRule) Input(data map[string]string) GuardRuleInput {
-	return guardRuleInputFunc(func(ctx context.Context) (guardRuleSubmissionWire, error) {
+	return guardRuleInputFunc(func(ctx context.Context, _ *localEvaluator) (guardRuleSubmissionWire, error) {
 		start := time.Now()
 		result, err := r.fn(ctx, cloneMap(data))
 		duration := safeUint64FromInt64(time.Since(start).Milliseconds())
@@ -672,10 +725,10 @@ func (r *GuardCustomRule) Input(data map[string]string) GuardRuleInput {
 	})
 }
 
-type guardRuleInputFunc func(context.Context) (guardRuleSubmissionWire, error)
+type guardRuleInputFunc func(ctx context.Context, eval *localEvaluator) (guardRuleSubmissionWire, error)
 
-func (f guardRuleInputFunc) guardSubmission(ctx context.Context) (guardRuleSubmissionWire, error) {
-	return f(ctx)
+func (f guardRuleInputFunc) guardSubmission(ctx context.Context, eval *localEvaluator) (guardRuleSubmissionWire, error) {
+	return f(ctx, eval)
 }
 
 func hashKey(parts ...string) string {

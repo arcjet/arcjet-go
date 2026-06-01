@@ -1,6 +1,7 @@
 package arcjet
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,6 +21,8 @@ func TestDetectPlatformFromEnv(t *testing.T) {
 		{"vercel wrong value", map[string]string{"VERCEL": "true"}, platformNone},
 		{"render exact value true", map[string]string{"RENDER": "true"}, platformRender},
 		{"render wrong value", map[string]string{"RENDER": "1"}, platformNone},
+		{"cloudflare pages exact value 1", map[string]string{"CF_PAGES": "1"}, platformCloudflare},
+		{"cloudflare pages wrong value", map[string]string{"CF_PAGES": "true"}, platformNone},
 		{"railway", map[string]string{"RAILWAY_PROJECT_ID": "00000000-0000-0000-0000-000000000000"}, platformRailway},
 		{"railway empty value is none", map[string]string{"RAILWAY_PROJECT_ID": ""}, platformNone},
 		{
@@ -33,9 +36,14 @@ func TestDetectPlatformFromEnv(t *testing.T) {
 			platformVercel,
 		},
 		{
-			"precedence render beats railway",
-			map[string]string{"RENDER": "true", "RAILWAY_PROJECT_ID": "p"},
+			"precedence render beats cloudflare",
+			map[string]string{"RENDER": "true", "CF_PAGES": "1"},
 			platformRender,
+		},
+		{
+			"precedence cloudflare beats railway",
+			map[string]string{"CF_PAGES": "1", "RAILWAY_PROJECT_ID": "p"},
+			platformCloudflare,
 		},
 	}
 	for _, tt := range tests {
@@ -123,6 +131,21 @@ func TestPlatformIP(t *testing.T) {
 			want:     "203.0.113.60",
 		},
 		{
+			name:     "cloudflare cf-connecting-ip",
+			platform: platformCloudflare,
+			headers:  map[string]string{"Cf-Connecting-Ip": "203.0.113.65"},
+			want:     "203.0.113.65",
+		},
+		{
+			name:     "cloudflare prefers ipv6",
+			platform: platformCloudflare,
+			headers: map[string]string{
+				"Cf-Connecting-Ipv6": "2001:db8::1",
+				"Cf-Connecting-Ip":   "203.0.113.65",
+			},
+			want: "2001:db8::1",
+		},
+		{
 			name:     "railway x-real-ip",
 			platform: platformRailway,
 			headers:  map[string]string{"X-Real-Ip": "203.0.113.70"},
@@ -184,11 +207,72 @@ func TestClientIPFallsBackToRemoteWhenPlatformHeaderMissing(t *testing.T) {
 	}
 }
 
+func TestPlatformToHostingPlatform(t *testing.T) {
+	tests := []struct {
+		platform Platform
+		want     hostingPlatform
+		ok       bool
+	}{
+		{PlatformFirebase, platformFirebase, true},
+		{PlatformFlyIo, platformFlyIo, true},
+		{PlatformVercel, platformVercel, true},
+		{PlatformRender, platformRender, true},
+		{PlatformCloudflare, platformCloudflare, true},
+		{PlatformRailway, platformRailway, true},
+		{Platform("nope"), platformNone, false},
+		{Platform(""), platformNone, false},
+	}
+	for _, tt := range tests {
+		got, ok := tt.platform.toHostingPlatform()
+		if got != tt.want || ok != tt.ok {
+			t.Fatalf("Platform(%q).toHostingPlatform() = (%d, %t), want (%d, %t)", tt.platform, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestConfigPlatformOverridesEnvDetection(t *testing.T) {
+	// Render is detected from the environment, but the explicit Config.Platform
+	// must win so a Cloudflare-fronted service reads CF-Connecting-IP instead of
+	// Render's True-Client-Ip.
+	t.Setenv("FIREBASE_CONFIG", "")
+	t.Setenv("FLY_APP_NAME", "")
+	t.Setenv("VERCEL", "")
+	t.Setenv("RENDER", "true")
+	t.Setenv("CF_PAGES", "")
+	t.Setenv("RAILWAY_PROJECT_ID", "")
+
+	client, err := NewClient(Config{Key: "ajkey_test", Platform: PlatformCloudflare})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.platform != platformCloudflare {
+		t.Fatalf("client platform = %d, want cloudflare (%d)", client.platform, platformCloudflare)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)
+	req.RemoteAddr = "10.0.0.1:443"
+	req.Header.Set("Cf-Connecting-Ip", "203.0.113.65")
+	req.Header.Set("True-Client-Ip", "203.0.113.99") // Render header must be ignored
+
+	details := detailsFromRequest(req, client.proxies, client.platform)
+	if details.IP != "203.0.113.65" {
+		t.Fatalf("cloudflare override IP = %q, want 203.0.113.65", details.IP)
+	}
+}
+
+func TestConfigPlatformRejectsUnknownValue(t *testing.T) {
+	_, err := NewClient(Config{Key: "ajkey_test", Platform: Platform("heroku")})
+	if !errors.Is(err, ErrInvalidPlatform) {
+		t.Fatalf("err = %v, want ErrInvalidPlatform", err)
+	}
+}
+
 func TestProtectUsesPlatformHeaderWhenEnvSet(t *testing.T) {
 	t.Setenv("FIREBASE_CONFIG", "")
 	t.Setenv("FLY_APP_NAME", "")
 	t.Setenv("VERCEL", "")
 	t.Setenv("RENDER", "")
+	t.Setenv("CF_PAGES", "") // outranks RAILWAY in detectPlatform; clear so it can't shadow
 	t.Setenv("RAILWAY_PROJECT_ID", "proj_test")
 
 	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)

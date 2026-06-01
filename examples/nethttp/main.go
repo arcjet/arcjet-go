@@ -1,13 +1,14 @@
 // Example net/http server protected with the Arcjet Go SDK.
 //
-// Hits GET /?message=... and runs each request through Shield, bot detection,
-// and a token bucket rate limit. (Sensitive-info detection is exposed by the
-// SDK but is currently a no-op pending a WebAssembly analyzer, so it is not
-// wired up here.)
+// GET / runs each request through Shield, bot detection, and a token bucket
+// rate limit. POST /submit additionally scans the request body for sensitive
+// information (emails, credit card numbers) — the scanned text is analyzed
+// locally and never leaves the SDK.
 package main
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -52,6 +53,18 @@ func main() {
 				Interval:   10 * time.Second, // Refill every 10 seconds.
 				Capacity:   10,               // Bucket capacity of 10 tokens.
 			}),
+
+			// Block request bodies containing sensitive information. The text to
+			// scan is passed per request with arcjet.WithSensitiveInfoValue and is
+			// analyzed locally — it is never sent to Arcjet. The rule only runs
+			// when a value is supplied, so it is a no-op on GET / below.
+			arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{
+				Mode: arcjet.ModeLive,
+				Deny: []arcjet.EntityType{
+					arcjet.SensitiveInfoEmail,
+					arcjet.SensitiveInfoCreditCardNumber,
+				},
+			}),
 		},
 	})
 	if err != nil {
@@ -61,6 +74,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", hello(aj))
+	mux.HandleFunc("POST /submit", submit(aj))
 
 	srv := &http.Server{
 		Addr:              ":3000",
@@ -123,6 +137,60 @@ func hello(aj *arcjet.Client) http.HandlerFunc {
 			"message":  "Hello world",
 			"decision": decision,
 		})
+	}
+}
+
+// submit scans the request body for sensitive information before accepting it.
+func submit(aj *arcjet.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Read the body so we can scan it, capping the size so a large body
+		// can't exhaust memory.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+		if err != nil {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+				"error": "Could not read request body",
+			})
+			return
+		}
+
+		decision, err := aj.Protect(
+			r.Context(),
+			r,
+			// The text to scan stays in the SDK — it is never sent to Arcjet.
+			arcjet.WithSensitiveInfoValue(string(body)),
+		)
+		if err != nil {
+			// Arcjet fails open — log and continue serving.
+			slog.Warn("arcjet: protect", "err", err)
+		}
+
+		if decision.IsDenied() {
+			// Sensitive-info denials carry the detected entity types so you can
+			// tell the user what to remove.
+			if si := decision.Reason.SensitiveInfo; si != nil {
+				detected := make([]arcjet.EntityType, 0, len(si.Denied))
+				for _, e := range si.Denied {
+					detected = append(detected, e.Type)
+				}
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error":    "Sensitive information detected",
+					"detected": detected,
+				})
+				return
+			}
+
+			status := http.StatusForbidden
+			if decision.Reason.IsRateLimit() {
+				status = http.StatusTooManyRequests
+			}
+			writeJSON(w, status, map[string]any{
+				"error":  "Denied",
+				"reason": decision.Reason,
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"message": "Submission accepted"})
 	}
 }
 

@@ -3,17 +3,18 @@ package arcjet
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
-	localbot "github.com/arcjet/arcjet-go/internal/local/bot"
+	"github.com/arcjet/arcjet-go/internal/local/jsreq"
 )
 
 func TestLocalEvaluatorAllowsNonMatchingWasmRules(t *testing.T) {
 	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
 		ValidateEmail(EmailOptions{Mode: ModeLive, Deny: []EmailType{EmailTypeInvalid}}),
 		Filter(FilterOptions{Mode: ModeLive, Deny: []string{`http.host == "bad.example"`}}),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func TestLocalEvaluatorAllowsNonMatchingWasmRules(t *testing.T) {
 func TestLocalBotEmptyAllowBlocksDetectedBots(t *testing.T) {
 	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
 		DetectBot(BotOptions{Mode: ModeLive, Allow: []string{}}),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestLocalBotEmptyAllowBlocksDetectedBots(t *testing.T) {
 func TestLocalFilterMatchesFilterLocalFields(t *testing.T) {
 	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
 		Filter(FilterOptions{Mode: ModeLive, Deny: []string{`local["plan"] == "free"`}}),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,13 +97,28 @@ func TestLocalEvaluatorWarmsConfiguredWasmFactories(t *testing.T) {
 		DetectBot(BotOptions{Mode: ModeLive, Deny: []string{"CURL"}}),
 		ValidateEmail(EmailOptions{Mode: ModeLive, Deny: []EmailType{EmailTypeInvalid}}),
 		Filter(FilterOptions{Mode: ModeLive, Deny: []string{`http.host == "example.com"`}}),
-	})
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer evaluator.close(context.Background())
-	if evaluator.botFactory == nil || evaluator.emailFactory == nil || evaluator.filterFactory == nil {
-		t.Fatalf("expected all configured Wasm factories to be warmed, got bot=%v email=%v filter=%v", evaluator.botFactory != nil, evaluator.emailFactory != nil, evaluator.filterFactory != nil)
+	if evaluator.factory == nil {
+		t.Fatal("expected the jsreq factory to be warmed when any local rule is configured")
+	}
+}
+
+func TestLocalEvaluatorSkipsFactoryWhenNoLocalRules(t *testing.T) {
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
+		// PromptInjection has no local kind, so the factory should not warm.
+		DetectPromptInjection(PromptInjectionOptions{Mode: ModeLive}),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+	if evaluator.factory != nil {
+		t.Fatal("expected factory to stay nil when no local rules are configured")
 	}
 }
 
@@ -111,16 +127,17 @@ func TestLocalEvaluatorSupportsConcurrentWasmEvaluations(t *testing.T) {
 		DetectBot(BotOptions{Mode: ModeLive, Deny: []string{"CURL"}}),
 		ValidateEmail(EmailOptions{Mode: ModeLive, Deny: []EmailType{EmailTypeInvalid}}),
 		Filter(FilterOptions{Mode: ModeLive, Deny: []string{`http.host == "example.com"`}}),
-	})
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer evaluator.close(context.Background())
 
 	var wg sync.WaitGroup
-	errs := make(chan error, 90)
+	errs := make(chan error, 120)
 	for range 30 {
-		wg.Add(3)
+		wg.Add(4)
 		go func() {
 			defer wg.Done()
 			decision, err := evaluator.validateEmail(context.Background(), EmailOptions{Mode: ModeLive, Deny: []EmailType{EmailTypeInvalid}}, ProtectDetails{Email: "invalid-email@//example-com"}, ProtectOptions{})
@@ -154,11 +171,202 @@ func TestLocalEvaluatorSupportsConcurrentWasmEvaluations(t *testing.T) {
 				errs <- errExpectedLocalDeny("filter")
 			}
 		}()
+		go func() {
+			defer wg.Done()
+			decision, err := evaluator.detectSensitiveInfo(
+				context.Background(),
+				SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}},
+				ProtectDetails{},
+				ProtectOptions{SensitiveInfoValue: "Reach me at customer@example.com please."},
+			)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !decision.liveDeny() {
+				errs <- errExpectedLocalDeny("sensitive_info")
+			}
+		}()
 	}
 	wg.Wait()
 	close(errs)
 	for err := range errs {
 		t.Fatal(err)
+	}
+}
+
+func TestLocalSensitiveInfoDeniesConfiguredEntityType(t *testing.T) {
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+
+	decision, err := evaluator.detectSensitiveInfo(
+		context.Background(),
+		SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}},
+		ProtectDetails{},
+		ProtectOptions{SensitiveInfoValue: "Please contact alice@example.com."},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.liveDeny() {
+		t.Fatalf("expected sensitive-info deny for email entity, got %#v", decision)
+	}
+	reason := decision.decision.GetReason().GetSensitiveInfo()
+	if reason == nil {
+		t.Fatal("expected SensitiveInfoReason on decision")
+	}
+	if len(reason.GetDenied()) == 0 || reason.GetDenied()[0].GetIdentifiedType() != string(SensitiveInfoEmail) {
+		t.Fatalf("expected denied EMAIL entity, got %#v", reason.GetDenied())
+	}
+}
+
+func TestLocalSensitiveInfoAllowsWhenNoMatch(t *testing.T) {
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+
+	decision, err := evaluator.detectSensitiveInfo(
+		context.Background(),
+		SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}},
+		ProtectDetails{},
+		ProtectOptions{SensitiveInfoValue: "Hello world."},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != nil {
+		t.Fatalf("expected nil decision when no sensitive info matched, got %#v", decision)
+	}
+}
+
+func TestLocalSensitiveInfoAllowListDeniesUnlistedTypes(t *testing.T) {
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Allow: []EntityType{SensitiveInfoCreditCardNumber}}),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+
+	decision, err := evaluator.detectSensitiveInfo(
+		context.Background(),
+		SensitiveInfoOptions{Mode: ModeLive, Allow: []EntityType{SensitiveInfoCreditCardNumber}},
+		ProtectDetails{},
+		ProtectOptions{SensitiveInfoValue: "Reach me at alice@example.com please."},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.liveDeny() {
+		t.Fatalf("expected sensitive-info deny when EMAIL is outside the allow list, got %#v", decision)
+	}
+}
+
+func TestLocalSensitiveInfoSkipsWhenValueEmpty(t *testing.T) {
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+
+	decision, err := evaluator.detectSensitiveInfo(
+		context.Background(),
+		SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}},
+		ProtectDetails{},
+		ProtectOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != nil {
+		t.Fatalf("expected nil decision when WithSensitiveInfoValue is unset, got %#v", decision)
+	}
+}
+
+func TestSensitiveInfoDetectCallbackClassifiesCustomTokens(t *testing.T) {
+	// The user callback should fire for tokens the bundled analyzer
+	// didn't classify. We pick a deliberately uncommon label ("API_KEY")
+	// so the analyzer's built-in detectors stay out of the way.
+	const customLabel EntityType = "API_KEY"
+	const text = "service token sk_test_internal_key_12345 in the request body"
+
+	detect := func(_ context.Context, tokens []string) []EntityType {
+		out := make([]EntityType, len(tokens))
+		for i, tok := range tokens {
+			if strings.HasPrefix(tok, "sk_test_") {
+				out[i] = customLabel
+			}
+		}
+		return out
+	}
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{customLabel}}),
+	}, detect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+
+	decision, err := evaluator.detectSensitiveInfo(
+		context.Background(),
+		SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{customLabel}},
+		ProtectDetails{},
+		ProtectOptions{SensitiveInfoValue: text},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.liveDeny() {
+		t.Fatalf("expected deny for custom-label match, got %#v", decision)
+	}
+	denied := decision.decision.GetReason().GetSensitiveInfo().GetDenied()
+	if len(denied) == 0 || denied[0].GetIdentifiedType() != string(customLabel) {
+		t.Fatalf("expected custom-label denied entity, got %#v", denied)
+	}
+}
+
+func TestSensitiveInfoDetectCallbackAbsentSkipsCustomDetect(t *testing.T) {
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+	if evaluator.hasCustomDetect() {
+		t.Fatal("expected no custom detect when callback unset")
+	}
+	cfg := sensitiveInfoConfig(nil, []EntityType{SensitiveInfoEmail}, evaluator.hasCustomDetect())
+	if !cfg.SkipCustomDetect {
+		t.Fatal("SkipCustomDetect should be true with no callback")
+	}
+}
+
+func TestSensitiveInfoDetectCallbackPresentRunsCustomDetect(t *testing.T) {
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+	}, func(context.Context, []string) []EntityType { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+	if !evaluator.hasCustomDetect() {
+		t.Fatal("expected custom detect to be reported when callback set")
+	}
+	cfg := sensitiveInfoConfig(nil, nil, evaluator.hasCustomDetect())
+	if cfg.SkipCustomDetect {
+		t.Fatal("SkipCustomDetect should be false when callback is configured")
 	}
 }
 
@@ -169,28 +377,6 @@ func TestLocalDryRunDecisionDoesNotShortCircuit(t *testing.T) {
 	}
 	if got := reason.decision.GetRuleResults()[0].GetState(); got.String() != "RULE_STATE_DRY_RUN" {
 		t.Fatalf("state = %s", got)
-	}
-}
-
-func TestLocalFailOpenOverrides(t *testing.T) {
-	email := failOpenEmailOverrides{}
-	if email.IsFreeEmail(context.Background(), "example.com") {
-		t.Fatal("free email override should default false")
-	}
-	if email.IsDisposableEmail(context.Background(), "example.com") {
-		t.Fatal("disposable email override should default false")
-	}
-	if !email.HasMxRecords(context.Background(), "example.com") {
-		t.Fatal("MX override should fail open")
-	}
-	if email.HasGravatar(context.Background(), "user@example.com") {
-		t.Fatal("gravatar override should default false")
-	}
-	if detected, ok := (noopBotIdentifier{}).Detect(context.Background(), "{}"); ok || detected != "" {
-		t.Fatalf("bot identifier = %q, %v", detected, ok)
-	}
-	if got := (noopBotVerifier{}).Verify(context.Background(), "CURL", "192.0.2.1"); got != localbot.Unverifiable {
-		t.Fatalf("bot verifier = %#v", got)
 	}
 }
 
@@ -213,5 +399,27 @@ func TestCleanMapAnyDropsEmptyStringsAndMaps(t *testing.T) {
 	}
 	if out["ip"] != "1.2.3.4" || out["kept"] == nil {
 		t.Errorf("expected entries kept, got %#v", out)
+	}
+}
+
+func TestSensitiveInfoEntityWireRoundtrip(t *testing.T) {
+	cases := []struct {
+		in   EntityType
+		want jsreq.SensitiveInfoEntity
+	}{
+		{SensitiveInfoEmail, jsreq.SensitiveInfoEntityEmail{}},
+		{SensitiveInfoPhoneNumber, jsreq.SensitiveInfoEntityPhoneNumber{}},
+		{SensitiveInfoIPAddress, jsreq.SensitiveInfoEntityIpAddress{}},
+		{SensitiveInfoCreditCardNumber, jsreq.SensitiveInfoEntityCreditCardNumber{}},
+		{EntityType("MY_LABEL"), jsreq.SensitiveInfoEntityCustom{Value: "MY_LABEL"}},
+	}
+	for _, c := range cases {
+		got := sensitiveInfoEntityWire(c.in)
+		if got != c.want {
+			t.Errorf("sensitiveInfoEntityWire(%q) = %#v, want %#v", c.in, got, c.want)
+		}
+		if back := identifiedEntityType(got); back != string(c.in) {
+			t.Errorf("identifiedEntityType(%#v) = %q, want %q", got, back, c.in)
+		}
 	}
 }

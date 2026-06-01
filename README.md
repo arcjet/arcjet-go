@@ -196,15 +196,13 @@ double-counting traffic.
 | --- | :---: | :---: |
 | Rate Limiting | ✅ | ✅ |
 | Prompt Injection Detection | ✅ | ✅ |
-| Sensitive Information Detection | ⏳ | ⏳ |
+| Sensitive Information Detection | ✅ | ✅ |
 | Bot Protection | ✅ | — |
 | Shield WAF | ✅ | — |
 | Email Validation | ✅ | — |
 | Request Filters | ✅ | — |
 | IP Analysis | ✅ | — |
 | Custom Rules | — | ✅ |
-
-⏳ = API present but currently a no-op.
 
 - 🔒 [Prompt Injection Detection](#prompt-injection-detection) — detect and block
   prompt injection attacks before they reach your LLM.
@@ -371,6 +369,11 @@ if decision.IsSpoofedBot() {
 }
 ```
 
+`decision.IsVerifiedBot()` reports the opposite — a crawler whose IP matched
+its published ranges — which you may want to allow even when other signals
+would deny. `decision.IsMissingUserAgent()` reports a request a bot rule denied
+for having no `User-Agent` header, a common sign of an automated client.
+
 See the [Bot Protection docs](https://docs.arcjet.com/bot-protection) for more
 details.
 
@@ -443,44 +446,144 @@ arcjet.SlidingWindow(arcjet.SlidingWindowOptions{
 See the [Rate Limiting docs](https://docs.arcjet.com/rate-limiting) for more
 details.
 
+### Rate limit response headers
+
+Call `arcjet.SetRateLimitHeaders(w, decision)` to advertise the limit to
+clients using the IETF [RateLimit header fields for HTTP][ratelimit-draft]
+(`RateLimit` and `RateLimit-Policy`). It is a no-op when the decision carries
+no rate limit, so you can call it unconditionally:
+
+```go
+decision, _ := aj.Protect(r.Context(), r)
+arcjet.SetRateLimitHeaders(w, decision)
+if decision.IsDenied() {
+	http.Error(w, "Rate limited", http.StatusTooManyRequests)
+	return
+}
+```
+
+[ratelimit-draft]: https://ietf-wg-httpapi.github.io/ratelimit-headers/draft-ietf-httpapi-ratelimit-headers.html
+
+## Protecting a signup form
+
+`arcjet.ProtectSignup` bundles the rules commonly used on a signup form — a
+sliding-window rate limit, bot detection, and email validation — into one
+slice you can hand to `Config.Rules`:
+
+```go
+aj, err := arcjet.NewClient(arcjet.Config{
+	Key: arcjetKey,
+	Rules: arcjet.ProtectSignup(arcjet.ProtectSignupOptions{
+		RateLimit: arcjet.SlidingWindowOptions{Mode: arcjet.ModeLive, Interval: time.Hour, MaxRequests: 5},
+		Bots:      arcjet.BotOptions{Mode: arcjet.ModeLive, Allow: nil}, // block all bots
+		Email:     arcjet.EmailOptions{Mode: arcjet.ModeLive, Deny: []arcjet.EmailType{arcjet.EmailTypeDisposable, arcjet.EmailTypeInvalid, arcjet.EmailTypeNoMXRecords}},
+	}),
+})
+```
+
+The returned rules can be combined with others using `append`.
+
 ## Sensitive information detection
 
-> [!IMPORTANT]
-> **Not yet implemented in the Go SDK.** Sensitive-info detection runs as a
-> WebAssembly analyzer in the JavaScript SDK (`@arcjet/analyze-wasm`) and has
-> not been ported to Go yet. `SensitiveInfo` and `WithSensitiveInfoValue`
-> exist so that call sites stay stable when the analyzer lands, but they are
-> currently no-ops: the rule is omitted from the wire request and
-> `WithSensitiveInfoValue` is silently ignored. Do not depend on this for
-> PII enforcement today.
->
-> When the analyzer ships, the planned shape — kept ready in the current API
-> — is:
->
-> ```go
-> aj, err := arcjet.NewClient(arcjet.Config{
-> 	Key: arcjetKey,
-> 	Rules: []arcjet.Rule{
-> 		arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{
-> 			Mode: arcjet.ModeLive,
-> 			Deny: []arcjet.EntityType{
-> 				arcjet.SensitiveInfoEmail,
-> 				arcjet.SensitiveInfoCreditCardNumber,
-> 			},
-> 		}),
-> 	},
-> })
->
-> decision, err := aj.Protect(
-> 	r.Context(),
-> 	r,
-> 	arcjet.WithSensitiveInfoValue("User input to scan"),
-> )
-> ```
->
-> See the [Sensitive Information docs](https://docs.arcjet.com/sensitive-info)
-> for the planned behavior. For PII enforcement today, scan the input
-> yourself before passing it to your model.
+Detect and block personally identifiable information — emails, phone numbers,
+IP addresses, and credit card numbers — in text you pass to `Protect`.
+Detection runs **locally** via the bundled WebAssembly analyzer (the same
+`arcjet_analyze_js_req` component used by the JavaScript and Python SDKs), so
+the scanned text never leaves the SDK. Pass the text to scan with
+`arcjet.WithSensitiveInfoValue`:
+
+```go
+aj, err := arcjet.NewClient(arcjet.Config{
+	Key: arcjetKey,
+	Rules: []arcjet.Rule{
+		arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{
+			Mode: arcjet.ModeLive,
+			Deny: []arcjet.EntityType{
+				arcjet.SensitiveInfoEmail,
+				arcjet.SensitiveInfoCreditCardNumber,
+			},
+		}),
+	},
+})
+
+decision, err := aj.Protect(
+	r.Context(),
+	r,
+	arcjet.WithSensitiveInfoValue("User input to scan"),
+)
+if decision.Reason.IsSensitiveInfo() {
+	http.Error(w, "Sensitive information detected", http.StatusBadRequest)
+	return
+}
+```
+
+`Allow` and `Deny` are mutually exclusive: `Deny` blocks the listed entity
+types, while `Allow` blocks every type _except_ those listed. The built-in
+entity types are `SensitiveInfoEmail`, `SensitiveInfoPhoneNumber`,
+`SensitiveInfoIPAddress`, and `SensitiveInfoCreditCardNumber`.
+
+To detect custom entities, set `Config.SensitiveInfoDetect`. It receives the
+tokenized text and returns one `EntityType` per token (empty leaves a token
+unclassified); the returned label can be any custom string you then list in
+`Allow`/`Deny`:
+
+```go
+aj, err := arcjet.NewClient(arcjet.Config{
+	Key: arcjetKey,
+	SensitiveInfoDetect: func(ctx context.Context, tokens []string) []arcjet.EntityType {
+		out := make([]arcjet.EntityType, len(tokens))
+		for i, tok := range tokens {
+			if strings.HasPrefix(tok, "sk-") {
+				out[i] = "API_KEY"
+			}
+		}
+		return out
+	},
+	Rules: []arcjet.Rule{
+		arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{
+			Mode: arcjet.ModeLive,
+			Deny: []arcjet.EntityType{"API_KEY"},
+		}),
+	},
+})
+```
+
+To redact rather than block sensitive information, see
+[Redacting sensitive information](#redacting-sensitive-information) below.
+
+See the [Sensitive Information docs](https://docs.arcjet.com/sensitive-info)
+for more details.
+
+## Redacting sensitive information
+
+The `github.com/arcjet/arcjet-go/redact` package detects and redacts sensitive
+information — emails, phone numbers, IP addresses, credit card numbers, and
+custom entities — entirely in-process. The text is never sent to Arcjet, which
+makes it suitable for scrubbing prompts before they reach a third-party LLM and
+restoring the values in the response. It runs the same WebAssembly component as
+`@arcjet/redact` and `arcjet.redact`, so all three SDKs redact identically.
+
+```go
+import "github.com/arcjet/arcjet-go/redact"
+
+r, err := redact.New(ctx, redact.Options{})
+if err != nil {
+	log.Fatal(err)
+}
+defer r.Close(ctx)
+
+redacted, unredact, err := r.Redact(ctx, "Contact me at test@example.com")
+// redacted == "Contact me at <Redacted email #0>"
+
+// ...send `redacted` to the model, then restore the originals in the reply:
+answer := unredact(modelResponse)
+```
+
+`redact.New` compiles the component once; reuse the `Redactor` across calls.
+Use `Options.Entities` to limit which entity types are redacted, and
+`Options.Detect` / `Options.Replace` to plug in custom detection and
+replacement logic. See the [Redaction docs](https://docs.arcjet.com/redact) for
+more details.
 
 ## Shield WAF
 
@@ -669,9 +772,7 @@ Available fields include geolocation (`Latitude`, `Longitude`, `City`,
 `arcjet.NewGuardClient` is a lower-level API designed for AI agent tool calls
 and background tasks where there is no HTTP request object. It gives you
 fine-grained, per-call control over rate limiting, prompt injection detection,
-and custom rules. Sensitive-info detection is also exposed via
-`GuardSensitiveInfo`, but is currently a no-op (see
-[Sensitive information detection](#sensitive-information-detection-1) below).
+sensitive information detection (via `GuardSensitiveInfo`), and custom rules.
 
 ### How it differs from `NewClient`
 
@@ -891,8 +992,10 @@ for _, result := range decision.Results {
 			result.TokenBucket.ResetAtUnixSeconds)
 	case result.PromptInjection != nil:
 		log.Printf("prompt injection detected=%v", result.PromptInjection.Detected)
-	// case result.LocalSensitiveInfo != nil: ... — currently unreachable;
-	// see the Sensitive information detection section above.
+	case result.LocalSensitiveInfo != nil:
+		log.Printf("sensitive info detected=%v types=%v",
+			result.LocalSensitiveInfo.Detected,
+			result.LocalSensitiveInfo.DetectedEntityTypes)
 	}
 	if result.IsDenied() {
 		log.Printf("denied by %s", result.Reason)
@@ -1050,6 +1153,26 @@ aj, err := arcjet.NewClient(arcjet.Config{
 })
 ```
 
+### Hosting platform
+
+When deployed on a managed hosting platform, Arcjet reads the client IP from
+that platform's signed headers. Fly.io, Vercel, Render, Firebase, Railway, and
+Cloudflare Pages are auto-detected from their environment variables. If your
+service runs behind a platform that isn't auto-detected — most importantly a Go
+origin behind the **Cloudflare CDN**, which doesn't set `CF_PAGES` — set
+`Config.Platform` explicitly so Arcjet trusts the platform header (e.g.
+`CF-Connecting-IP`) instead of guessing:
+
+```go
+aj, err := arcjet.NewClient(arcjet.Config{
+	Key:      arcjetKey,
+	Rules:    []arcjet.Rule{...},
+	Platform: arcjet.PlatformCloudflare,
+})
+```
+
+`NewClient` returns `ErrInvalidPlatform` for an unrecognized value.
+
 ### `Protect` parameter reference
 
 All options are optional and passed alongside the `*http.Request`:
@@ -1060,7 +1183,7 @@ All options are optional and passed alongside the `*http.Request`:
 | `WithCharacteristic(key, value string)`    | Rate limiting — single key/value                   |
 | `WithCharacteristics(map[string]string)`   | Rate limiting (values for keys declared in rules)  |
 | `WithDetectPromptInjectionMessage(string)` | Prompt injection detection                         |
-| `WithSensitiveInfoValue(string)`           | Sensitive information detection (currently a no-op — see [section](#sensitive-information-detection)) |
+| `WithSensitiveInfoValue(string)`           | Sensitive information detection (text scanned locally)            |
 | `WithEmail(string)`                        | Email validation                                   |
 | `WithFilterLocal(map[string]string)`       | Request filters using `local["field"]` expressions |
 | `WithIPSrc(string)`                        | Manual IP override (advanced)                      |
