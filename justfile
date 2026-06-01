@@ -37,6 +37,26 @@ build:
 test:
     go test -race -shuffle=on ./...
 
+# Regenerate gravity wasm bindings (pass `--from-monorepo [path]` to refresh .wasm first).
+wasm *args:
+    ./internal/local/rebuild-bindings.sh {{ args }}
+
+# Verify the gravity wasm bindings are in sync with the vendored .wasm; fails if not.
+wasm-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Regenerating from the vendored .wasm must not change anything tracked: not
+    # bindings.go (stale bindings) and not the .wasm themselves (the generator
+    # must not clobber the WIT-bearing vendored modules — see rebuild-bindings.sh).
+    files=(internal/local/jsreq/bindings.go internal/local/jsreq/js_req.wasm \
+           internal/local/redact/bindings.go internal/local/redact/redact.wasm)
+    ./internal/local/rebuild-bindings.sh
+    if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
+      echo "error: wasm bindings are out of sync with the vendored .wasm. Run 'just wasm' and commit the result." >&2
+      git --no-pager diff -- "${files[@]}"
+      exit 1
+    fi
+
 # Tidy the main module and the tools module.
 tidy:
     go mod tidy
