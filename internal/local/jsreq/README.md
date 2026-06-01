@@ -8,30 +8,32 @@ and sensitive-info detection.
 
 ## Regenerating
 
-Three artefacts in this directory are derived; only `imports.go` and this
-README are hand-maintained.
+`bindings.go` is generated from `js_req.wasm`; only `imports.go` and this
+README are hand-maintained. `js_req.wasm` retains its `component-type` WIT
+custom section, so gravity reads the `js-req` world straight from the vendored
+module — **regenerating needs no arcjet monorepo checkout**.
 
-| File | Source |
-|---|---|
-| `js_req.wasm` | `arcjet/arcjet-analyze/bindings_js_req/dist/arcjet_analyze_js_req.wasm` (post-wizer, pre-component) |
-| `bindings.go` | `gravity --world js-req --output bindings.go js_req.wasm`, then `s/^package js_req$/package jsreq/` on the first 5 lines |
-
-To regenerate from a clean arcjet-analyze checkout:
+From the repo root (after `mise install` for the pinned gravity — see the
+top-level `mise.toml`):
 
 ```sh
-cd ../arcjet/arcjet-analyze/bindings_js_req
-make build-wasm          # cargo build + wizer + wasm-opt + wasm-tools component new
-
-# back here:
-cp ../arcjet/arcjet-analyze/bindings_js_req/dist/arcjet_analyze_js_req.wasm \
-  internal/local/jsreq/js_req.wasm
-gravity --world js-req --output internal/local/jsreq/bindings.go \
-  internal/local/jsreq/js_req.wasm
-sed -i '1,5 s/^package js_req$/package jsreq/' internal/local/jsreq/bindings.go
+./internal/local/rebuild-bindings.sh
 ```
 
-The wizered (but pre-`wasm-tools component new`) wasm is the right input
-for wazero, which speaks core wasm rather than the Component Model. The
-`wizer.initialize` snapshot is load-bearing — without it, bot detection
-returns `"failed to detect bot: user agent parser unavailable"` because
-`USER_AGENT_PARSER` only gets populated during init.
+To pull a newer wasm build from a local arcjet monorepo checkout first, then
+regenerate:
+
+```sh
+./internal/local/rebuild-bindings.sh --from-monorepo [path-to-arcjet]
+```
+
+The script runs `gravity --world js-req` and renames the emitted package from
+`js_req` to `jsreq`.
+
+`js_req.wasm` is the post-wizer, pre-component core module from
+`arcjet-analyze/bindings_js_req/dist/arcjet_analyze_js_req.wasm`. wazero speaks
+core wasm rather than the Component Model, and the `wizer.initialize` snapshot
+is load-bearing — without it, bot detection returns `"failed to detect bot:
+user agent parser unavailable"` because `USER_AGENT_PARSER` is populated during
+init. The retained component-type WIT section adds ~2 KB and is ignored by
+wazero at runtime.
