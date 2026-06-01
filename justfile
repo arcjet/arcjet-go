@@ -1,0 +1,84 @@
+# Developer tasks for arcjet-go.
+#
+# These mirror the CI gate in .github/workflows/ci.yml so you can verify changes
+# locally before pushing a branch or opening a PR. Run `just check` for the full
+# gate.
+#
+# golangci-lint (and its formatters) is pinned in tools/go.mod via the `tool`
+# directive. `go tool -modfile=tools/go.mod` runs that pinned version, while
+# `./...` still resolves against the main module at the repo root.
+
+golangci := "go tool -modfile=tools/go.mod golangci-lint"
+
+# List available tasks.
+default:
+    @just --list
+
+# Install pinned tooling (gravity) needed for `just wasm`; Go + golangci-lint are fetched on demand.
+setup:
+    mise install
+
+# Full pre-push gate (justfile fmt + tidy + lint + build + test).
+check: fmt-check tidy-check lint build test
+
+# Auto-fix formatting: Go (goimports import grouping, etc.) and this justfile.
+format:
+    {{ golangci }} fmt
+    just --fmt
+
+# Verify the justfile is formatted (run `just format` to fix); fails if not.
+fmt-check:
+    just --fmt --check
+
+# Lint with golangci-lint; also fails on unformatted code (matches CI Lint job).
+lint:
+    {{ golangci }} run ./...
+
+# Lint and auto-apply fixes where the linters support it.
+lint-fix:
+    {{ golangci }} run --fix ./...
+
+# Build all packages (matches the CI build step).
+build:
+    go build ./...
+
+# Run tests the way CI does (race detector on, test order shuffled).
+test:
+    go test -race -shuffle=on ./...
+
+# Regenerate gravity wasm bindings (pass `--from-monorepo [path]` to refresh .wasm first).
+wasm *args:
+    ./internal/local/rebuild-bindings.sh {{ args }}
+
+# Verify the gravity wasm bindings are in sync with the vendored .wasm; fails if not.
+wasm-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Regenerating from the vendored .wasm must not change anything tracked: not
+    # bindings.go (stale bindings) and not the .wasm themselves (the generator
+    # must not clobber the WIT-bearing vendored modules — see rebuild-bindings.sh).
+    files=(internal/local/jsreq/bindings.go internal/local/jsreq/js_req.wasm \
+           internal/local/redact/bindings.go internal/local/redact/redact.wasm)
+    ./internal/local/rebuild-bindings.sh
+    if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
+      echo "error: wasm bindings are out of sync with the vendored .wasm. Run 'just wasm' and commit the result." >&2
+      git --no-pager diff -- "${files[@]}"
+      exit 1
+    fi
+
+# Tidy the main module and the tools module.
+tidy:
+    go mod tidy
+    go -C tools mod tidy
+
+# Verify go.mod / go.sum are tidy (matches the CI tidy gate); fails if not.
+tidy-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    go mod tidy
+    go -C tools mod tidy
+    if [[ -n "$(git status --porcelain go.mod go.sum tools/go.mod tools/go.sum)" ]]; then
+      echo "error: go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes." >&2
+      git --no-pager diff -- go.mod go.sum tools/go.mod tools/go.sum
+      exit 1
+    fi

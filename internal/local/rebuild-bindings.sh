@@ -48,14 +48,27 @@ if [ "$sync" -eq 1 ]; then
 		internal/local/redact/redact.wasm
 fi
 
+# gravity writes bindings.go AND a companion (stripped) core wasm into the
+# output file's directory. Generate into a temp dir and copy back only
+# bindings.go, so the vendored *.wasm keep their `component-type` WIT custom
+# section. That section is what lets gravity read the world straight from the
+# vendored module — i.e. what makes regeneration self-contained. Writing
+# gravity's output next to the vendored wasm would overwrite it with the
+# stripped copy and break the next regeneration ("unable to find world").
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/jsreq" "$tmp/redact"
+
 echo ">> Generating internal/local/jsreq/bindings.go"
-"${gravity[@]}" --world js-req --output internal/local/jsreq/bindings.go internal/local/jsreq/js_req.wasm
+"${gravity[@]}" --world js-req --output "$tmp/jsreq/bindings.go" internal/local/jsreq/js_req.wasm
 # gravity emits `package js_req`; the Go-idiomatic short form is `jsreq`.
-sed -i.bak '1,5 s/^package js_req$/package jsreq/' internal/local/jsreq/bindings.go
-rm -f internal/local/jsreq/bindings.go.bak
+sed -i.bak '1,5 s/^package js_req$/package jsreq/' "$tmp/jsreq/bindings.go"
+rm -f "$tmp/jsreq/bindings.go.bak"
+cp "$tmp/jsreq/bindings.go" internal/local/jsreq/bindings.go
 
 echo ">> Generating internal/local/redact/bindings.go"
-"${gravity[@]}" --world redact --output internal/local/redact/bindings.go internal/local/redact/redact.wasm
+"${gravity[@]}" --world redact --output "$tmp/redact/bindings.go" internal/local/redact/redact.wasm
+cp "$tmp/redact/bindings.go" internal/local/redact/bindings.go
 
 echo ">> Verifying build"
 go build ./...
