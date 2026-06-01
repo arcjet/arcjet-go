@@ -1,5 +1,9 @@
 # arcjet-go Agent Guide
 
+This guide is for coding agents **contributing to** the Go SDK — building,
+testing, and changing the code in this repository. It is not about installing or
+using arcjet-go in your own application; for that, see the [README](README.md).
+
 This is the Go SDK for [Arcjet](https://arcjet.com), the runtime security
 platform. `arcjet.NewClient` provides request protection for `net/http`
 handlers; `arcjet.NewGuardClient` provides guard protection for non-HTTP code
