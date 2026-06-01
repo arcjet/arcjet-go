@@ -51,7 +51,12 @@ edit anything under `internal/local/*` that affects the generated bindings:
   the `.wasm` from a local `arcjet` checkout first), then commit the result.
 - `just wasm-check` regenerates from the vendored `.wasm` and fails if
   `bindings.go` drifted — run it (or review `git diff`) before pushing such a
-  change. CI does not catch this drift, so it is the author's responsibility.
+  change. CI does not regenerate, so verifying `bindings.go` drift is the
+  author's responsibility.
+- CI does guard against the `.wasm` being stripped of its wit-bindgen
+  `component-type` section (which would break regeneration): the
+  `TestVendoredWasmRetainsComponentTypeSection` test in the `Test` job fails if
+  a vendored module loses that section.
 
 ## Notes
 
