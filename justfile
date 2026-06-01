@@ -14,12 +14,21 @@ golangci := "go tool -modfile=tools/go.mod golangci-lint"
 default:
     @just --list
 
-# Full CI-equivalent gate (tidy + lint + build + test); run before pushing.
-check: tidy-check lint build test
+# Install pinned tooling (gravity) needed for `just wasm`; Go + golangci-lint are fetched on demand.
+setup:
+    mise install
 
-# Auto-fix formatting (goimports import grouping, etc.).
+# Full pre-push gate (justfile fmt + tidy + lint + build + test).
+check: fmt-check tidy-check lint build test
+
+# Auto-fix formatting: Go (goimports import grouping, etc.) and this justfile.
 format:
     {{ golangci }} fmt
+    just --fmt
+
+# Verify the justfile is formatted (run `just format` to fix); fails if not.
+fmt-check:
+    just --fmt --check
 
 # Lint with golangci-lint; also fails on unformatted code (matches CI Lint job).
 lint:

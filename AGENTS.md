@@ -18,23 +18,25 @@ Before pushing a branch or opening a PR, run the relevant `just` tasks and make
 them pass locally. Do not leave validation for CI. The tasks mirror the CI gate
 in `.github/workflows/ci.yml`.
 
-| Need                         | Command           |
-| ---------------------------- | ----------------- |
-| Full CI-equivalent gate      | `just check`      |
-| Lint (and format check)      | `just lint`       |
-| Auto-fix formatting          | `just format`     |
-| Lint with auto-fixes applied | `just lint-fix`   |
-| Build                        | `just build`      |
-| Tests (race + shuffle)       | `just test`       |
-| Tidy go.mod / tools/go.mod   | `just tidy`       |
-| Verify modules are tidy      | `just tidy-check` |
-| Regenerate wasm bindings     | `just wasm`       |
-| Verify wasm bindings in sync | `just wasm-check` |
+| Need                          | Command           |
+| ----------------------------- | ----------------- |
+| Full pre-push gate            | `just check`      |
+| Install pinned tooling (wasm) | `just setup`      |
+| Lint (and format check)       | `just lint`       |
+| Auto-fix formatting           | `just format`     |
+| Verify justfile is formatted  | `just fmt-check`  |
+| Lint with auto-fixes applied  | `just lint-fix`   |
+| Build                         | `just build`      |
+| Tests (race + shuffle)        | `just test`       |
+| Tidy go.mod / tools/go.mod    | `just tidy`       |
+| Verify modules are tidy       | `just tidy-check` |
+| Regenerate wasm bindings      | `just wasm`       |
+| Verify wasm bindings in sync  | `just wasm-check` |
 
 Run `just` (or `just default`) to list all tasks.
 
 - For most changes, `just check` is the single command to run before pushing —
-  it runs tidy-check, lint, build, and tests, exactly what CI enforces.
+  it runs the CI gate (tidy, lint, build, tests) plus a justfile-format check.
 - During development, run the narrowest relevant task first (e.g. `just lint`
   or `just test`), then `just check` before pushing.
 - `just lint` also fails on unformatted code (goimports import grouping). Run
