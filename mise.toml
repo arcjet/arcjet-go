@@ -1,0 +1,11 @@
+# Toolchain for regenerating the gravity-generated wasm bindings in
+# internal/local/* (see internal/local/rebuild-bindings.sh). This is only needed
+# when rebuilding those bindings — the SDK itself builds and tests with the Go
+# toolchain alone, so most contributors never need mise.
+#
+# Pinned to the gravity commit whose codegen produced the committed bindings.
+# fe2e11f (#197) adds the variants / option<T> / enum-lift codegen the redact
+# world needs; older revs panic generating it (gravity TODO(#9)).
+[tools."cargo:https://github.com/arcjet/gravity"]
+version = "rev:fe2e11f39ae0e48526f6c584783fcdfe0e0f25cc"
+locked = true
