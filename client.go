@@ -363,7 +363,7 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	// mutated; the proto only reads from the slice during serialization,
 	// so sharing the backing array is safe.
 	req := connect.NewRequest(&decidev1.DecideRequest{
-		SdkStack:        decidev1.SDKStack_SDK_STACK_UNSPECIFIED,
+		SdkStack:        decidev1.SDKStack_SDK_STACK_GO,
 		SdkVersion:      c.sdkVersion,
 		Details:         details.toProto(),
 		Rules:           rules,
@@ -405,7 +405,7 @@ func (c *Client) reportLocal(ctx context.Context, details ProtectDetails, rules 
 	go func() {
 		defer cancel()
 		req := connect.NewRequest(&decidev1.ReportRequest{
-			SdkStack:        decidev1.SDKStack_SDK_STACK_UNSPECIFIED,
+			SdkStack:        decidev1.SDKStack_SDK_STACK_GO,
 			SdkVersion:      c.sdkVersion,
 			Details:         reportDetails.toProto(),
 			Decision:        decision,
