@@ -530,9 +530,11 @@ func (r *GuardPromptInjectionRule) DeniedResult(d GuardDecision) *GuardPromptRes
 // ExperimentalGuardModerateContentOptions configures a Guard content
 // moderation rule.
 //
-// Experimental: the rule name and result shape may change. No moderation model
-// is wired up server-side yet, so the rule currently returns an error result
-// (which is fail open).
+// Experimental: the rule name and result shape may change. This functionality
+// may not be available yet, so while this rule is experimental a call may
+// simply return an error result. Errors are fail open, so the decision reports
+// an error while the conclusion stays ALLOW. Check the latest version of this
+// SDK to see whether the rule is now stable.
 type ExperimentalGuardModerateContentOptions struct {
 	// Mode controls whether the rule enforces denials or only reports them.
 	Mode Mode
@@ -553,10 +555,11 @@ type ExperimentalGuardModerateContentRule struct {
 // ExperimentalGuardModerateContent creates a Guard content moderation rule.
 //
 // Experimental: the rule name and result shape may change, and the name is
-// deliberately prefixed to make that clear. No moderation model is wired up
-// server-side yet, so the rule currently returns an error result — which is
-// fail open, so [GuardDecision.IsErrored] reports true while the conclusion
-// stays ALLOW.
+// deliberately prefixed to make that clear. This functionality may not be
+// available yet, so while this rule is experimental a call may simply return
+// an error result. Errors are fail open, so [GuardDecision.IsErrored] reports
+// true while the conclusion stays ALLOW. Check the latest version of this SDK
+// to see whether the rule is now stable.
 func ExperimentalGuardModerateContent(opts ExperimentalGuardModerateContentOptions) (*ExperimentalGuardModerateContentRule, error) {
 	base, err := newGuardRuleBase(opts.Mode, opts.Label, opts.Metadata)
 	if err != nil {
