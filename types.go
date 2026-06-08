@@ -104,6 +104,8 @@ const (
 	ReasonSensitiveInfo ReasonType = "SENSITIVE_INFO"
 	// ReasonPromptInjection means a prompt injection rule determined the result.
 	ReasonPromptInjection ReasonType = "PROMPT_INJECTION"
+	// ReasonModerateContent means a content moderation rule determined the result.
+	ReasonModerateContent ReasonType = "MODERATE_CONTENT"
 	// ReasonFilter means a request filter rule determined the result.
 	ReasonFilter ReasonType = "FILTER"
 	// ReasonError means the decision contains an error.
@@ -150,6 +152,8 @@ const (
 	GuardRuleTypeSlidingWindow GuardRuleType = "SLIDING_WINDOW"
 	// GuardRuleTypePromptInjection identifies a Guard prompt injection rule.
 	GuardRuleTypePromptInjection GuardRuleType = "PROMPT_INJECTION"
+	// GuardRuleTypeModerateContent identifies a Guard content moderation rule.
+	GuardRuleTypeModerateContent GuardRuleType = "MODERATE_CONTENT"
 	// GuardRuleTypeLocalSensitiveInfo identifies a local sensitive info Guard rule.
 	GuardRuleTypeLocalSensitiveInfo GuardRuleType = "LOCAL_SENSITIVE_INFO"
 	// GuardRuleTypeLocalCustom identifies a custom local Guard rule.
