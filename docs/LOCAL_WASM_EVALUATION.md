@@ -158,13 +158,28 @@ The `internal/local/jsreq/js_req.wasm` artefact comes from
 that ships in arcjet-js / arcjet-py is wrong for arcjet-go because
 wazero only speaks core wasm.
 
-### Why arcjet-go uses the wizer'd variant
+### Why wizer matters
+
+`bindings_js_req` builds its bot detector from a `RegexSet` of ~643
+user-agent patterns and stores it in the `USER_AGENT_PARSER` static.
+Compiling that `RegexSet` is expensive — on the order of milliseconds —
+and it is the same work on every instantiation.
+
+Wizer runs the `wizer-initialize` export **at build time**, compiles the
+parser once, and freezes it into the module's data segment. The runtime
+then starts with the parser already populated, so `detect_bot` pays
+nothing to build it. This matters because wazero (like the JS and Python
+wasm runtimes) instantiates a **fresh module per call** — without the
+pre-init the parser would be rebuilt on *every request*, not just at cold
+start, since each instance starts with an empty `USER_AGENT_PARSER`.
+
+### Two variants, and why arcjet-go keeps wizer
 
 `bindings_js_req` now builds **two variants** from one source (see its
 Makefile and the `drop-wizer-from-js-req-wasm` ADR in the monorepo),
 selected by a `wizer` Cargo feature that gates the `wizer-initialize`
-export. `detect_bot` always falls back to `OnceLock::get_or_init`, so
-the parser is available either way:
+export. `detect_bot` always falls back to `OnceLock::get_or_init`, so the
+parser is still populated lazily when the export is absent:
 
 ```
 cargo build --release                      → no-Wizer core   → arcjet-js
@@ -173,11 +188,16 @@ cargo build --release --features wizer
   ↓ wasm-opt -O3 ↓ wasm-tools component new → wizer'd component → arcjet-py
 ```
 
-arcjet-go consumes the wizer'd core (`*.wizer.wasm`). arcjet-js drops
-Wizer to fit Vercel's Edge bundle size limit and accepts a per-request
-parser build; arcjet-go has no size limit, so it keeps Wizer to avoid
-that per-request cost (benchmarked as negligible regression when kept:
-`BenchmarkProtectDetailsLocalBotDeny` ~11.7 µs/op, unchanged).
+The pre-init snapshot roughly triples the data segment. arcjet-js drops
+Wizer anyway because its wasm is bundled into customer apps and must fit
+Vercel's Edge bundle size limit (a hard constraint); it accepts the
+per-request parser build as the price of fitting.
+
+arcjet-go has no such size limit — the wasm is embedded in the Go binary
+— so it keeps the wizer'd core and avoids paying the parser build on
+every request. The larger artefact is a non-issue here; the saved
+per-request work is not. Benchmarked as no regression:
+`BenchmarkProtectDetailsLocalBotDeny` ~11.7 µs/op, unchanged.
 
 ### Regen
 
