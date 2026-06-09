@@ -42,7 +42,12 @@ fi
 
 if [ "$sync" -eq 1 ]; then
 	echo ">> Refreshing vendored wasm from $monorepo"
-	cp "$monorepo/arcjet-analyze/bindings_js_req/dist/arcjet_analyze_js_req.wasm" \
+	# The monorepo builds js_req in two variants (see its bindings_js_req
+	# Makefile + the drop-wizer ADR): a no-Wizer variant for arcjet-js, and a
+	# Wizer'd variant for arcjet-py/arcjet-go. We use the Wizer'd core so the
+	# UserAgentParser stays pre-initialized (no per-request build cost; size is
+	# not a constraint for an embedded Go binary).
+	cp "$monorepo/arcjet-analyze/bindings_js_req/dist/arcjet_analyze_js_req.wizer.wasm" \
 		internal/local/jsreq/js_req.wasm
 	cp "$monorepo/arcjet-analyze/bindings_redact/dist/arcjet_analyze_bindings_redact.wasm" \
 		internal/local/redact/redact.wasm
