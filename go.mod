@@ -3,7 +3,7 @@ module github.com/arcjet/arcjet-go
 go 1.25.0
 
 require (
-	connectrpc.com/connect v1.19.2
+	connectrpc.com/connect v1.20.0
 	github.com/tetratelabs/wazero v1.11.0
 	go.jetify.com/typeid v1.3.0
 	google.golang.org/protobuf v1.36.11
