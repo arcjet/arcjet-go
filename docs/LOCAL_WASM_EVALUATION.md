@@ -153,42 +153,68 @@ other rule kinds ignore the evaluator.
 ## Build pipeline
 
 The `internal/local/jsreq/js_req.wasm` artefact comes from
-`arcjet/arcjet-analyze/bindings_js_req/dist/arcjet_analyze_js_req.wasm`
+`arcjet/arcjet-analyze/bindings_js_req/dist/arcjet_analyze_js_req.wizer.wasm`
 (post-wizer, pre-`wasm-tools component new`). The component-form wasm
 that ships in arcjet-js / arcjet-py is wrong for arcjet-go because
 wazero only speaks core wasm.
 
 ### Why wizer matters
 
-`bindings_js_req` exports a `wizer.initialize` function that populates
-the `USER_AGENT_PARSER` static. Without that pre-init, bot detection
-traps with `"failed to detect bot: user agent parser unavailable"`.
-The arcjet-analyze Makefile runs:
+`bindings_js_req` builds its bot detector from a `RegexSet` of ~643
+user-agent patterns and stores it in the `USER_AGENT_PARSER` static.
+Compiling that `RegexSet` is expensive — on the order of milliseconds —
+and it is the same work on every instantiation.
+
+Wizer runs the `wizer-initialize` export **at build time**, compiles the
+parser once, and freezes it into the module's data segment. The runtime
+then starts with the parser already populated, so `detect_bot` pays
+nothing to build it. This matters because wazero (like the JS and Python
+wasm runtimes) instantiates a **fresh module per call** — without the
+pre-init the parser would be rebuilt on *every request*, not just at cold
+start, since each instance starts with an empty `USER_AGENT_PARSER`.
+
+### Two variants, and why arcjet-go keeps wizer
+
+`bindings_js_req` now builds **two variants** from one source (see its
+Makefile and the `drop-wizer-from-js-req-wasm` ADR in the monorepo),
+selected by a `wizer` Cargo feature that gates the `wizer-initialize`
+export. `detect_bot` always falls back to `OnceLock::get_or_init`, so the
+parser is still populated lazily when the export is absent:
 
 ```
-cargo build --release → core wasm (USER_AGENT_PARSER = None)
-↓ wizer --init-func wizer-initialize
-↓ wasm-opt -O3                  (optional size optimisation)
-↓ wasm-tools component new      (only needed for the JS/Py drop)
+cargo build --release                      → no-Wizer core   → arcjet-js
+cargo build --release --features wizer
+  ↓ wizer --init-func wizer-initialize      → wizer'd core    → arcjet-go (this repo)
+  ↓ wasm-opt -O3 ↓ wasm-tools component new → wizer'd component → arcjet-py
 ```
 
-arcjet-go consumes the output of step 2 (wizered, optionally opt'd).
+The pre-init snapshot roughly triples the data segment. arcjet-js drops
+Wizer anyway because its wasm is bundled into customer apps and must fit
+Vercel's Edge bundle size limit (a hard constraint); it accepts the
+per-request parser build as the price of fitting.
+
+arcjet-go has no such size limit — the wasm is embedded in the Go binary
+— so it keeps the wizer'd core and avoids paying the parser build on
+every request. The larger artefact is a non-issue here; the saved
+per-request work is not. Benchmarked as no regression:
+`BenchmarkProtectDetailsLocalBotDeny` ~11.7 µs/op, unchanged.
 
 ### Regen
 
-From a fresh arcjet-analyze checkout:
+Use `internal/local/rebuild-bindings.sh` — it generates `bindings.go`
+in a temp dir and copies back only the Go file, so the vendored wasm
+keeps its `component-type` WIT section (a guard test,
+`TestVendoredWasmRetainsComponentTypeSection`, enforces this; running
+`gravity` directly against the vendored path would strip it):
 
 ```sh
-cd ../arcjet/arcjet-analyze/bindings_js_req
-make build-wasm
+# Regenerate bindings.go from the already-vendored wasm:
+./internal/local/rebuild-bindings.sh
 
-cd ../../../arcjet-go
-cp ../arcjet/arcjet-analyze/bindings_js_req/dist/arcjet_analyze_js_req.wasm \
-   internal/local/jsreq/js_req.wasm
-gravity --world js-req \
-   --output internal/local/jsreq/bindings.go \
-   internal/local/jsreq/js_req.wasm
-sed -i '1,5 s/^package js_req$/package jsreq/' internal/local/jsreq/bindings.go
+# Or refresh the vendored wasm from a local arcjet monorepo first
+# (runs `make build-wasm` there, then copies the wizer'd core):
+(cd ../arcjet/arcjet-analyze/bindings_js_req && make build-wasm)
+./internal/local/rebuild-bindings.sh --from-monorepo ../arcjet
 go test ./...
 ```
 
