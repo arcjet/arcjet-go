@@ -30,18 +30,19 @@ type guardDecisionWire struct {
 }
 
 type guardRuleResultWire struct {
-	ResultID           string                    `json:"resultId"`
-	ConfigID           string                    `json:"configId"`
-	InputID            string                    `json:"inputId"`
-	Type               string                    `json:"type"`
-	TokenBucket        *GuardTokenBucketResult   `json:"tokenBucket,omitempty"`
-	FixedWindow        *GuardFixedWindowResult   `json:"fixedWindow,omitempty"`
-	SlidingWindow      *GuardSlidingWindowResult `json:"slidingWindow,omitempty"`
-	PromptInjection    *GuardPromptResult        `json:"promptInjection,omitempty"`
-	LocalSensitiveInfo *GuardSensitiveInfoResult `json:"localSensitiveInfo,omitempty"`
-	LocalCustom        *GuardLocalCustomResult   `json:"localCustom,omitempty"`
-	Error              *ArcjetError              `json:"error,omitempty"`
-	NotRun             map[string]any            `json:"notRun,omitempty"`
+	ResultID           string                      `json:"resultId"`
+	ConfigID           string                      `json:"configId"`
+	InputID            string                      `json:"inputId"`
+	Type               string                      `json:"type"`
+	TokenBucket        *GuardTokenBucketResult     `json:"tokenBucket,omitempty"`
+	FixedWindow        *GuardFixedWindowResult     `json:"fixedWindow,omitempty"`
+	SlidingWindow      *GuardSlidingWindowResult   `json:"slidingWindow,omitempty"`
+	PromptInjection    *GuardPromptResult          `json:"promptInjection,omitempty"`
+	ModerateContent    *GuardModerateContentResult `json:"moderateContent,omitempty"`
+	LocalSensitiveInfo *GuardSensitiveInfoResult   `json:"localSensitiveInfo,omitempty"`
+	LocalCustom        *GuardLocalCustomResult     `json:"localCustom,omitempty"`
+	Error              *ArcjetError                `json:"error,omitempty"`
+	NotRun             map[string]any              `json:"notRun,omitempty"`
 }
 
 // GuardDecision is the result of a Guard evaluation.
@@ -105,6 +106,7 @@ type GuardRuleResult struct {
 	FixedWindow        *GuardFixedWindowResult
 	SlidingWindow      *GuardSlidingWindowResult
 	PromptInjection    *GuardPromptResult
+	ModerateContent    *GuardModerateContentResult
 	LocalSensitiveInfo *GuardSensitiveInfoResult
 	LocalCustom        *GuardLocalCustomResult
 	Error              *ArcjetError
@@ -141,6 +143,12 @@ type GuardSlidingWindowResult struct {
 
 // GuardPromptResult contains Guard prompt injection result details.
 type GuardPromptResult struct {
+	Conclusion Conclusion `json:"conclusion"`
+	Detected   bool       `json:"detected"`
+}
+
+// GuardModerateContentResult contains Guard content moderation result details.
+type GuardModerateContentResult struct {
 	Conclusion Conclusion `json:"conclusion"`
 	Detected   bool       `json:"detected"`
 }
@@ -219,6 +227,7 @@ func (r guardRuleResultWire) toGuardRuleResult() GuardRuleResult {
 		FixedWindow:        r.FixedWindow,
 		SlidingWindow:      r.SlidingWindow,
 		PromptInjection:    r.PromptInjection,
+		ModerateContent:    r.ModerateContent,
 		LocalSensitiveInfo: r.LocalSensitiveInfo,
 		LocalCustom:        r.LocalCustom,
 		Error:              r.Error,
@@ -237,6 +246,9 @@ func (r guardRuleResultWire) toGuardRuleResult() GuardRuleResult {
 	case r.PromptInjection != nil:
 		result.Conclusion = r.PromptInjection.Conclusion
 		result.Reason = ReasonPromptInjection
+	case r.ModerateContent != nil:
+		result.Conclusion = r.ModerateContent.Conclusion
+		result.Reason = ReasonModerateContent
 	case r.LocalSensitiveInfo != nil:
 		result.Conclusion = r.LocalSensitiveInfo.Conclusion
 		result.Reason = ReasonSensitiveInfo
@@ -261,6 +273,8 @@ func parseGuardReason(s string) ReasonType {
 		return ReasonRateLimit
 	case "GUARD_REASON_PROMPT_INJECTION":
 		return ReasonPromptInjection
+	case "GUARD_REASON_MODERATE_CONTENT":
+		return ReasonModerateContent
 	case "GUARD_REASON_SENSITIVE_INFO":
 		return ReasonSensitiveInfo
 	case "GUARD_REASON_CUSTOM":
@@ -284,6 +298,8 @@ func parseGuardRuleType(s string) GuardRuleType {
 		return GuardRuleTypeSlidingWindow
 	case "GUARD_RULE_TYPE_PROMPT_INJECTION":
 		return GuardRuleTypePromptInjection
+	case "GUARD_RULE_TYPE_MODERATE_CONTENT":
+		return GuardRuleTypeModerateContent
 	case "GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO":
 		return GuardRuleTypeLocalSensitiveInfo
 	case "GUARD_RULE_TYPE_LOCAL_CUSTOM":

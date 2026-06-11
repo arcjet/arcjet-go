@@ -32,6 +32,7 @@ func TestGuardRuleResultVariants(t *testing.T) {
 		{Type: "GUARD_RULE_TYPE_FIXED_WINDOW", FixedWindow: &GuardFixedWindowResult{Conclusion: "GUARD_CONCLUSION_DENY"}},
 		{Type: "GUARD_RULE_TYPE_SLIDING_WINDOW", SlidingWindow: &GuardSlidingWindowResult{Conclusion: "GUARD_CONCLUSION_ALLOW"}},
 		{Type: "GUARD_RULE_TYPE_PROMPT_INJECTION", PromptInjection: &GuardPromptResult{Conclusion: "GUARD_CONCLUSION_DENY"}},
+		{Type: "GUARD_RULE_TYPE_MODERATE_CONTENT", ModerateContent: &GuardModerateContentResult{Conclusion: "GUARD_CONCLUSION_DENY"}},
 		{Type: "GUARD_RULE_TYPE_LOCAL_CUSTOM", LocalCustom: &GuardLocalCustomResult{Conclusion: "GUARD_CONCLUSION_ALLOW"}},
 		{Type: "GUARD_RULE_TYPE_TOKEN_BUCKET", Error: &ArcjetError{Message: "bad"}},
 		{Type: "GUARD_RULE_TYPE_TOKEN_BUCKET", NotRun: map[string]any{}},
@@ -47,8 +48,18 @@ func TestGuardRuleResultVariants(t *testing.T) {
 	}
 	if parseGuardReason("GUARD_REASON_RATE_LIMIT") != ReasonRateLimit ||
 		parseGuardReason("GUARD_REASON_PROMPT_INJECTION") != ReasonPromptInjection ||
+		parseGuardReason("GUARD_REASON_MODERATE_CONTENT") != ReasonModerateContent ||
 		parseGuardReason("GUARD_REASON_CUSTOM") != ReasonCustom {
 		t.Fatal("guard reason parsing failed")
+	}
+
+	// Content moderation results map to the moderate-content reason.
+	mc := guardRuleResultWire{
+		Type:            "GUARD_RULE_TYPE_MODERATE_CONTENT",
+		ModerateContent: &GuardModerateContentResult{Conclusion: "GUARD_CONCLUSION_DENY"},
+	}.toGuardRuleResult()
+	if mc.Reason != ReasonModerateContent || mc.ModerateContent == nil {
+		t.Fatalf("moderate content result mapped incorrectly: %#v", mc)
 	}
 }
 
@@ -132,6 +143,7 @@ func TestParseGuardRuleType(t *testing.T) {
 		"GUARD_RULE_TYPE_FIXED_WINDOW":         GuardRuleTypeFixedWindow,
 		"GUARD_RULE_TYPE_SLIDING_WINDOW":       GuardRuleTypeSlidingWindow,
 		"GUARD_RULE_TYPE_PROMPT_INJECTION":     GuardRuleTypePromptInjection,
+		"GUARD_RULE_TYPE_MODERATE_CONTENT":     GuardRuleTypeModerateContent,
 		"GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO": GuardRuleTypeLocalSensitiveInfo,
 		"GUARD_RULE_TYPE_LOCAL_CUSTOM":         GuardRuleTypeLocalCustom,
 		"UNRECOGNISED":                         GuardRuleType("UNRECOGNISED"),
