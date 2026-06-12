@@ -68,7 +68,7 @@ jobs:
 
       - name: Install pinned tooling (gravity)
         # Builds the cargo-pinned gravity from mise.toml and caches it across runs.
-        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+        uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925 # v4.1.0
 
       - name: Verify wasm bindings are up-to-date
         # rebuild-bindings.sh regenerates internal/local/*/bindings.go from the
