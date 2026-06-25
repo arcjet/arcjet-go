@@ -177,14 +177,17 @@ func TestGuardDecisionFromProtoNilFailsOpen(t *testing.T) {
 	if !d.IsAllowed() {
 		t.Error("nil response should fail open (allow)")
 	}
-	if !d.IsErrored() {
-		t.Error("nil response should be marked errored")
+	if !d.HasFailedOpen() {
+		t.Error("nil response should be marked failed-open")
+	}
+	if len(d.ErrorResults()) != 1 {
+		t.Error("nil response should surface one errored result")
 	}
 }
 
 func TestGuardDecisionErroredFromRuleResult(t *testing.T) {
 	d := GuardDecision{Results: []GuardRuleResult{{Error: &ArcjetError{Message: "boom"}}}}
-	if !d.IsErrored() {
+	if len(d.ErrorResults()) != 1 {
 		t.Error("rule-level error not surfaced on decision")
 	}
 	if !(GuardRuleResult{Error: &ArcjetError{Message: "x"}}).IsErrored() {
@@ -193,7 +196,152 @@ func TestGuardDecisionErroredFromRuleResult(t *testing.T) {
 	if !(GuardRuleResult{Conclusion: ConclusionDeny}).IsDenied() {
 		t.Error("rule denied helper failed")
 	}
-	if (GuardDecision{}).IsErrored() {
-		t.Error("empty decision should not be errored")
+	if (GuardDecision{}).HasFailedOpen() {
+		t.Error("empty decision should not be failed-open")
+	}
+}
+
+func TestGuardDecisionWarningsSurfaceFromResponseErrors(t *testing.T) {
+	resp := guardResponseWire{
+		Decision: guardDecisionWire{
+			ID:          "gdec_test",
+			Conclusion:  "GUARD_CONCLUSION_ALLOW",
+			Reason:      "GUARD_REASON_UNSPECIFIED",
+			RuleResults: nil,
+		},
+		Warnings: []Warning{
+			{Code: "AJ1001", Message: "invalid metadata key"},
+			{Code: "AJ1002", Message: "invalid label"},
+		},
+	}
+	d := resp.toGuardDecision()
+	if len(d.Warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %d", len(d.Warnings))
+	}
+	if d.Warnings[0].Code != "AJ1001" || d.Warnings[0].Message != "invalid metadata key" {
+		t.Errorf("unexpected first warning: %+v", d.Warnings[0])
+	}
+	// A warning alone never makes a decision fail open.
+	if d.HasFailedOpen() {
+		t.Error("warnings should not make a decision fail open")
+	}
+	if len(d.ErrorResults()) != 0 {
+		t.Error("warnings should not produce errored results")
+	}
+}
+
+func TestGuardDecisionAllowWithErrorIsFailedOpen(t *testing.T) {
+	resp := guardResponseWire{
+		Decision: guardDecisionWire{
+			ID:         "gdec_test",
+			Conclusion: "GUARD_CONCLUSION_ALLOW",
+			Reason:     "GUARD_REASON_UNSPECIFIED",
+			RuleResults: []guardRuleResultWire{{
+				ConfigID: "cfg_1",
+				InputID:  "in_1",
+				Type:     "GUARD_RULE_TYPE_TOKEN_BUCKET",
+				Error:    &ArcjetError{Message: "boom", Code: "INTERNAL"},
+			}},
+		},
+	}
+	d := resp.toGuardDecision()
+	if d.Conclusion != ConclusionAllow {
+		t.Errorf("expected ALLOW, got %s", d.Conclusion)
+	}
+	if !d.HasFailedOpen() {
+		t.Error("ALLOW with an errored rule should be failed-open")
+	}
+	errs := d.ErrorResults()
+	if len(errs) != 1 || errs[0].Error.Code != "INTERNAL" {
+		t.Errorf("expected one INTERNAL errored result, got %+v", errs)
+	}
+}
+
+func TestGuardDecisionDenyWithErrorIsNotFailedOpen(t *testing.T) {
+	// A DENY conclusion was reached despite an errored rule — the decision did
+	// not fail open (it denied on purpose), but the errored rule is still
+	// surfaced via ErrorResults().
+	resp := guardResponseWire{
+		Decision: guardDecisionWire{
+			ID:         "gdec_test",
+			Conclusion: "GUARD_CONCLUSION_DENY",
+			Reason:     "GUARD_REASON_RATE_LIMIT",
+			RuleResults: []guardRuleResultWire{{
+				ConfigID: "cfg_1",
+				InputID:  "in_1",
+				Type:     "GUARD_RULE_TYPE_TOKEN_BUCKET",
+				Error:    &ArcjetError{Message: "boom", Code: "INTERNAL"},
+			}},
+		},
+	}
+	d := resp.toGuardDecision()
+	if d.Conclusion != ConclusionDeny {
+		t.Errorf("expected DENY, got %s", d.Conclusion)
+	}
+	if d.HasFailedOpen() {
+		t.Error("a DENY decision should not be failed-open")
+	}
+	if len(d.ErrorResults()) != 1 {
+		t.Error("the errored rule should still surface via ErrorResults()")
+	}
+}
+
+func TestGuardDecisionWarningAndErrorAreDistinctAxes(t *testing.T) {
+	// A warning (processed correctly, fix it) and an error (could not
+	// process) are independent: a warning does not make the decision fail
+	// open, but an errored rule does.
+	resp := guardResponseWire{
+		Decision: guardDecisionWire{
+			ID:         "gdec_test",
+			Conclusion: "GUARD_CONCLUSION_ALLOW",
+			Reason:     "GUARD_REASON_UNSPECIFIED",
+			RuleResults: []guardRuleResultWire{{
+				ConfigID: "cfg_1",
+				InputID:  "in_1",
+				Type:     "GUARD_RULE_TYPE_TOKEN_BUCKET",
+				Error:    &ArcjetError{Message: "boom", Code: "INTERNAL"},
+			}},
+		},
+		Warnings: []Warning{{Code: "AJ1002", Message: "stripped key"}},
+	}
+	d := resp.toGuardDecision()
+	if len(d.Warnings) != 1 {
+		t.Errorf("expected 1 warning, got %d", len(d.Warnings))
+	}
+	if len(d.ErrorResults()) != 1 {
+		t.Errorf("expected 1 errored result, got %d", len(d.ErrorResults()))
+	}
+	// Failed open is driven by the error, not the warning.
+	if !d.HasFailedOpen() {
+		t.Error("ALLOW with an errored rule should be failed-open")
+	}
+}
+
+func TestWarningsFromWirePreservesServerValues(t *testing.T) {
+	// warningsFromWire copies exactly what the server sent — including empty
+	// fields — rather than coercing, matching the JS and Python SDKs.
+	got := warningsFromWire([]Warning{
+		{Code: "AJ1001", Message: "invalid metadata key"},
+		{Code: "", Message: "only a message"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 warnings, got %d", len(got))
+	}
+	if got[0] != (Warning{Code: "AJ1001", Message: "invalid metadata key"}) {
+		t.Errorf("first warning altered: %+v", got[0])
+	}
+	if got[1] != (Warning{Code: "", Message: "only a message"}) {
+		t.Errorf("empty code should be preserved, got %+v", got[1])
+	}
+	// The result is a fresh slice, independent of the input.
+	in := []Warning{{Code: "AJ1", Message: "m"}}
+	out := warningsFromWire(in)
+	out[0].Code = "mutated"
+	if in[0].Code != "AJ1" {
+		t.Error("warningsFromWire should not alias the input slice")
+	}
+	// Nil/empty input stays nil (not an empty slice).
+	if warningsFromWire(nil) != nil {
+		t.Error("nil input should produce nil warnings")
 	}
 }

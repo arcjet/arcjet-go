@@ -97,6 +97,19 @@ type GuardRequest struct {
 }
 
 // Guard evaluates bound guard rule inputs.
+//
+// Programmer errors (nil client, invalid label, nil rule, or a rule that
+// cannot be encoded) return the zero-value decision and a non-nil error —
+// callers must handle the error. These are not fail-open: they reflect misuse
+// or misconfiguration, not runtime degradation.
+//
+// Runtime degradation — a transport failure reaching the Decide service — is
+// fail-open: the returned decision is a usable ALLOW carrying a synthetic
+// errored result (code TRANSPORT_ERROR) alongside the non-nil error. A caller
+// that ignores the error still gets a decision where [GuardDecision.HasFailedOpen]
+// reports true and [GuardDecision.ErrorResults] surfaces the failure, so a
+// fail-closed policy stays honest. A missing or malformed response is also
+// fail-open (synthesized by guardDecisionFromProto), but returns a nil error.
 func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecision, error) {
 	if c == nil {
 		return GuardDecision{}, fmt.Errorf("arcjet: %w", ErrNilClient)
@@ -145,7 +158,11 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	connectReq.Header().Set("User-Agent", c.userAgent)
 	resp, err := c.guardClient.Guard(ctx, connectReq)
 	if err != nil {
-		return GuardDecision{}, err
+		// Fail open: a transport failure is runtime degradation, not a
+		// programmer error. Return a usable ALLOW carrying a synthetic errored
+		// result so HasFailedOpen()/ErrorResults() flag it even if the caller
+		// ignores err.
+		return guardErrorDecision("TRANSPORT_ERROR", err.Error()), err
 	}
 	return guardDecisionFromProto(resp.Msg), nil
 }
@@ -557,9 +574,10 @@ type ExperimentalGuardModerateContentRule struct {
 // Experimental: the rule name and result shape may change, and the name is
 // deliberately prefixed to make that clear. This functionality may not be
 // available yet, so while this rule is experimental a call may simply return
-// an error result. Errors are fail open, so [GuardDecision.IsErrored] reports
-// true while the conclusion stays ALLOW. Check the latest version of this SDK
-// to see whether the rule is now stable.
+// an error result. Errors are fail open, so the conclusion stays ALLOW and
+// [GuardDecision.HasFailedOpen] reports true (inspect the errored result with
+// [GuardDecision.ErrorResults]). Check the latest version of this SDK to see
+// whether the rule is now stable.
 func ExperimentalGuardModerateContent(opts ExperimentalGuardModerateContentOptions) (*ExperimentalGuardModerateContentRule, error) {
 	base, err := newGuardRuleBase(opts.Mode, opts.Label, opts.Metadata)
 	if err != nil {

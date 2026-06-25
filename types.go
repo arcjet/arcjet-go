@@ -201,6 +201,17 @@ type ArcjetError struct {
 	Message string `json:"message,omitempty"`
 }
 
+// Warning is a diagnostic on a Guard decision or rule result. A warning means
+// the decision (or rule) was processed correctly — the result is trustworthy —
+// but something should be fixed (e.g. an invalid metadata key that was
+// stripped). Contrast with a per-rule error ([GuardRuleResult.Error]), which
+// means a rule or the decision could not be processed and the security signal
+// is degraded.
+type Warning struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 // Error formats an Arcjet error as a Go error string.
 func (e ArcjetError) Error() string {
 	if e.Code != "" && e.Message != "" {

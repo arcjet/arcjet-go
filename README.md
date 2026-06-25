@@ -1015,8 +1015,10 @@ decision, err := guard.Guard(ctx, arcjet.GuardRequest{
 decision.Conclusion // arcjet.ConclusionAllow or arcjet.ConclusionDeny
 decision.Reason     // arcjet.ReasonRateLimit, ReasonPromptInjection, etc.
 
-// Layer 2: error detection.
-decision.IsErrored() // true if any rule errored or the server reported diagnostics
+// Layer 2: error/warning detection.
+decision.HasFailedOpen() // true if ALLOW only because a rule/decision could not be processed (fail-closed gate)
+decision.ErrorResults()  // results that errored (rules or the decision that could not be processed)
+decision.Warnings        // decision-level diagnostics (e.g. an invalid metadata key that was stripped)
 
 // Layer 3: per-rule results (see "Per-rule results" above).
 for _, result := range decision.Results {
