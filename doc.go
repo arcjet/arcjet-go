@@ -14,7 +14,7 @@
 // servers, queue consumers, and background jobs. Create the GuardClient and
 // each rule once at package scope so per-rule result accessors have a stable
 // reference. Call GuardClient.Guard at the specific operation with a
-// hardcoded Label such as "tools.get_weather" — never an interpolated string
+// hardcoded Label such as "tools.get-weather" — never an interpolated string
 // like fmt.Sprintf("tools.%s", name), which defeats dashboard grouping. Each
 // rate-limit rule needs an explicit Key at call time; when there is no user
 // context (e.g. a stdio MCP server), pick a stable identifier such as the
