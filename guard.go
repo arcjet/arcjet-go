@@ -92,6 +92,12 @@ type GuardRequest struct {
 	Label string
 	// Metadata is optional key-value metadata for this Guard call.
 	Metadata map[string]string
+	// CorrelationId is an optional, caller-supplied opaque identifier used to
+	// correlate this Guard call with other Guard and Protect calls that belong
+	// to the same workflow, agent run, or multi-step task. Unlike Metadata it
+	// is a dedicated, indexable field; it does not affect the decision. Bounded
+	// server-side to 256 bytes of printable ASCII; invalid values are dropped.
+	CorrelationId string
 	// Rules are bound rule inputs evaluated by Guard.
 	Rules []GuardRuleInput
 }
@@ -151,6 +157,7 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		Label:               req.Label,
 		Metadata:            cloneMap(req.Metadata),
 		RuleSubmissions:     submissions,
+		CorrelationId:       req.CorrelationId,
 	}
 
 	connectReq := connect.NewRequest(wireReq)
