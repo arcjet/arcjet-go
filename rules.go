@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,12 +15,26 @@ type Rule interface {
 	requestRule() (map[string]any, error)
 	evaluateLocal(context.Context, ProtectDetails, ProtectOptions, *localEvaluator) (*localDecision, error)
 	localKind() localKind
+	// ruleID returns a stable cache-key namespace derived from the rule's
+	// type and configuration. Mirrors arcjet-js: each rule's hash changes
+	// whenever its config changes, so cache entries for stale rules are
+	// effectively invalidated without touching unrelated entries.
+	ruleID() string
+	// ruleCharacteristics returns the characteristics this rule uses to
+	// derive its cache fingerprint, or nil to fall back to the client-level
+	// characteristics. Only rate-limit rules override this: arcjet-js
+	// recomputes the fingerprint from each rate-limit rule's own
+	// characteristics (so a limit keyed on userId caches per user), while
+	// every other rule uses the single global fingerprint.
+	ruleCharacteristics() []string
 }
 
 type ruleFunc struct {
-	build func() (map[string]any, error)
-	local func(context.Context, ProtectDetails, ProtectOptions, *localEvaluator) (*localDecision, error)
-	kind  localKind
+	build           func() (map[string]any, error)
+	local           func(context.Context, ProtectDetails, ProtectOptions, *localEvaluator) (*localDecision, error)
+	kind            localKind
+	id              string
+	characteristics []string
 }
 
 func (f ruleFunc) requestRule() (map[string]any, error) {
@@ -33,6 +50,14 @@ func (f ruleFunc) evaluateLocal(ctx context.Context, details ProtectDetails, opt
 
 func (f ruleFunc) localKind() localKind {
 	return f.kind
+}
+
+func (f ruleFunc) ruleID() string {
+	return f.id
+}
+
+func (f ruleFunc) ruleCharacteristics() []string {
+	return f.characteristics
 }
 
 // TokenBucketOptions configures a token bucket rate limit rule.
@@ -54,22 +79,33 @@ type TokenBucketOptions struct {
 // Token buckets are useful for AI token budgets because callers can pass the
 // consumed token count with WithRequested.
 func TokenBucket(opts TokenBucketOptions) Rule {
-	return ruleFunc{build: func() (map[string]any, error) {
-		if err := validateMode(opts.Mode); err != nil {
-			return nil, err
-		}
-		if opts.RefillRate <= 0 || opts.Interval <= 0 || opts.Capacity <= 0 {
-			return nil, fmt.Errorf("arcjet: token bucket requires positive refill rate, interval, and capacity: %w", ErrInvalidRateLimit)
-		}
-		return map[string]any{"rateLimit": cleanMap(map[string]any{
-			"mode":            requestMode(opts.Mode),
-			"characteristics": opts.Characteristics,
-			"algorithm":       "RATE_LIMIT_ALGORITHM_TOKEN_BUCKET",
-			"refillRate":      safeUint32(opts.RefillRate),
-			"interval":        seconds(opts.Interval),
-			"capacity":        safeUint32(opts.Capacity),
-		})}, nil
-	}}
+	return ruleFunc{
+		build: func() (map[string]any, error) {
+			if err := validateMode(opts.Mode); err != nil {
+				return nil, err
+			}
+			if opts.RefillRate <= 0 || opts.Interval <= 0 || opts.Capacity <= 0 {
+				return nil, fmt.Errorf("arcjet: token bucket requires positive refill rate, interval, and capacity: %w", ErrInvalidRateLimit)
+			}
+			return map[string]any{"rateLimit": cleanMap(map[string]any{
+				"mode":            requestMode(opts.Mode),
+				"characteristics": opts.Characteristics,
+				"algorithm":       "RATE_LIMIT_ALGORITHM_TOKEN_BUCKET",
+				"refillRate":      safeUint32(opts.RefillRate),
+				"interval":        seconds(opts.Interval),
+				"capacity":        safeUint32(opts.Capacity),
+			})}, nil
+		},
+		id: hashKey(
+			"token_bucket", "1",
+			string(opts.Mode),
+			joinSortedRuleParts(opts.Characteristics),
+			strconv.Itoa(opts.RefillRate),
+			opts.Interval.String(),
+			strconv.Itoa(opts.Capacity),
+		),
+		characteristics: opts.Characteristics,
+	}
 }
 
 // FixedWindowOptions configures a fixed window rate limit rule.
@@ -86,21 +122,31 @@ type FixedWindowOptions struct {
 
 // FixedWindow creates a fixed window rate limit rule.
 func FixedWindow(opts FixedWindowOptions) Rule {
-	return ruleFunc{build: func() (map[string]any, error) {
-		if err := validateMode(opts.Mode); err != nil {
-			return nil, err
-		}
-		if opts.Window <= 0 || opts.MaxRequests <= 0 {
-			return nil, fmt.Errorf("arcjet: fixed window requires positive window and max requests: %w", ErrInvalidRateLimit)
-		}
-		return map[string]any{"rateLimit": cleanMap(map[string]any{
-			"mode":            requestMode(opts.Mode),
-			"characteristics": opts.Characteristics,
-			"algorithm":       "RATE_LIMIT_ALGORITHM_FIXED_WINDOW",
-			"windowInSeconds": seconds(opts.Window),
-			"max":             safeUint32(opts.MaxRequests),
-		})}, nil
-	}}
+	return ruleFunc{
+		build: func() (map[string]any, error) {
+			if err := validateMode(opts.Mode); err != nil {
+				return nil, err
+			}
+			if opts.Window <= 0 || opts.MaxRequests <= 0 {
+				return nil, fmt.Errorf("arcjet: fixed window requires positive window and max requests: %w", ErrInvalidRateLimit)
+			}
+			return map[string]any{"rateLimit": cleanMap(map[string]any{
+				"mode":            requestMode(opts.Mode),
+				"characteristics": opts.Characteristics,
+				"algorithm":       "RATE_LIMIT_ALGORITHM_FIXED_WINDOW",
+				"windowInSeconds": seconds(opts.Window),
+				"max":             safeUint32(opts.MaxRequests),
+			})}, nil
+		},
+		id: hashKey(
+			"fixed_window", "1",
+			string(opts.Mode),
+			joinSortedRuleParts(opts.Characteristics),
+			opts.Window.String(),
+			strconv.Itoa(opts.MaxRequests),
+		),
+		characteristics: opts.Characteristics,
+	}
 }
 
 // SlidingWindowOptions configures a sliding window rate limit rule.
@@ -117,21 +163,31 @@ type SlidingWindowOptions struct {
 
 // SlidingWindow creates a sliding window rate limit rule.
 func SlidingWindow(opts SlidingWindowOptions) Rule {
-	return ruleFunc{build: func() (map[string]any, error) {
-		if err := validateMode(opts.Mode); err != nil {
-			return nil, err
-		}
-		if opts.Interval <= 0 || opts.MaxRequests <= 0 {
-			return nil, fmt.Errorf("arcjet: sliding window requires positive interval and max requests: %w", ErrInvalidRateLimit)
-		}
-		return map[string]any{"rateLimit": cleanMap(map[string]any{
-			"mode":            requestMode(opts.Mode),
-			"characteristics": opts.Characteristics,
-			"algorithm":       "RATE_LIMIT_ALGORITHM_SLIDING_WINDOW",
-			"interval":        seconds(opts.Interval),
-			"max":             safeUint32(opts.MaxRequests),
-		})}, nil
-	}}
+	return ruleFunc{
+		build: func() (map[string]any, error) {
+			if err := validateMode(opts.Mode); err != nil {
+				return nil, err
+			}
+			if opts.Interval <= 0 || opts.MaxRequests <= 0 {
+				return nil, fmt.Errorf("arcjet: sliding window requires positive interval and max requests: %w", ErrInvalidRateLimit)
+			}
+			return map[string]any{"rateLimit": cleanMap(map[string]any{
+				"mode":            requestMode(opts.Mode),
+				"characteristics": opts.Characteristics,
+				"algorithm":       "RATE_LIMIT_ALGORITHM_SLIDING_WINDOW",
+				"interval":        seconds(opts.Interval),
+				"max":             safeUint32(opts.MaxRequests),
+			})}, nil
+		},
+		id: hashKey(
+			"sliding_window", "1",
+			string(opts.Mode),
+			joinSortedRuleParts(opts.Characteristics),
+			opts.Interval.String(),
+			strconv.Itoa(opts.MaxRequests),
+		),
+		characteristics: opts.Characteristics,
+	}
 }
 
 // ShieldOptions configures Arcjet Shield.
@@ -144,15 +200,22 @@ type ShieldOptions struct {
 
 // Shield creates a rule that protects against common web attacks.
 func Shield(opts ShieldOptions) Rule {
-	return ruleFunc{build: func() (map[string]any, error) {
-		if err := validateMode(opts.Mode); err != nil {
-			return nil, err
-		}
-		return map[string]any{"shield": cleanMap(map[string]any{
-			"mode":            requestMode(opts.Mode),
-			"characteristics": opts.Characteristics,
-		})}, nil
-	}}
+	return ruleFunc{
+		build: func() (map[string]any, error) {
+			if err := validateMode(opts.Mode); err != nil {
+				return nil, err
+			}
+			return map[string]any{"shield": cleanMap(map[string]any{
+				"mode":            requestMode(opts.Mode),
+				"characteristics": opts.Characteristics,
+			})}, nil
+		},
+		id: hashKey(
+			"shield", "1",
+			string(opts.Mode),
+			joinSortedRuleParts(opts.Characteristics),
+		),
+	}
 }
 
 // BotOptions configures bot detection.
@@ -188,6 +251,12 @@ func DetectBot(opts BotOptions) Rule {
 			return evaluator.detectBot(ctx, opts, details)
 		},
 		kind: localKindBot,
+		id: hashKey(
+			"bot", "1",
+			string(opts.Mode),
+			joinSortedRuleParts(opts.Allow),
+			joinSortedRuleParts(opts.Deny),
+		),
 	}
 }
 
@@ -227,6 +296,14 @@ func ValidateEmail(opts EmailOptions) Rule {
 			return evaluator.validateEmail(ctx, opts, details, options)
 		},
 		kind: localKindEmail,
+		id: hashKey(
+			"email", "1",
+			string(opts.Mode),
+			joinSortedRuleParts(opts.Allow),
+			joinSortedRuleParts(opts.Deny),
+			boolPtrPart(opts.RequireTopLevelDomain),
+			boolPtrPart(opts.AllowDomainLiteral),
+		),
 	}
 }
 
@@ -268,6 +345,12 @@ func SensitiveInfo(opts SensitiveInfoOptions) Rule {
 			return evaluator.detectSensitiveInfo(ctx, opts, details, options)
 		},
 		kind: localKindSensitiveInfo,
+		id: hashKey(
+			"sensitive_info", "1",
+			string(opts.Mode),
+			joinSortedRuleParts(opts.Allow),
+			joinSortedRuleParts(opts.Deny),
+		),
 	}
 }
 
@@ -292,14 +375,17 @@ type PromptInjectionOptions struct {
 
 // DetectPromptInjection creates a prompt injection detection rule.
 func DetectPromptInjection(opts PromptInjectionOptions) Rule {
-	return ruleFunc{build: func() (map[string]any, error) {
-		if err := validateMode(opts.Mode); err != nil {
-			return nil, err
-		}
-		return map[string]any{"promptInjectionDetection": map[string]any{
-			"mode": requestMode(opts.Mode),
-		}}, nil
-	}}
+	return ruleFunc{
+		build: func() (map[string]any, error) {
+			if err := validateMode(opts.Mode); err != nil {
+				return nil, err
+			}
+			return map[string]any{"promptInjectionDetection": map[string]any{
+				"mode": requestMode(opts.Mode),
+			}}, nil
+		},
+		id: hashKey("prompt_injection", "1", string(opts.Mode)),
+	}
 }
 
 // FilterOptions configures request filters.
@@ -337,6 +423,12 @@ func Filter(opts FilterOptions) Rule {
 			return evaluator.matchFilter(ctx, opts, details, options)
 		},
 		kind: localKindFilter,
+		id: hashKey(
+			"filter", "1",
+			string(opts.Mode),
+			joinSortedRuleParts(opts.Allow),
+			joinSortedRuleParts(opts.Deny),
+		),
 	}
 }
 
@@ -444,6 +536,35 @@ func cleanMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// joinSortedRuleParts canonicalises a typed string slice for ruleID
+// hashing. Sort makes the result order-independent (so {"a","b"} and
+// {"b","a"} hash the same); join with a comma keeps the result a single
+// string field within the larger hashKey composition.
+func joinSortedRuleParts[T ~string](values []T) string {
+	if len(values) == 0 {
+		return ""
+	}
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = string(v)
+	}
+	slices.Sort(out)
+	return strings.Join(out, ",")
+}
+
+// boolPtrPart renders a *bool as "true", "false", or "" (unset). Using
+// three distinct strings keeps unset distinguishable from explicit false
+// in the rule's hash.
+func boolPtrPart(b *bool) string {
+	if b == nil {
+		return ""
+	}
+	if *b {
+		return "true"
+	}
+	return "false"
 }
 
 func emailEnums(values []EmailType) []string {

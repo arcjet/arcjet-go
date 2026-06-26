@@ -102,6 +102,31 @@ func jsreqCallbacks(detect SensitiveInfoDetect) jsreq.Callbacks {
 	}
 }
 
+// fingerprint produces the per-request cache-key namespace by calling the
+// bundled WASM's generate-fingerprint export. arcjet-js drives the same
+// export from analyze.generateFingerprint, so for identical inputs the
+// output matches byte-for-byte across SDKs.
+//
+// Returns an empty string when the evaluator is nil. Errors propagate to
+// the caller, which treats them as "no caching for this request" rather
+// than failing the protect call — the cache is an optimization, not a
+// correctness boundary.
+func (e *localEvaluator) fingerprint(ctx context.Context, details ProtectDetails, characteristics []string) (string, error) {
+	if e == nil {
+		return "", nil
+	}
+	inst, release, err := e.instance(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	payload, err := jsonMarshal(localRequest(details))
+	if err != nil {
+		return "", err
+	}
+	return inst.GenerateFingerprint(ctx, string(payload), characteristics)
+}
+
 func (e *localEvaluator) validateEmail(ctx context.Context, opts EmailOptions, details ProtectDetails, protectOpts ProtectOptions) (*localDecision, error) {
 	email := details.Email
 	if protectOpts.Email != "" {
@@ -258,26 +283,21 @@ func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, all
 
 func localDeny(ruleID string, mode Mode, ttl uint32, reason *decidev1.Reason) *localDecision {
 	state := decidev1.RuleState_RULE_STATE_RUN
-	conclusion := decidev1.Conclusion_CONCLUSION_DENY
 	aggregate := decidev1.Conclusion_CONCLUSION_DENY
 	if normalizeMode(mode) != ModeLive {
+		// Dry-run: the rule's RuleResult still records the DENY conclusion
+		// (so reporting reflects what the rule detected), but the outer
+		// Decision aggregates to ALLOW so the caller doesn't enforce.
 		state = decidev1.RuleState_RULE_STATE_DRY_RUN
 		aggregate = decidev1.Conclusion_CONCLUSION_ALLOW
 	}
-	result := &decidev1.RuleResult{
+	return wrapRuleResult(&decidev1.RuleResult{
 		RuleId:     ruleID,
 		State:      state,
-		Conclusion: conclusion,
+		Conclusion: decidev1.Conclusion_CONCLUSION_DENY,
 		Reason:     reason,
 		Ttl:        ttl,
-	}
-	return &localDecision{decision: &decidev1.Decision{
-		Id:          newTypeID("lreq"),
-		Conclusion:  aggregate,
-		Reason:      reason,
-		RuleResults: []*decidev1.RuleResult{result},
-		Ttl:         ttl,
-	}}
+	}, aggregate)
 }
 
 // instance returns a fresh wazero instance plus a release callback. Callers
