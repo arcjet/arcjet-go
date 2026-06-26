@@ -830,7 +830,7 @@ var (
 // handleToolCall(name, args) wrapper with an interpolated label.
 func GetWeather(ctx context.Context, userID, message string) error {
 	decision, err := guard.Guard(ctx, arcjet.GuardRequest{
-		Label: "tools.get_weather", // hardcoded string, not fmt.Sprintf
+		Label: "tools.get-weather", // hardcoded string, not fmt.Sprintf
 		Metadata: map[string]string{
 			"userId": userID,
 		},
@@ -861,7 +861,7 @@ func GetWeather(ctx context.Context, userID, message string) error {
 ```
 
 > **Note:** The `Label` argument should be a hardcoded string like
-> `"tools.get_weather"`, not `fmt.Sprintf("tools.%s", name)`. Hardcoded labels
+> `"tools.get-weather"`, not `fmt.Sprintf("tools.%s", name)`. Hardcoded labels
 > stay greppable, and the dashboard groups by them. Interpolation produces a
 > sea of distinct-looking entries instead of one bucket per operation.
 
@@ -890,7 +890,7 @@ userLimit, err := arcjet.GuardTokenBucket(arcjet.GuardTokenBucketOptions{
 
 // At call time:
 decision, err := guard.Guard(ctx, arcjet.GuardRequest{
-	Label: "tools.get_weather",
+	Label: "tools.get-weather",
 	Rules: []arcjet.GuardRuleInput{userLimit.Key(userID, 5)},
 })
 ```
@@ -936,7 +936,7 @@ tool call *results* when the tool fetches content from untrusted sources.
 promptScan, err := arcjet.GuardPromptInjection(arcjet.GuardPromptInjectionOptions{Mode: arcjet.ModeLive})
 
 decision, err := guard.Guard(ctx, arcjet.GuardRequest{
-	Label: "tools.get_weather",
+	Label: "tools.get-weather",
 	Rules: []arcjet.GuardRuleInput{promptScan.Text(userMessage)},
 })
 
@@ -1007,7 +1007,7 @@ for _, result := range decision.Results {
 
 ```go
 decision, err := guard.Guard(ctx, arcjet.GuardRequest{
-	Label: "tools.get_weather",
+	Label: "tools.get-weather",
 	Rules: []arcjet.GuardRuleInput{userLimit.Key(userID, 5)},
 })
 
