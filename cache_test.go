@@ -7,6 +7,21 @@ import (
 	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
 )
 
+func TestDecisionCacheKeyExcludesCorrelationId(t *testing.T) {
+	base := ProtectDetails{IP: "203.0.113.10", Method: "GET", Path: "/"}
+	options := ProtectOptions{}
+
+	without := makeDecisionCacheKey(base, "rules-hash", options)
+
+	withID := base
+	withID.CorrelationId = "wf_abcdef"
+	withCorrelationID := makeDecisionCacheKey(withID, "rules-hash", options)
+
+	if without != withCorrelationID {
+		t.Fatalf("correlation_id changed the cache key: %q != %q", without, withCorrelationID)
+	}
+}
+
 func TestDecisionCacheSetSkipsNonCacheable(t *testing.T) {
 	cache := newDecisionCache()
 	allow := &decidev1.Decision{

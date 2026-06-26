@@ -91,9 +91,10 @@ func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {
 	}
 
 	decision, err := client.Guard(context.Background(), GuardRequest{
-		Label:    "tools.weather",
-		Metadata: map[string]string{"env": "test"},
-		Rules:    []GuardRuleInput{limit.Key("user_123", 2)},
+		Label:         "tools.weather",
+		Metadata:      map[string]string{"env": "test"},
+		CorrelationId: "wf_abcdef",
+		Rules:         []GuardRuleInput{limit.Key("user_123", 2)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +115,9 @@ func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {
 	}
 	if seen.GetMetadata()["env"] != "test" {
 		t.Fatalf("metadata = %#v", seen.GetMetadata())
+	}
+	if seen.GetCorrelationId() != "wf_abcdef" {
+		t.Fatalf("correlation_id = %q", seen.GetCorrelationId())
 	}
 	sub := seen.GetRuleSubmissions()[0]
 	tb := sub.GetRule().GetTokenBucket()
