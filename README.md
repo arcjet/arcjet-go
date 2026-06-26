@@ -1026,6 +1026,75 @@ for _, result := range decision.Results {
 }
 ```
 
+### Errors and warnings
+
+Guard distinguishes two kinds of out-of-band signal on a decision: **errors**
+(a rule or the decision could not be processed — the security signal is
+degraded) and **warnings** (the decision was processed correctly but something
+should be fixed, e.g. an invalid metadata key that was stripped).
+
+`Guard` never returns the zero-value decision for runtime degradation. A
+transport failure fails open: you get a usable `ALLOW` decision carrying a
+synthetic errored result *and* a non-nil error. A caller that ignores the error
+still gets a decision where `HasFailedOpen()` reports `true`. (Programmer errors
+— a nil client, an invalid label, a rule that cannot be encoded — return the
+zero decision and an error instead; handle those via `err`.)
+
+#### `HasFailedOpen()` — gate a fail-closed policy
+
+`HasFailedOpen()` is `true` only when the conclusion is `ALLOW` *because* a rule
+or the decision could not be processed. Use it when a degraded signal should
+block rather than allow for a sensitive operation:
+
+```go
+decision, err := guard.Guard(ctx, arcjet.GuardRequest{
+	Label: "tools.charge-card",
+	Rules: []arcjet.GuardRuleInput{userLimit.Key(userID, 1)},
+})
+if err != nil {
+	log.Printf("arcjet guard: %v", err) // observability; the decision is still usable
+}
+if decision.HasFailedOpen() {
+	// Evaluation was incomplete. For a sensitive operation, fail closed:
+	return fmt.Errorf("guard unavailable, refusing to proceed")
+}
+if decision.IsDenied() {
+	return fmt.Errorf("denied: %s", decision.Reason)
+}
+```
+
+#### `ErrorResults()` — inspect what errored
+
+Returns the results that could not be processed, each carrying an `*ArcjetError`
+with a `Code` and `Message`. Empty when nothing errored:
+
+```go
+for _, r := range decision.ErrorResults() {
+	log.Printf("rule errored (config %s): [%s] %s",
+		r.ConfigID, r.Error.Code, r.Error.Message)
+}
+```
+
+`decision.Err()` is a shortcut that returns the first errored result's
+underlying `ArcjetError` (or nil). Match a specific code with `errors.Is`:
+
+```go
+if errors.Is(decision.Err(), arcjet.ArcjetError{Code: "TRANSPORT_ERROR"}) {
+	// the Decide service was unreachable
+}
+```
+
+#### `Warnings` — request-validation diagnostics
+
+Informational; the decision is still valid and warnings never change the
+conclusion. Log them so the configuration gets fixed, but don't block on them:
+
+```go
+for _, w := range decision.Warnings {
+	log.Printf("arcjet guard warning: [%s] %s", w.Code, w.Message)
+}
+```
+
 ### `Guard` parameter reference
 
 | Field | Type | Description |
