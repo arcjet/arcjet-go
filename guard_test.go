@@ -18,11 +18,17 @@ type testGuardHandler struct {
 	seen   *decidev2.GuardRequest
 	header http.Header
 	resp   *decidev2.GuardResponse
+	// errToReturn, when non-nil, makes Guard return a transport error instead
+	// of a response — used to exercise the fail-open-on-transport path.
+	errToReturn error
 }
 
 func (h *testGuardHandler) Guard(ctx context.Context, req *connect.Request[decidev2.GuardRequest]) (*connect.Response[decidev2.GuardResponse], error) {
 	h.seen = req.Msg
 	h.header = req.Header()
+	if h.errToReturn != nil {
+		return nil, h.errToReturn
+	}
 	if h.resp != nil {
 		return connect.NewResponse(h.resp), nil
 	}
@@ -644,5 +650,69 @@ func TestGuardSensitiveInfoRejectsConflictingAllowDeny(t *testing.T) {
 		Deny:  []EntityType{SensitiveInfoIPAddress},
 	}); err == nil {
 		t.Error("expected allow+deny conflict to error")
+	}
+}
+
+// TestGuardTransportFailureFailsOpenDecision verifies the Option C contract: a
+// transport failure (runtime degradation) returns BOTH a non-nil error AND a
+// usable fail-open ALLOW decision carrying a synthetic TRANSPORT_ERROR result,
+// so a caller that ignores err still has HasFailedOpen() report true.
+func TestGuardTransportFailureFailsOpenDecision(t *testing.T) {
+	client, _ := newGuardTestClient(t, &testGuardHandler{
+		errToReturn: connect.NewError(connect.CodeUnavailable, errors.New("upstream down")),
+	})
+	tb, err := GuardTokenBucket(GuardTokenBucketOptions{
+		Mode: ModeLive, RefillRate: 1, Interval: time.Minute, Capacity: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := client.Guard(context.Background(), GuardRequest{
+		Label: "tools.test",
+		Rules: []GuardRuleInput{tb.Key("user_1", 1)},
+	})
+	if err == nil {
+		t.Fatal("expected a transport error alongside the fail-open decision")
+	}
+	// The decision is still usable and fail-open.
+	if !d.IsAllowed() {
+		t.Errorf("expected ALLOW (fail open), got %s", d.Conclusion)
+	}
+	if !d.HasFailedOpen() {
+		t.Error("transport failure should be marked failed-open")
+	}
+	errs := d.ErrorResults()
+	if len(errs) != 1 {
+		t.Fatalf("expected one synthetic errored result, got %d", len(errs))
+	}
+	if errs[0].Error.Code != "TRANSPORT_ERROR" {
+		t.Errorf("expected TRANSPORT_ERROR code, got %q", errs[0].Error.Code)
+	}
+	// No server response, so no decision-level warnings.
+	if len(d.Warnings) != 0 {
+		t.Errorf("expected no warnings, got %+v", d.Warnings)
+	}
+}
+
+// TestGuardProgrammerErrorsReturnZeroDecision verifies that programmer errors
+// (nil rule) return the zero-value decision plus a non-nil error — they do
+// NOT fail open, so HasFailedOpen() on the returned (zero) decision is false
+// and the caller must handle err.
+func TestGuardProgrammerErrorsReturnZeroDecision(t *testing.T) {
+	client, _ := newGuardTestClient(t, &testGuardHandler{})
+	d, err := client.Guard(context.Background(), GuardRequest{
+		Label: "tools.test",
+		Rules: []GuardRuleInput{nil},
+	})
+	if !errors.Is(err, ErrNilRule) {
+		t.Errorf("expected ErrNilRule, got %v", err)
+	}
+	// Zero-value decision: no results, so not failed-open. Caller must handle
+	// err rather than trust the decision.
+	if d.HasFailedOpen() {
+		t.Error("programmer error should not produce a failed-open decision")
+	}
+	if len(d.Results) != 0 {
+		t.Errorf("expected zero results on programmer error, got %d", len(d.Results))
 	}
 }

@@ -19,7 +19,10 @@ type guardRuleSubmissionWire struct {
 
 type guardResponseWire struct {
 	Decision guardDecisionWire `json:"decision"`
-	Errors   []ArcjetError     `json:"errors,omitempty"`
+	// The proto/wire field is named "errors" but carries request-validation
+	// diagnostics (the decision is still valid) — surfaced as
+	// GuardDecision.Warnings.
+	Warnings []Warning `json:"errors,omitempty"`
 }
 
 type guardDecisionWire struct {
@@ -43,6 +46,9 @@ type guardRuleResultWire struct {
 	LocalCustom        *GuardLocalCustomResult     `json:"localCustom,omitempty"`
 	Error              *ArcjetError                `json:"error,omitempty"`
 	NotRun             map[string]any              `json:"notRun,omitempty"`
+	// Additive proto field; the Decide service does not emit per-rule
+	// diagnostics yet, so this decodes empty until then.
+	Warnings []Warning `json:"warnings,omitempty"`
 }
 
 // GuardDecision is the result of a Guard evaluation.
@@ -51,7 +57,10 @@ type GuardDecision struct {
 	Conclusion Conclusion
 	Reason     ReasonType
 	Results    []GuardRuleResult
-	Errors     []ArcjetError
+	// Warnings are decision-level diagnostics from request validation (e.g. an
+	// invalid metadata key that was stripped). The decision is still valid;
+	// warnings never change the conclusion.
+	Warnings []Warning
 }
 
 // IsAllowed reports whether Arcjet allowed the Guard call.
@@ -64,28 +73,38 @@ func (d GuardDecision) IsDenied() bool {
 	return d.Conclusion == ConclusionDeny
 }
 
-// IsErrored reports whether any Guard rule or the Guard response has an
-// error. Arcjet fails open — when this is true the call was allowed to
-// proceed but rule evaluation was incomplete.
-func (d GuardDecision) IsErrored() bool {
-	if len(d.Errors) > 0 {
-		return true
-	}
-	for _, result := range d.Results {
-		if result.Error != nil {
-			return true
+// ErrorResults returns the rule results that errored — rules (or the decision
+// itself) that could not be processed. Empty when nothing errored. Each carries
+// its *ArcjetError in Error; correlate one to a rule via ConfigID/InputID.
+// Arcjet fails open, so an errored result is still ALLOW.
+func (d GuardDecision) ErrorResults() []GuardRuleResult {
+	var out []GuardRuleResult
+	for _, r := range d.Results {
+		if r.Error != nil {
+			out = append(out, r)
 		}
 	}
-	return false
+	return out
 }
 
-// Err returns the first ArcjetError carried by this decision (top-level or
-// per-rule) or nil if the decision did not error. Useful with errors.Is /
-// errors.As when bubbling up Arcjet errors to handlers.
+// HasFailedOpen reports whether this decision returned ALLOW only because a
+// rule or the decision could not be processed — i.e. it failed open. Gate a
+// fail-closed policy on this:
+//
+//	if decision.HasFailedOpen() {
+//		return deny()
+//	}
+//
+// "Failed open" describes an outcome of this decision, not the policy
+// configuration.
+func (d GuardDecision) HasFailedOpen() bool {
+	return d.Conclusion == ConclusionAllow && len(d.ErrorResults()) > 0
+}
+
+// Err returns the first per-rule ArcjetError carried by this decision, or nil
+// if no rule errored. Warnings are not errors and are not returned here. Useful
+// with errors.Is / errors.As when bubbling up Arcjet errors to handlers.
 func (d GuardDecision) Err() error {
-	if len(d.Errors) > 0 {
-		return d.Errors[0]
-	}
 	for _, r := range d.Results {
 		if r.Error != nil {
 			return *r.Error
@@ -111,6 +130,11 @@ type GuardRuleResult struct {
 	LocalCustom        *GuardLocalCustomResult
 	Error              *ArcjetError
 	NotRun             bool
+	// Warnings are per-rule diagnostics: this rule was processed correctly
+	// (the result is trustworthy) but something about it should be fixed.
+	// Informational; never changes the rule's conclusion. Empty until the
+	// Decide service emits per-rule diagnostics.
+	Warnings []Warning
 }
 
 // GuardTokenBucketResult contains Guard token bucket result details.
@@ -186,33 +210,62 @@ func (resp guardResponseWire) toGuardDecision() GuardDecision {
 		Conclusion: parseConclusion(resp.Decision.Conclusion),
 		Reason:     parseGuardReason(resp.Decision.Reason),
 		Results:    results,
-		Errors:     append([]ArcjetError(nil), resp.Errors...),
+		Warnings:   warningsFromWire(resp.Warnings),
 	}
+}
+
+// guardErrorDecision synthesizes a fail-open ALLOW decision carrying a single
+// errored rule result. Used when the SDK cannot obtain a usable decision (no
+// network, empty or malformed response).
+//
+// The failure is surfaced as a rule-level error — not a top-level Warning — so
+// it travels the same channel as a server-reported rule evaluation error: a
+// degraded signal a fail-closed caller detects via HasFailedOpen()/
+// ErrorResults(), never a benign request-validation diagnostic.
+func guardErrorDecision(code, message string) GuardDecision {
+	return GuardDecision{
+		Conclusion: ConclusionAllow,
+		Reason:     ReasonError,
+		Results:    []GuardRuleResult{erroredGuardRuleResult("", "", code, message)},
+	}
+}
+
+// erroredGuardRuleResult builds the fail-open errored result for a rule (or
+// the decision itself) that could not be processed. ConfigID/InputID are set
+// when the failing rule is known, so rule-level correlation still works.
+func erroredGuardRuleResult(configID, inputID, code, message string) GuardRuleResult {
+	return GuardRuleResult{
+		ConfigID:   configID,
+		InputID:    inputID,
+		Conclusion: ConclusionAllow,
+		Reason:     ReasonError,
+		Error:      &ArcjetError{Code: code, Message: message},
+	}
+}
+
+// warningsFromWire copies the decoded wire warnings into a fresh slice,
+// preserving exactly what the server sent. The values arrive via
+// protojson.Marshal -> json.Unmarshal from a validated proto, so the fields are
+// always well-typed strings; a copy here keeps the public Warnings slice
+// independent of the wire struct without mutating server-provided values.
+func warningsFromWire(in []Warning) []Warning {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]Warning(nil), in...)
 }
 
 func guardDecisionFromProto(resp *decidev2.GuardResponse) GuardDecision {
 	if resp == nil {
-		return GuardDecision{
-			Conclusion: ConclusionAllow,
-			Reason:     ReasonError,
-			Errors:     []ArcjetError{{Message: "empty guard response"}},
-		}
+		return guardErrorDecision("NO_DECISION", "empty guard response")
 	}
 	data, err := protojson.Marshal(resp)
 	if err != nil {
-		return GuardDecision{
-			Conclusion: ConclusionAllow,
-			Reason:     ReasonError,
-			Errors:     []ArcjetError{{Message: err.Error()}},
-		}
+		return guardErrorDecision("TRANSPORT_ERROR", err.Error())
 	}
 	var wire guardResponseWire
 	if err := json.Unmarshal(data, &wire); err != nil {
-		return GuardDecision{
-			Conclusion: ConclusionAllow,
-			Reason:     ReasonError,
-			Errors:     []ArcjetError{{Message: err.Error()}},
-		}
+		return guardErrorDecision("TRANSPORT_ERROR", err.Error())
 	}
 	return wire.toGuardDecision()
 }
@@ -232,6 +285,7 @@ func (r guardRuleResultWire) toGuardRuleResult() GuardRuleResult {
 		LocalCustom:        r.LocalCustom,
 		Error:              r.Error,
 		NotRun:             r.NotRun != nil,
+		Warnings:           warningsFromWire(r.Warnings),
 	}
 	switch {
 	case r.TokenBucket != nil:
