@@ -94,10 +94,11 @@ func BenchmarkProtectDetailsCacheHit(b *testing.B) {
 	}
 }
 
-// BenchmarkProtectDetailsCacheMiss measures the cache-miss path: cache key
-// hashing, local-rule iteration, Decide RPC round-trip through the in-process
-// handler, and cache population. The handler returns a non-cacheable allow so
-// each iteration stays on the miss path.
+// BenchmarkProtectDetailsCacheMiss measures the cache-miss path:
+// WASM fingerprint generation, local-rule iteration, Decide RPC round-trip
+// through the in-process handler, and per-rule cache population from the
+// response. The handler returns a non-cacheable allow so each iteration
+// stays on the miss path.
 func BenchmarkProtectDetailsCacheMiss(b *testing.B) {
 	handler := &testDecideHandler{
 		// Allow decisions are not cached, so every iteration re-hits Decide.
@@ -219,10 +220,9 @@ func BenchmarkDetailsFromRequest(b *testing.B) {
 }
 
 // BenchmarkWithRule measures the cost of deriving a route-scoped client from
-// a base client: rule validation, proto encoding, and rules-hash recompute.
-// This runs at startup or per-route registration rather than per-request,
-// but is worth tracking because misuse (calling it inside a handler) would
-// be expensive.
+// a base client: rule validation and proto encoding. This runs at startup
+// or per-route registration rather than per-request, but is worth tracking
+// because misuse (calling it inside a handler) would be expensive.
 func BenchmarkWithRule(b *testing.B) {
 	handler := &testDecideHandler{}
 	base := newBenchClient(b, handler,

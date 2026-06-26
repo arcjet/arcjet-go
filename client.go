@@ -2,9 +2,6 @@ package arcjet
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -19,7 +16,6 @@ import (
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 
 	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
 	"github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1/decidev1alpha1connect"
@@ -74,19 +70,32 @@ type SensitiveInfoDetect func(ctx context.Context, tokens []string) []EntityType
 //
 // A Client is safe for concurrent use and should be created once at startup and
 // reused across handlers.
+//
+// The cache field is shared by clients derived via WithRule — derivatives
+// shallow-copy the parent and alias the pointer so per-rule cache entries
+// outlive each route-specific clone. All other fields are owned per-client.
 type Client struct {
-	key             string
-	rules           []Rule
-	builtRules      []*decidev1.Rule
-	characteristics []string
-	decideClient    decidev1alpha1connect.DecideServiceClient
-	sdkVersion      string
-	userAgent       string
-	proxies         []trustedProxy
-	platform        hostingPlatform
-	local           *localEvaluator
-	cache           *decisionCache
-	rulesHash       string
+	key     string
+	rules   []Rule
+	ruleIDs []string
+	// fpChars[i] is the characteristics list used to derive rule i's cache
+	// fingerprint: the rule's own characteristics when it sets them (rate
+	// limits), otherwise the client-level characteristics.
+	fpChars    [][]string
+	builtRules []*decidev1.Rule
+	// builtRuleIndices[j] is the index into rules/ruleIDs/fpChars of the
+	// rule that produced builtRules[j]. No-op rules are dropped from
+	// builtRules, so this mapping is needed to align Decide-response
+	// RuleResults back to the originating rule's cache namespace.
+	builtRuleIndices []int
+	characteristics  []string
+	decideClient     decidev1alpha1connect.DecideServiceClient
+	sdkVersion       string
+	userAgent        string
+	proxies          []trustedProxy
+	platform         hostingPlatform
+	local            *localEvaluator
+	cache            *ruleCache
 }
 
 // NewClient creates a reusable request protection client.
@@ -124,11 +133,7 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 		platform = p
 	}
-	builtRules, err := buildRequestRules(cfg.Rules)
-	if err != nil {
-		return nil, err
-	}
-	rulesHash, err := hashRules(builtRules)
+	builtRules, builtRuleIndices, err := buildRequestRules(cfg.Rules)
 	if err != nil {
 		return nil, err
 	}
@@ -137,19 +142,60 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		key:             key,
-		rules:           append([]Rule(nil), cfg.Rules...),
-		builtRules:      builtRules,
-		characteristics: append([]string(nil), cfg.Characteristics...),
-		sdkVersion:      version,
-		userAgent:       ua,
-		proxies:         proxies,
-		platform:        platform,
-		decideClient:    decidev1alpha1connect.NewDecideServiceClient(httpClient, baseURL),
-		local:           local,
-		cache:           newDecisionCache(),
-		rulesHash:       rulesHash,
+		key:              key,
+		rules:            append([]Rule(nil), cfg.Rules...),
+		ruleIDs:          collectRuleIDs(cfg.Rules),
+		fpChars:          collectFingerprintChars(cfg.Rules, cfg.Characteristics),
+		builtRules:       builtRules,
+		builtRuleIndices: builtRuleIndices,
+		characteristics:  append([]string(nil), cfg.Characteristics...),
+		sdkVersion:       version,
+		userAgent:        ua,
+		proxies:          proxies,
+		platform:         platform,
+		decideClient:     decidev1alpha1connect.NewDecideServiceClient(httpClient, baseURL),
+		local:            local,
+		cache:            newRuleCache(),
 	}, nil
+}
+
+// collectRuleIDs precomputes each rule's cache namespace once at client
+// construction so Protect's hot path can index by position instead of
+// invoking a virtual method per rule per request.
+func collectRuleIDs(rules []Rule) []string {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]string, len(rules))
+	for i, r := range rules {
+		out[i] = r.ruleID()
+	}
+	return out
+}
+
+// collectFingerprintChars precomputes, per rule, the characteristics used to
+// derive that rule's cache fingerprint. Mirrors arcjet-js: a rate-limit rule
+// fingerprints on its own characteristics (so a limit keyed on userId caches
+// per user rather than per IP), while every other rule uses the client-level
+// characteristics — the single global fingerprint.
+func collectFingerprintChars(rules []Rule, clientChars []string) [][]string {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([][]string, len(rules))
+	for i, r := range rules {
+		out[i] = fingerprintCharsFor(r, clientChars)
+	}
+	return out
+}
+
+// fingerprintCharsFor returns the rule's own characteristics when it declares
+// any, otherwise the client-level characteristics.
+func fingerprintCharsFor(r Rule, clientChars []string) []string {
+	if rc := r.ruleCharacteristics(); len(rc) > 0 {
+		return rc
+	}
+	return clientChars
 }
 
 // WithRule returns a copy of the client with an additional route-specific rule.
@@ -166,16 +212,21 @@ func (c *Client) WithRule(rule Rule) (*Client, error) {
 	}
 	next := *c
 	next.rules = append(append([]Rule(nil), c.rules...), rule)
+	next.ruleIDs = append(append([]string(nil), c.ruleIDs...), rule.ruleID())
+	next.fpChars = append(append([][]string(nil), c.fpChars...), fingerprintCharsFor(rule, c.characteristics))
 	next.builtRules = append([]*decidev1.Rule(nil), c.builtRules...)
+	next.builtRuleIndices = append([]int(nil), c.builtRuleIndices...)
 	if wireRule != nil {
+		// The new rule lands at index len(c.rules) in next.rules; record
+		// that so its Decide-response result maps back to the right slot.
 		next.builtRules = append(next.builtRules, wireRule)
+		next.builtRuleIndices = append(next.builtRuleIndices, len(c.rules))
 	}
 	next.characteristics = append([]string(nil), c.characteristics...)
-	rulesHash, err := hashRules(next.builtRules)
-	if err != nil {
-		return nil, err
-	}
-	next.rulesHash = rulesHash
+	// Cache invalidation is per-rule via ruleID — adding a rule does not
+	// touch existing rules' cache slots, so we keep the shared *ruleCache
+	// from c rather than allocating a fresh one. The new rule simply has
+	// no slot yet; its first Protect call will populate one.
 	return &next, nil
 }
 
@@ -348,14 +399,23 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	// Report and is kept in-process for privacy. See WithSensitiveInfoValue.
 
 	rules := c.builtRules
-	cacheKey := makeDecisionCacheKey(details, c.rulesHash, options)
-	if cached := c.cache.get(cacheKey); cached != nil {
-		c.reportLocal(ctx, details, rules, cached)
-		return decisionFromProto(cached), nil
+
+	// fingerprints[i] is rule i's cache-key namespace, derived from the
+	// rule's fingerprint characteristics via the same WASM export arcjet-js
+	// uses, so identical inputs produce identical bytes. Most rules share
+	// the client-level characteristics (one fingerprint), while a rate-limit
+	// rule with its own characteristics gets its own — matching JS, which
+	// recomputes the fingerprint per rate-limit rule. A WASM failure leaves
+	// an entry empty, which silently skips caching for that rule rather than
+	// failing the request. Skip the WASM round-trip entirely when the client
+	// has no rules — there's nothing to look up or cache.
+	var fingerprints []string
+	if len(c.rules) > 0 {
+		fingerprints = c.ruleFingerprints(ctx, details)
 	}
-	if local := c.evaluateLocal(ctx, details, options); local.liveDeny() {
+
+	if local := c.evaluateLocal(ctx, details, options, fingerprints); local.liveDeny() {
 		c.reportLocal(ctx, details, rules, local.decision)
-		c.cache.set(cacheKey, local.decision)
 		return decisionFromProto(local.decision), nil
 	}
 
@@ -376,24 +436,87 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	if err != nil {
 		return Decision{}, err
 	}
-	c.cache.set(cacheKey, resp.Msg.GetDecision())
+	c.cacheDecideResults(resp.Msg.GetDecision(), fingerprints)
 	return decisionFromProto(resp.Msg.GetDecision()), nil
 }
 
-func (c *Client) evaluateLocal(ctx context.Context, details ProtectDetails, options ProtectOptions) *localDecision {
+// ruleFingerprints computes one cache fingerprint per rule, indexed to align
+// with c.rules / c.ruleIDs / c.fpChars. Rules sharing the same characteristics
+// (the common case — everything but rate-limit rules with their own) share a
+// single WASM round-trip via the per-call memo.
+func (c *Client) ruleFingerprints(ctx context.Context, details ProtectDetails) []string {
+	out := make([]string, len(c.rules))
+	memo := make(map[string]string, 2)
+	for i := range c.rules {
+		chars := c.fpChars[i]
+		key := strings.Join(chars, "\x00")
+		fp, ok := memo[key]
+		if !ok {
+			fp, _ = c.local.fingerprint(ctx, details, chars)
+			memo[key] = fp
+		}
+		out[i] = fp
+	}
+	return out
+}
+
+// evaluateLocal runs each configured rule, consulting and populating the
+// per-rule cache around each call. Returns the first live DENY (cached or
+// fresh) so the caller can skip the Decide RPC and report just that
+// result, matching arcjet-js's protect() flow.
+func (c *Client) evaluateLocal(ctx context.Context, details ProtectDetails, options ProtectOptions, fingerprints []string) *localDecision {
 	if c.local == nil {
 		return nil
 	}
-	for _, rule := range c.rules {
+	for i, rule := range c.rules {
+		id := c.ruleIDs[i]
+		fingerprint := fingerprints[i]
+		if cached := c.cache.get(id, fingerprint); cached != nil {
+			// Cache only stores live DENY results, so a hit is always a
+			// live DENY — return it directly without running the rule.
+			return decisionFromRuleResult(cached)
+		}
 		decision, err := rule.evaluateLocal(ctx, details, options, c.local)
 		if err != nil {
 			continue
+		}
+		if decision == nil {
+			continue
+		}
+		// Cache the rule's RuleResult on the way out. cache.set is a no-op
+		// for non-cacheable results (DRY_RUN, ALLOW, TTL=0), so calling it
+		// unconditionally keeps the per-rule logic simple.
+		if results := decision.decision.GetRuleResults(); len(results) > 0 {
+			c.cache.set(id, fingerprint, results[0])
 		}
 		if decision.liveDeny() {
 			return decision
 		}
 	}
 	return nil
+}
+
+// cacheDecideResults stores rule results returned by the Decide RPC back
+// into the per-rule cache. The response's RuleResults are position-aligned
+// with the rules sent to Decide (c.builtRules, no-ops dropped), so each
+// result is mapped through c.builtRuleIndices back to its originating rule's
+// ruleID and fingerprint. Mirrors arcjet-js's intent of letting future calls
+// short-circuit on a cached server DENY without another network round-trip —
+// but with the granularity JS uses for its local-rule cache.
+func (c *Client) cacheDecideResults(decision *decidev1.Decision, fingerprints []string) {
+	if c.cache == nil || decision == nil {
+		return
+	}
+	results := decision.GetRuleResults()
+	for j, result := range results {
+		if j >= len(c.builtRuleIndices) {
+			// More results than rules we sent — can't attribute the extras
+			// to a rule, so leave them uncached rather than guess.
+			break
+		}
+		idx := c.builtRuleIndices[j]
+		c.cache.set(c.ruleIDs[idx], fingerprints[idx], result)
+	}
 }
 
 func (c *Client) reportLocal(ctx context.Context, details ProtectDetails, rules []*decidev1.Rule, decision *decidev1.Decision) {
@@ -448,12 +571,18 @@ func redactReportDetails(d ProtectDetails) ProtectDetails {
 	return out
 }
 
-func buildRequestRules(rules []Rule) ([]*decidev1.Rule, error) {
+// buildRequestRules converts each rule to its wire form, dropping no-ops.
+// Alongside the built rules it returns indices[j] = the position of rule j's
+// source in the input slice, so a caller can map the Decide response's
+// position-aligned RuleResults back to the originating rule despite the gaps
+// left by dropped no-ops.
+func buildRequestRules(rules []Rule) ([]*decidev1.Rule, []int, error) {
 	out := make([]*decidev1.Rule, 0, len(rules))
-	for _, rule := range rules {
+	indices := make([]int, 0, len(rules))
+	for i, rule := range rules {
 		built, err := buildRequestRule(rule)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if built == nil {
 			// Rule is a no-op (e.g. an analyzer that isn't shipped yet).
@@ -461,8 +590,9 @@ func buildRequestRules(rules []Rule) ([]*decidev1.Rule, error) {
 			continue
 		}
 		out = append(out, built)
+		indices = append(indices, i)
 	}
-	return out, nil
+	return out, indices, nil
 }
 
 // buildRequestRule converts one Rule to its proto representation. Returns
@@ -671,32 +801,4 @@ func cloneMap(in map[string]string) map[string]string {
 
 func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
-}
-
-// hashRules returns a stable digest of the built rule set. The digest is
-// only used as a cache key namespace, so canonicalisation across processes
-// is not required — within a single process, identical rule sets must hash
-// the same. proto.Marshal with Deterministic=true is sufficient and far
-// cheaper than the previous protojson-via-json.RawMessage approach.
-func hashRules(rules []*decidev1.Rule) (string, error) {
-	if len(rules) == 0 {
-		return "", nil
-	}
-	h := sha256.New()
-	var lenBuf [4]byte
-	opts := proto.MarshalOptions{Deterministic: true}
-	for _, rule := range rules {
-		data, err := opts.Marshal(rule)
-		if err != nil {
-			return "", err
-		}
-		binary.BigEndian.PutUint32(lenBuf[:], safeUint32(len(data)))
-		h.Write(lenBuf[:])
-		h.Write(data)
-	}
-	var sum [sha256.Size]byte
-	h.Sum(sum[:0])
-	var buf [sha256.Size * 2]byte
-	hex.Encode(buf[:], sum[:])
-	return string(buf[:]), nil
 }
