@@ -302,7 +302,7 @@ func (r *GuardTokenBucketRule) Key(key string, requested int) GuardRuleInput {
 // decision, or nil if the rule did not produce one.
 func (r *GuardTokenBucketRule) Result(d GuardDecision) *GuardTokenBucketResult {
 	for _, res := range d.Results {
-		if res.ConfigID == r.base.configID && res.TokenBucket != nil {
+		if res.ConfigID == r.base.configID && res.Error == nil && res.TokenBucket != nil {
 			return res.TokenBucket
 		}
 	}
@@ -316,6 +316,19 @@ func (r *GuardTokenBucketRule) DeniedResult(d GuardDecision) *GuardTokenBucketRe
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.IsDenied() && res.TokenBucket != nil {
 			return res.TokenBucket
+		}
+	}
+	return nil
+}
+
+// ErrorResult returns this rule's error if it failed to evaluate, or nil
+// otherwise. Errors are fail-open (the conclusion stays ALLOW), so an errored
+// rule never surfaces through Result or DeniedResult — this is the only
+// accessor that returns it. Correlated by ConfigID like the other accessors.
+func (r *GuardTokenBucketRule) ErrorResult(d GuardDecision) *ArcjetError {
+	for _, res := range d.Results {
+		if res.ConfigID == r.base.configID && res.Error != nil {
+			return res.Error
 		}
 	}
 	return nil
@@ -387,7 +400,7 @@ func (r *GuardFixedWindowRule) Key(key string, requested int) GuardRuleInput {
 // decision, or nil if the rule did not produce one.
 func (r *GuardFixedWindowRule) Result(d GuardDecision) *GuardFixedWindowResult {
 	for _, res := range d.Results {
-		if res.ConfigID == r.base.configID && res.FixedWindow != nil {
+		if res.ConfigID == r.base.configID && res.Error == nil && res.FixedWindow != nil {
 			return res.FixedWindow
 		}
 	}
@@ -400,6 +413,18 @@ func (r *GuardFixedWindowRule) DeniedResult(d GuardDecision) *GuardFixedWindowRe
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.IsDenied() && res.FixedWindow != nil {
 			return res.FixedWindow
+		}
+	}
+	return nil
+}
+
+// ErrorResult returns this rule's error if it failed to evaluate, or nil
+// otherwise. Errors are fail-open, so an errored rule never surfaces through
+// Result or DeniedResult — this is the only accessor that returns it.
+func (r *GuardFixedWindowRule) ErrorResult(d GuardDecision) *ArcjetError {
+	for _, res := range d.Results {
+		if res.ConfigID == r.base.configID && res.Error != nil {
+			return res.Error
 		}
 	}
 	return nil
@@ -471,7 +496,7 @@ func (r *GuardSlidingWindowRule) Key(key string, requested int) GuardRuleInput {
 // decision, or nil if the rule did not produce one.
 func (r *GuardSlidingWindowRule) Result(d GuardDecision) *GuardSlidingWindowResult {
 	for _, res := range d.Results {
-		if res.ConfigID == r.base.configID && res.SlidingWindow != nil {
+		if res.ConfigID == r.base.configID && res.Error == nil && res.SlidingWindow != nil {
 			return res.SlidingWindow
 		}
 	}
@@ -484,6 +509,18 @@ func (r *GuardSlidingWindowRule) DeniedResult(d GuardDecision) *GuardSlidingWind
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.IsDenied() && res.SlidingWindow != nil {
 			return res.SlidingWindow
+		}
+	}
+	return nil
+}
+
+// ErrorResult returns this rule's error if it failed to evaluate, or nil
+// otherwise. Errors are fail-open, so an errored rule never surfaces through
+// Result or DeniedResult — this is the only accessor that returns it.
+func (r *GuardSlidingWindowRule) ErrorResult(d GuardDecision) *ArcjetError {
+	for _, res := range d.Results {
+		if res.ConfigID == r.base.configID && res.Error != nil {
+			return res.Error
 		}
 	}
 	return nil
@@ -526,7 +563,7 @@ func (r *GuardPromptInjectionRule) Text(text string) GuardRuleInput {
 // decision, or nil if the rule did not produce one.
 func (r *GuardPromptInjectionRule) Result(d GuardDecision) *GuardPromptResult {
 	for _, res := range d.Results {
-		if res.ConfigID == r.base.configID && res.PromptInjection != nil {
+		if res.ConfigID == r.base.configID && res.Error == nil && res.PromptInjection != nil {
 			return res.PromptInjection
 		}
 	}
@@ -539,6 +576,18 @@ func (r *GuardPromptInjectionRule) DeniedResult(d GuardDecision) *GuardPromptRes
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.IsDenied() && res.PromptInjection != nil {
 			return res.PromptInjection
+		}
+	}
+	return nil
+}
+
+// ErrorResult returns this rule's error if it failed to evaluate, or nil
+// otherwise. Errors are fail-open, so an errored rule never surfaces through
+// Result or DeniedResult — this is the only accessor that returns it.
+func (r *GuardPromptInjectionRule) ErrorResult(d GuardDecision) *ArcjetError {
+	for _, res := range d.Results {
+		if res.ConfigID == r.base.configID && res.Error != nil {
+			return res.Error
 		}
 	}
 	return nil
@@ -599,7 +648,7 @@ func (r *ExperimentalGuardModerateContentRule) Text(text string) GuardRuleInput 
 // decision, or nil if the rule did not produce one.
 func (r *ExperimentalGuardModerateContentRule) Result(d GuardDecision) *GuardModerateContentResult {
 	for _, res := range d.Results {
-		if res.ConfigID == r.base.configID && res.ModerateContent != nil {
+		if res.ConfigID == r.base.configID && res.Error == nil && res.ModerateContent != nil {
 			return res.ModerateContent
 		}
 	}
@@ -612,6 +661,19 @@ func (r *ExperimentalGuardModerateContentRule) DeniedResult(d GuardDecision) *Gu
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.IsDenied() && res.ModerateContent != nil {
 			return res.ModerateContent
+		}
+	}
+	return nil
+}
+
+// ErrorResult returns this rule's error if it failed to evaluate, or nil
+// otherwise. Errors are fail-open, so an errored rule never surfaces through
+// Result or DeniedResult — this is the only accessor that returns it. While
+// this rule is experimental a call may simply return an error result.
+func (r *ExperimentalGuardModerateContentRule) ErrorResult(d GuardDecision) *ArcjetError {
+	for _, res := range d.Results {
+		if res.ConfigID == r.base.configID && res.Error != nil {
+			return res.Error
 		}
 	}
 	return nil
@@ -658,7 +720,7 @@ func GuardSensitiveInfo(opts GuardSensitiveInfoOptions) (*GuardSensitiveInfoRule
 // Guard decision, or nil if the rule did not produce one.
 func (r *GuardSensitiveInfoRule) Result(d GuardDecision) *GuardSensitiveInfoResult {
 	for _, res := range d.Results {
-		if res.ConfigID == r.base.configID && res.LocalSensitiveInfo != nil {
+		if res.ConfigID == r.base.configID && res.Error == nil && res.LocalSensitiveInfo != nil {
 			return res.LocalSensitiveInfo
 		}
 	}
@@ -671,6 +733,18 @@ func (r *GuardSensitiveInfoRule) DeniedResult(d GuardDecision) *GuardSensitiveIn
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.IsDenied() && res.LocalSensitiveInfo != nil {
 			return res.LocalSensitiveInfo
+		}
+	}
+	return nil
+}
+
+// ErrorResult returns this rule's error if it failed to evaluate, or nil
+// otherwise. Errors are fail-open, so an errored rule never surfaces through
+// Result or DeniedResult — this is the only accessor that returns it.
+func (r *GuardSensitiveInfoRule) ErrorResult(d GuardDecision) *ArcjetError {
+	for _, res := range d.Results {
+		if res.ConfigID == r.base.configID && res.Error != nil {
+			return res.Error
 		}
 	}
 	return nil
@@ -771,7 +845,7 @@ func GuardCustom(opts GuardCustomOptions) (*GuardCustomRule, error) {
 // nil if the rule did not produce one.
 func (r *GuardCustomRule) Result(d GuardDecision) *GuardLocalCustomResult {
 	for _, res := range d.Results {
-		if res.ConfigID == r.base.configID && res.LocalCustom != nil {
+		if res.ConfigID == r.base.configID && res.Error == nil && res.LocalCustom != nil {
 			return res.LocalCustom
 		}
 	}
@@ -784,6 +858,18 @@ func (r *GuardCustomRule) DeniedResult(d GuardDecision) *GuardLocalCustomResult 
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.IsDenied() && res.LocalCustom != nil {
 			return res.LocalCustom
+		}
+	}
+	return nil
+}
+
+// ErrorResult returns this rule's error if it failed to evaluate, or nil
+// otherwise. Errors are fail-open, so an errored rule never surfaces through
+// Result or DeniedResult — this is the only accessor that returns it.
+func (r *GuardCustomRule) ErrorResult(d GuardDecision) *ArcjetError {
+	for _, res := range d.Results {
+		if res.ConfigID == r.base.configID && res.Error != nil {
+			return res.Error
 		}
 	}
 	return nil
