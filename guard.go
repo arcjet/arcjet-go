@@ -22,7 +22,11 @@ import (
 type GuardConfig struct {
 	// Key is the Arcjet site key. If empty, ARCJET_KEY is used.
 	Key string
-	// HTTPClient is the client used for Arcjet RPCs. If nil, http.DefaultClient is used.
+	// HTTPClient is the client used for Arcjet RPCs. If nil, http.DefaultClient
+	// is used, which honors the standard HTTP_PROXY, HTTPS_PROXY, and NO_PROXY
+	// environment variables via http.ProxyFromEnvironment. Supply a custom
+	// client only if you need different behavior; set its Transport's Proxy to
+	// http.ProxyFromEnvironment to preserve outbound proxy support.
 	HTTPClient *http.Client
 	// BaseURL overrides the Arcjet Guard API base URL.
 	BaseURL string
