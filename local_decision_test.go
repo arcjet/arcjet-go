@@ -108,17 +108,31 @@ func TestLocalEvaluatorWarmsConfiguredWasmFactories(t *testing.T) {
 	}
 }
 
-func TestLocalEvaluatorSkipsFactoryWhenNoLocalRules(t *testing.T) {
+func TestLocalEvaluatorWarmsFactoryForFingerprintOnlyRules(t *testing.T) {
 	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
-		// PromptInjection has no local kind, so the factory should not warm.
+		// PromptInjection has no local kind, but the per-rule cache still
+		// fingerprints it via WASM (see Client.ruleFingerprints), so the
+		// factory must warm at construction to keep the cold compile off
+		// the first Protect's hot path.
 		DetectPromptInjection(PromptInjectionOptions{Mode: ModeLive}),
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer evaluator.close(context.Background())
+	if evaluator.factory == nil {
+		t.Fatal("expected the jsreq factory to warm for any configured rule")
+	}
+}
+
+func TestLocalEvaluatorSkipsFactoryWhenNoRules(t *testing.T) {
+	evaluator, err := newLocalEvaluator(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
 	if evaluator.factory != nil {
-		t.Fatal("expected factory to stay nil when no local rules are configured")
+		t.Fatal("expected factory to stay nil when no rules are configured")
 	}
 }
 

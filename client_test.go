@@ -333,6 +333,28 @@ func TestNewClientRejectsInvalidProxy(t *testing.T) {
 	}
 }
 
+// TestNewClientWarmsWasmForFingerprintOnlyRules is the by-design guard for the
+// cold-start regression that TestDefaultClientHonorsProxyEnv only caught by
+// accident (a slow first-request compile blowing its 5s budget). The per-rule
+// cache fingerprints every rule via WASM, so the module must be compiled at
+// construction — even for a Shield-only client that has no locally-evaluated
+// rule — keeping the one-time compile off the first Protect's hot path. If the
+// warming ever regresses to lazy compilation, this fails deterministically
+// rather than depending on a timeout.
+func TestNewClientWarmsWasmForFingerprintOnlyRules(t *testing.T) {
+	client, err := NewClient(Config{
+		Key:   "ajkey_test",
+		Rules: []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close(context.Background())
+	if client.local == nil || client.local.factory == nil {
+		t.Fatal("expected NewClient to warm the jsreq factory for a fingerprint-only rule")
+	}
+}
+
 func TestProtectReportsLocalEmailWasmDecision(t *testing.T) {
 	handler := &testDecideHandler{reportCh: make(chan struct{}, 1)}
 	path, h := decidev1alpha1connect.NewDecideServiceHandler(handler)
@@ -500,6 +522,21 @@ func TestReportRedactsSensitiveInputsButDecideDoesNot(t *testing.T) {
 				Reason: &decidev1.Reason{Reason: &decidev1.Reason_RateLimit{
 					RateLimit: &decidev1.RateLimitReason{Max: 10},
 				}},
+				// Per-rule caching keys cached entries to (ruleID,
+				// fingerprint) pairs derived from the response's RuleResults.
+				// A Decision with no rule results would yield nothing to
+				// cache — real Decide responses always include them.
+				RuleResults: []*decidev1.RuleResult{
+					{
+						RuleId:     "rule_remote",
+						State:      decidev1.RuleState_RULE_STATE_RUN,
+						Conclusion: decidev1.Conclusion_CONCLUSION_DENY,
+						Reason: &decidev1.Reason{Reason: &decidev1.Reason_RateLimit{
+							RateLimit: &decidev1.RateLimitReason{Max: 10},
+						}},
+						Ttl: 30,
+					},
+				},
 				Ttl: 30,
 			},
 		}
@@ -680,7 +717,14 @@ func TestProtectCachesLocalBotDenyAndReportsCacheHit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	details := ProtectDetails{Headers: map[string]string{"user-agent": "curl/8.7.1"}}
+	// IP is required by the bundled WASM's fingerprint generator (it
+	// defaults to keying on `src.ip` when no characteristics are configured),
+	// so cache hits depend on it. This matches arcjet-js's behavior, where
+	// the default fingerprint characteristic is also `src.ip`.
+	details := ProtectDetails{
+		IP:      "203.0.113.10",
+		Headers: map[string]string{"user-agent": "curl/8.7.1"},
+	}
 
 	first, err := client.ProtectDetails(context.Background(), details)
 	if err != nil {
@@ -704,6 +748,101 @@ func TestProtectCachesLocalBotDenyAndReportsCacheHit(t *testing.T) {
 	decideCalls, reportCalls := snap.decideCalls, snap.reportCalls
 	if decideCalls != 0 || reportCalls != 2 {
 		t.Fatalf("expected two reports and no decide calls, decide=%d report=%d", decideCalls, reportCalls)
+	}
+}
+
+// TestRateLimitCacheKeyedByRuleCharacteristics guards against a regression
+// where a rate-limit rule's server DENY was cached under a fingerprint built
+// from the client-level characteristics instead of the rule's own. arcjet-js
+// recomputes the fingerprint per rate-limit rule from rule.characteristics, so
+// a limit keyed on userId caches per user. With a single client-level
+// fingerprint (default src.ip), two users sharing an IP collided: the second
+// user got the first user's cached DENY without the server ever running.
+func TestRateLimitCacheKeyedByRuleCharacteristics(t *testing.T) {
+	// A cacheable rate-limit DENY: enforced (RUN), DENY, non-zero TTL.
+	handler := &testDecideHandler{
+		reportCh: make(chan struct{}, 4),
+		decision: &decidev1.Decision{
+			Id:         "req_ratelimit",
+			Conclusion: decidev1.Conclusion_CONCLUSION_DENY,
+			Reason: &decidev1.Reason{Reason: &decidev1.Reason_RateLimit{
+				RateLimit: &decidev1.RateLimitReason{Max: 10},
+			}},
+			RuleResults: []*decidev1.RuleResult{
+				{
+					RuleId:     "rule_ratelimit",
+					State:      decidev1.RuleState_RULE_STATE_RUN,
+					Conclusion: decidev1.Conclusion_CONCLUSION_DENY,
+					Reason: &decidev1.Reason{Reason: &decidev1.Reason_RateLimit{
+						RateLimit: &decidev1.RateLimitReason{Max: 10},
+					}},
+					Ttl: 30,
+				},
+			},
+			Ttl: 30,
+		},
+	}
+	path, h := decidev1alpha1connect.NewDecideServiceHandler(handler)
+	mux := http.NewServeMux()
+	mux.Handle(path, h)
+
+	// The rate-limit rule keys on userId, but the client declares no
+	// client-level characteristics — so the only thing distinguishing the
+	// two users in the cache is the rule's own characteristics.
+	client, err := NewClient(Config{
+		Key:        "ajkey_test",
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+		Rules: []Rule{
+			TokenBucket(TokenBucketOptions{
+				Mode:            ModeLive,
+				Characteristics: []string{"userId"},
+				RefillRate:      1,
+				Interval:        60,
+				Capacity:        10,
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := ProtectDetails{IP: "203.0.113.10"}
+	alice := WithCharacteristics(map[string]string{"userId": "alice"})
+	bob := WithCharacteristics(map[string]string{"userId": "bob"})
+
+	// decideCalls is incremented synchronously inside the Decide handler, so
+	// it is a reliable count of cache misses without waiting on the async
+	// Report goroutine that cache hits trigger.
+
+	// Alice's first call reaches the server (cache miss) and caches the DENY.
+	if d, err := client.ProtectDetails(context.Background(), base, alice); err != nil {
+		t.Fatal(err)
+	} else if !d.IsDenied() {
+		t.Fatalf("expected alice to be denied, got %#v", d)
+	}
+	if got := handler.snapshot().decideCalls; got != 1 {
+		t.Fatalf("expected alice's first call to reach the server, got %d decide calls", got)
+	}
+
+	// Alice again: served from cache, no new Decide call.
+	if d, err := client.ProtectDetails(context.Background(), base, alice); err != nil {
+		t.Fatal(err)
+	} else if !d.IsDenied() || d.Results[0].State != "RULE_STATE_CACHED" {
+		t.Fatalf("expected alice cached deny, got %#v", d)
+	}
+	if got := handler.snapshot().decideCalls; got != 1 {
+		t.Fatalf("expected alice's repeat to hit cache (still 1 decide call), got %d", got)
+	}
+
+	// Bob shares alice's IP but is a different user. He must NOT inherit
+	// alice's cached DENY — the rule is keyed on userId, so his request has a
+	// distinct fingerprint and must reach the server.
+	if _, err := client.ProtectDetails(context.Background(), base, bob); err != nil {
+		t.Fatal(err)
+	}
+	if got := handler.snapshot().decideCalls; got != 2 {
+		t.Fatalf("bob (different userId, same IP) should not hit alice's cache; expected 2 decide calls, got %d", got)
 	}
 }
 
