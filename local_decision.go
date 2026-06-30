@@ -44,18 +44,22 @@ type localEvaluator struct {
 }
 
 // newLocalEvaluator returns an evaluator and eagerly compiles the shared
-// js_req factory when any rule needs local evaluation. The Guard path
-// uses `newLazyLocalEvaluator` instead, since Guard rules arrive
-// per-request rather than at client construction.
+// js_req factory when the client has any rules. Both local evaluation and
+// the per-rule cache's fingerprinting (see Client.ruleFingerprints) drive
+// the WASM module, so any rule makes it a per-request dependency — compiling
+// it here keeps the cold ~module-compile cost off the first Protect's hot
+// path. The Guard path uses `newLazyLocalEvaluator` instead, since Guard
+// rules arrive per-request rather than at client construction.
 func newLocalEvaluator(ctx context.Context, rules []Rule, detect SensitiveInfoDetect) (*localEvaluator, error) {
 	evaluator := newLazyLocalEvaluator(detect)
-	var kinds localKind
+	hasRule := false
 	for _, rule := range rules {
 		if rule != nil {
-			kinds |= rule.localKind()
+			hasRule = true
+			break
 		}
 	}
-	if kinds == 0 {
+	if !hasRule {
 		return evaluator, nil
 	}
 	if _, err := evaluator.factoryLazy(ctx); err != nil {
