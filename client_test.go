@@ -333,6 +333,28 @@ func TestNewClientRejectsInvalidProxy(t *testing.T) {
 	}
 }
 
+// TestNewClientWarmsWasmForFingerprintOnlyRules is the by-design guard for the
+// cold-start regression that TestDefaultClientHonorsProxyEnv only caught by
+// accident (a slow first-request compile blowing its 5s budget). The per-rule
+// cache fingerprints every rule via WASM, so the module must be compiled at
+// construction — even for a Shield-only client that has no locally-evaluated
+// rule — keeping the one-time compile off the first Protect's hot path. If the
+// warming ever regresses to lazy compilation, this fails deterministically
+// rather than depending on a timeout.
+func TestNewClientWarmsWasmForFingerprintOnlyRules(t *testing.T) {
+	client, err := NewClient(Config{
+		Key:   "ajkey_test",
+		Rules: []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close(context.Background())
+	if client.local == nil || client.local.factory == nil {
+		t.Fatal("expected NewClient to warm the jsreq factory for a fingerprint-only rule")
+	}
+}
+
 func TestProtectReportsLocalEmailWasmDecision(t *testing.T) {
 	handler := &testDecideHandler{reportCh: make(chan struct{}, 1)}
 	path, h := decidev1alpha1connect.NewDecideServiceHandler(handler)
