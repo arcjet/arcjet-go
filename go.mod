@@ -10,6 +10,7 @@ require (
 )
 
 require (
-	github.com/gofrs/uuid/v5 v5.2.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	github.com/gofrs/uuid/v5 v5.4.0 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 )

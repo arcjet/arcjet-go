@@ -38,7 +38,11 @@ type Config struct {
 	Rules []Rule
 	// Characteristics are global rate-limit characteristic keys.
 	Characteristics []string
-	// HTTPClient is the client used for Arcjet RPCs. If nil, http.DefaultClient is used.
+	// HTTPClient is the client used for Arcjet RPCs. If nil, http.DefaultClient
+	// is used, which honors the standard HTTP_PROXY, HTTPS_PROXY, and NO_PROXY
+	// environment variables via http.ProxyFromEnvironment. Supply a custom
+	// client only if you need different behavior; set its Transport's Proxy to
+	// http.ProxyFromEnvironment to preserve outbound proxy support.
 	HTTPClient *http.Client
 	// BaseURL overrides the Arcjet Decide API base URL.
 	BaseURL string
@@ -265,6 +269,14 @@ type ProtectDetails struct {
 	Query string
 	// Extra contains additional string fields sent to Arcjet.
 	Extra map[string]string
+	// CorrelationId is an optional, caller-supplied opaque identifier used to
+	// correlate this request with other Protect and Guard calls that belong to
+	// the same workflow, agent run, or multi-step task. It does not affect the
+	// decision and is excluded from the decision cache key; it is stored
+	// alongside the recorded decision so a chain of actions can be
+	// reconstructed. Bounded server-side to 256 bytes of printable ASCII;
+	// invalid values are dropped, not truncated.
+	CorrelationId string
 }
 
 // ProtectOptions contains per-request inputs used by specific rules.
@@ -290,6 +302,11 @@ type ProtectOptions struct {
 	Extra map[string]string
 	// Body overrides the request body sent to Arcjet.
 	Body []byte
+	// CorrelationId is an optional, caller-supplied opaque identifier used to
+	// correlate this request with other Protect and Guard calls in the same
+	// workflow or agent run. It does not affect the decision and is excluded
+	// from the decision cache key.
+	CorrelationId string
 }
 
 // ProtectOption configures a single Client.Protect or Client.ProtectDetails call.
@@ -355,6 +372,14 @@ func WithExtra(extra map[string]string) ProtectOption {
 	return func(o *ProtectOptions) { o.Extra = cloneMap(extra) }
 }
 
+// WithCorrelationId sets an optional, caller-supplied opaque identifier used to
+// correlate this request with other Protect and Guard calls in the same
+// workflow or agent run. It does not affect the decision and is excluded from
+// the decision cache key.
+func WithCorrelationId(id string) ProtectOption {
+	return func(o *ProtectOptions) { o.CorrelationId = id }
+}
+
 // Protect evaluates an HTTP request with the client's configured rules.
 func (c *Client) Protect(ctx context.Context, r *http.Request, opts ...ProtectOption) (Decision, error) {
 	if r == nil {
@@ -381,6 +406,9 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	}
 	if options.IPSrc != "" {
 		details.IP = options.IPSrc
+	}
+	if options.CorrelationId != "" {
+		details.CorrelationId = options.CorrelationId
 	}
 	if details.Extra == nil {
 		details.Extra = make(map[string]string)
@@ -765,6 +793,9 @@ func (d ProtectDetails) toProto() *decidev1.RequestDetails {
 		Email:    d.Email,
 		Cookies:  d.Cookies,
 		Query:    queryWithQuestion(d.Query),
+		// Not a fingerprint characteristic, so it never enters the per-rule
+		// cache key (ruleID, fingerprint); see ruleFingerprints.
+		CorrelationId: d.CorrelationId,
 	}
 }
 

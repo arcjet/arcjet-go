@@ -91,9 +91,10 @@ func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {
 	}
 
 	decision, err := client.Guard(context.Background(), GuardRequest{
-		Label:    "tools.weather",
-		Metadata: map[string]string{"env": "test"},
-		Rules:    []GuardRuleInput{limit.Key("user_123", 2)},
+		Label:         "tools.weather",
+		Metadata:      map[string]string{"env": "test"},
+		CorrelationId: "wf_abcdef",
+		Rules:         []GuardRuleInput{limit.Key("user_123", 2)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +115,9 @@ func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {
 	}
 	if seen.GetMetadata()["env"] != "test" {
 		t.Fatalf("metadata = %#v", seen.GetMetadata())
+	}
+	if seen.GetCorrelationId() != "wf_abcdef" {
+		t.Fatalf("correlation_id = %q", seen.GetCorrelationId())
 	}
 	sub := seen.GetRuleSubmissions()[0]
 	tb := sub.GetRule().GetTokenBucket()
@@ -640,6 +644,118 @@ func TestGuardCustomResultAccessors(t *testing.T) {
 	}}
 	if rule.Result(d) != cr || rule.DeniedResult(d) != cr {
 		t.Error("custom result accessors did not return result")
+	}
+}
+
+// TestGuardErrorResultAccessor verifies the error/non-error split: ErrorResult
+// surfaces an errored rule result, while Result/DeniedResult never do.
+func TestGuardErrorResultAccessor(t *testing.T) {
+	rule, err := GuardTokenBucket(GuardTokenBucketOptions{
+		Mode: ModeLive, RefillRate: 1, Interval: time.Minute, Capacity: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A rule that errored: fail-open ALLOW carrying an *ArcjetError, matched by
+	// ConfigID. The error must surface via ErrorResult, never via Result.
+	errored := &ArcjetError{Code: "AJ1100", Message: "boom"}
+	d := GuardDecision{Results: []GuardRuleResult{
+		{ConfigID: rule.base.configID, Conclusion: ConclusionAllow, Reason: ReasonError, Error: errored},
+	}}
+	if got := rule.ErrorResult(d); got != errored {
+		t.Errorf("ErrorResult should return the rule's error, got %#v", got)
+	}
+	if rule.Result(d) != nil {
+		t.Error("Result must not return an errored result")
+	}
+	if rule.DeniedResult(d) != nil {
+		t.Error("DeniedResult must not return an errored result")
+	}
+
+	// No error present: ErrorResult is nil and a normal result resolves cleanly.
+	tb := &GuardTokenBucketResult{RemainingTokens: 5, MaxTokens: 10}
+	ok := GuardDecision{Results: []GuardRuleResult{
+		{ConfigID: rule.base.configID, Conclusion: ConclusionAllow, TokenBucket: tb},
+	}}
+	if rule.ErrorResult(ok) != nil {
+		t.Error("ErrorResult should be nil when nothing errored")
+	}
+	if rule.Result(ok) != tb {
+		t.Error("Result should return the non-error result")
+	}
+
+	// A DENY is a trustworthy non-error result: it must NOT be dropped, and it
+	// is not an error.
+	deniedTB := &GuardTokenBucketResult{RemainingTokens: 0, MaxTokens: 10}
+	denied := GuardDecision{Results: []GuardRuleResult{
+		{ConfigID: rule.base.configID, Conclusion: ConclusionDeny, TokenBucket: deniedTB},
+	}}
+	if rule.DeniedResult(denied) != deniedTB {
+		t.Error("a DENY result must still be returned by DeniedResult")
+	}
+	if rule.ErrorResult(denied) != nil {
+		t.Error("a DENY is not an error")
+	}
+
+	// Defensive: a malformed result carrying BOTH an error and a rule field
+	// must be treated as errored, never surfaced as a normal result.
+	both := GuardDecision{Results: []GuardRuleResult{
+		{ConfigID: rule.base.configID, Conclusion: ConclusionAllow, Error: errored, TokenBucket: tb},
+	}}
+	if rule.Result(both) != nil {
+		t.Error("Result must exclude a result that also carries an error")
+	}
+	if rule.ErrorResult(both) != errored {
+		t.Error("ErrorResult should surface the error even if a rule field is set")
+	}
+
+	if rule.ErrorResult(GuardDecision{}) != nil {
+		t.Error("ErrorResult on empty decision should be nil")
+	}
+}
+
+// TestGuardErrorResultAcrossRuleTypes verifies every rule type exposes a
+// rule-level ErrorResult matched by ConfigID.
+func TestGuardErrorResultAcrossRuleTypes(t *testing.T) {
+	errored := &ArcjetError{Code: "AJ1200", Message: "x"}
+	fw, _ := GuardFixedWindow(GuardFixedWindowOptions{Mode: ModeLive, Window: time.Minute, MaxRequests: 10})
+	sw, _ := GuardSlidingWindow(GuardSlidingWindowOptions{Mode: ModeLive, Interval: time.Minute, MaxRequests: 10})
+	pi, _ := GuardPromptInjection(GuardPromptInjectionOptions{Mode: ModeLive})
+	mc, _ := ExperimentalGuardModerateContent(ExperimentalGuardModerateContentOptions{Mode: ModeLive})
+	si, _ := GuardSensitiveInfo(GuardSensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}})
+	cr, _ := GuardCustom(GuardCustomOptions{
+		Mode: ModeLive,
+		Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
+			return GuardCustomResult{}, nil
+		},
+	})
+
+	type errorAccessor interface {
+		ErrorResult(GuardDecision) *ArcjetError
+	}
+	// token_bucket is covered by TestGuardErrorResultAccessor above.
+	cases := []struct {
+		name     string
+		configID string
+		rule     errorAccessor
+	}{
+		{"fixed_window", fw.base.configID, fw},
+		{"sliding_window", sw.base.configID, sw},
+		{"prompt_injection", pi.base.configID, pi},
+		{"moderate_content", mc.base.configID, mc},
+		{"sensitive_info", si.base.configID, si},
+		{"custom", cr.base.configID, cr},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := GuardDecision{Results: []GuardRuleResult{
+				{ConfigID: tc.configID, Conclusion: ConclusionAllow, Reason: ReasonError, Error: errored},
+			}}
+			if tc.rule.ErrorResult(d) != errored {
+				t.Errorf("%s: ErrorResult did not return the error", tc.name)
+			}
+		})
 	}
 }
 

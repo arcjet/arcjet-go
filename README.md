@@ -1224,6 +1224,32 @@ aj, err := arcjet.NewClient(arcjet.Config{
 })
 ```
 
+### Outbound proxy
+
+Requests to the Arcjet API are routed through an outbound proxy automatically
+when the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment
+variables (or their lowercase equivalents) are set. This works out of the box
+because the default `http.Client` uses `http.DefaultTransport`, which resolves
+proxies via [`http.ProxyFromEnvironment`](https://pkg.go.dev/net/http#ProxyFromEnvironment).
+
+```sh
+export HTTPS_PROXY=http://proxy.internal:3128
+export NO_PROXY=localhost,127.0.0.1
+```
+
+If you supply a custom `Config.HTTPClient` with its own `Transport`, set
+`Proxy: http.ProxyFromEnvironment` to keep this behavior:
+
+```go
+aj, err := arcjet.NewClient(arcjet.Config{
+	Key:   arcjetKey,
+	Rules: []arcjet.Rule{...},
+	HTTPClient: &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+	},
+})
+```
+
 ### Hosting platform
 
 When deployed on a managed hosting platform, Arcjet reads the client IP from

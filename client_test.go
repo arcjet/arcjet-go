@@ -190,6 +190,7 @@ func TestProtectUsesConnectAndBuildsRequest(t *testing.T) {
 		WithRequested(42),
 		WithCharacteristics(map[string]string{"userId": "user_123"}),
 		WithDetectPromptInjectionMessage("hello"),
+		WithCorrelationId("wf_abcdef"),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -222,6 +223,12 @@ func TestProtectUsesConnectAndBuildsRequest(t *testing.T) {
 	}
 	if seen.GetDetails().GetQuery() != "?debug=1" {
 		t.Fatalf("query = %q", seen.GetDetails().GetQuery())
+	}
+	if seen.GetDetails().GetCorrelationId() != "wf_abcdef" {
+		t.Fatalf("correlation_id = %q", seen.GetDetails().GetCorrelationId())
+	}
+	if _, ok := seen.GetDetails().GetExtra()["correlationId"]; ok {
+		t.Fatalf("correlation_id leaked into extra: %#v", seen.GetDetails().GetExtra())
 	}
 	if seen.GetDetails().GetExtra()["userId"] != "user_123" {
 		t.Fatalf("missing userId extra: %#v", seen.GetDetails().GetExtra())
