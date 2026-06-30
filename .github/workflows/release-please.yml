@@ -1,0 +1,58 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Don't cancel a release mid-flight (tag + GitHub Release creation).
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-24.04
+    # Release Please is fast, so keep a tight timeout.
+    timeout-minutes: 5
+    # The GitHub App token grants the contents/pull-requests writes Release
+    # Please needs; this job only needs minimal GITHUB_TOKEN permissions.
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          disable-sudo: true
+          # Release Please talks to several GitHub API hosts; audit avoids
+          # enumerating them while still recording egress.
+          egress-policy: audit
+
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          # Scope the token to exactly what Release Please needs (least
+          # privilege): write the release branch/tags/release (contents) and
+          # open/update the release PR (pull-requests).
+          permission-contents: write
+          permission-pull-requests: write
+
+      # Maintain the "chore: Release X.Y.Z" PR only (version bump in types.go +
+      # CHANGELOG). `skip-github-release` keeps it from tagging — the tag (the
+      # published artifact) is cut by the human-approved release.yml after the
+      # PR merges. An App-token push (unlike GITHUB_TOKEN) re-triggers CI on the
+      # release PR.
+      - name: Release Please (release PR)
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json
+          skip-github-release: true

@@ -8,7 +8,7 @@ import (
 )
 
 // Version is the Arcjet Go SDK version sent with Decide and Guard requests.
-const Version = "0.1.0"
+const Version = "0.1.0" // x-release-please-version
 
 // Mode controls whether a rule enforces decisions or only reports them.
 type Mode string

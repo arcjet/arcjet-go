@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # Only when the version bump lands on main — i.e. the Release Please
+      # "chore: Release X.Y.Z" PR was merged. Normal pushes don't touch the
+      # manifest, so this never runs (and never asks for approval) on them.
+      - .github/.release-please-manifest.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  # Never cancel an in-flight release.
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and release
+    runs-on: ubuntu-24.04
+    # Human approval gate: the `release` environment requires a reviewer to
+    # approve before this job runs. The git tag is the published artifact for a
+    # Go module (the module proxy serves it on demand), so approving here gates
+    # the publish — the role `environment: pypi` plays for arcjet-py.
+    environment: release
+    permissions:
+      contents: write # create the tag and the GitHub Release
+      pull-requests: write # mark the merged release PR as released
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          disable-sudo: true
+          # Release Please talks to several GitHub API hosts; audit avoids
+          # enumerating them while still recording egress.
+          egress-policy: audit
+
+      # Tag + GitHub Release only — `skip-github-pull-request` leaves the PR to
+      # release-please.yml. Release Please reads the merged release PR and
+      # creates the vX.Y.Z tag + Release itself (version, tag, notes), so there
+      # is no manifest parsing here. It is a no-op if nothing is pending, so the
+      # job is safe to re-run.
+      - name: Release Please (create release)
+        id: release
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        with:
+          token: ${{ github.token }}
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json
+          skip-github-pull-request: true
+
+      - name: Warm the Go module proxy
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          TAG: ${{ steps.release.outputs.tag_name }}
+        # The tag is the release; this just primes the proxy / pkg.go.dev so it's
+        # discoverable promptly. Best-effort — the proxy fetches on first request.
+        run: |
+          curl -fsS --retry 3 --retry-delay 5 \
+            "https://proxy.golang.org/github.com/arcjet/arcjet-go/@v/${TAG}.info" >/dev/null \
+            || echo "::warning::proxy warm-up failed; the proxy will fetch ${TAG} on first request"

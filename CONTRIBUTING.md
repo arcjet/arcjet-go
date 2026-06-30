@@ -83,6 +83,84 @@ go mod tidy
 Commit `tools/go.mod` and `tools/go.sum`. CI picks the version up automatically
 on the next run — there's no separate version file to keep in sync.
 
+## Releasing
+
+Releasing is two reviewed steps: **merge the release PR**, then **approve the
+release deployment**. The tag is the published artifact for a Go module (the
+module proxy serves it on demand), so the approval gates the publish — the same
+role the `pypi` environment plays for arcjet-py.
+
+1. Land changes on `main` using
+   [Conventional Commits](https://www.conventionalcommits.org) (`feat:`,
+   `fix:`, `perf:`, …). The commit types drive the version bump and the
+   CHANGELOG.
+2. [Release Please](https://github.com/googleapis/release-please)
+   ([config](.github/release-please-config.json),
+   [workflow](.github/workflows/release-please.yml)) maintains a
+   "chore: Release X.Y.Z" pull request that bumps the `Version` constant in
+   [`types.go`](types.go) (matched by the `x-release-please-version` annotation
+   on that line) and updates [`CHANGELOG.md`](CHANGELOG.md). It does **not** tag
+   (`skip-github-release`). **Review #1:** review and merge that PR.
+3. Merging the PR lands the version bump on `main`, which triggers
+   [`release.yml`](.github/workflows/release.yml). That workflow stops at the
+   **`release` environment** for approval. **Review #2:** a reviewer approves
+   the deployment, and only then does Release Please (run with
+   `skip-github-pull-request`) create the `vX.Y.Z` tag and the GitHub Release.
+   The Go module proxy serves the tag, so
+   `go get github.com/arcjet/arcjet-go@vX.Y.Z` and pkg.go.dev pick it up — there
+   is no separate registry publish.
+
+Because the tag is only ever created by the approved `release.yml` run, the
+`Version` constant, the CHANGELOG, and the tag always agree, and no tag is ever
+published without a second human approval.
+
+Pre-1.0 (`bump-minor-pre-major`): `fix` bumps the patch; `feat` and breaking
+changes bump the minor, so a breaking change won't jump to `v1.0.0`. Promote to
+`v1` deliberately once the API is stable.
+
+### Major versions
+
+For `v2` and beyond, Go [semantic import versioning][siv] requires the `go.mod`
+module path to gain a matching `/vN` suffix (e.g.
+`module github.com/arcjet/arcjet-go/v2`) with all internal import paths updated —
+a code change Release Please does not make for you. Land that first.
+
+[siv]: https://go.dev/ref/mod#major-version-suffixes
+
+### Release infrastructure (one-time setup)
+
+Two pieces of repo configuration back the flow above. Both are set in GitHub,
+not in this repo.
+
+**1. The Release Please GitHub App** — opens/updates the release PR. A plain
+`GITHUB_TOKEN` can't be used because commits it pushes don't re-trigger CI on
+the release PR, so an App token is required.
+
+- Reuse the same GitHub App the other Arcjet SDKs use (preferred), or create a
+  new one: GitHub → org **Settings → Developer settings → GitHub Apps → New**.
+  Grant **Repository permissions → Contents: Read and write** and **Pull
+  requests: Read and write**; no webhook needed.
+- **Install** the App on `arcjet/arcjet-go` (App settings → Install App → select
+  the repo).
+- Generate a **private key** (App settings → Private keys → Generate) and note
+  the **App ID**.
+- Add them as repo secrets (**Settings → Secrets and variables → Actions**):
+  `RELEASE_PLEASE_APP_ID` (the App ID) and `RELEASE_PLEASE_APP_PRIVATE_KEY` (the
+  full `.pem` contents). The workflow scopes the minted token to contents +
+  pull-requests at runtime.
+
+**2. The `release` environment** — the approval gate.
+
+- **Settings → Environments → New environment** named exactly `release` (it must
+  match `environment: release` in [`release.yml`](.github/workflows/release.yml)).
+- Enable **Required reviewers** and add the people/team allowed to approve
+  releases. Optionally restrict the environment's deployment branches to `main`.
+- No environment secrets are needed; the release job creates the tag and the
+  GitHub Release via the API with the built-in `GITHUB_TOKEN`.
+
+With both in place, a release is: merge the release PR → approve the `release`
+deployment → tag published.
+
 ## CI
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every PR, push
