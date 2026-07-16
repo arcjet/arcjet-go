@@ -37,10 +37,17 @@ const DecideServiceName = "proto.decide.v2.DecideService"
 // not the vendored proto's namespaced package — see the file comment.
 const DecideServiceGuardProcedure = "/proto.decide.v2.DecideService/Guard"
 
+// DecideServiceCaptureProcedure is the canonical, fully-qualified wire route
+// of the Capture RPC. See DecideServiceGuardProcedure.
+const DecideServiceCaptureProcedure = "/proto.decide.v2.DecideService/Capture"
+
 // DecideServiceClient is a client for the proto.decide.v2.DecideService service.
 type DecideServiceClient interface {
 	// Evaluate a set of guard rules and return a decision.
 	Guard(context.Context, *connect.Request[v2.GuardRequest]) (*connect.Response[v2.GuardResponse], error)
+	// Record facts about what the application did. Fire-and-forget: the ack
+	// means received, not durably recorded.
+	Capture(context.Context, *connect.Request[v2.CaptureRequest]) (*connect.Response[v2.CaptureResponse], error)
 }
 
 // NewDecideServiceClient constructs a client for the proto.decide.v2.DecideService service.
@@ -55,12 +62,18 @@ func NewDecideServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			baseURL+DecideServiceGuardProcedure,
 			opts...,
 		),
+		capture: connect.NewClient[v2.CaptureRequest, v2.CaptureResponse](
+			httpClient,
+			baseURL+DecideServiceCaptureProcedure,
+			opts...,
+		),
 	}
 }
 
 // decideServiceClient implements DecideServiceClient.
 type decideServiceClient struct {
-	guard *connect.Client[v2.GuardRequest, v2.GuardResponse]
+	guard   *connect.Client[v2.GuardRequest, v2.GuardResponse]
+	capture *connect.Client[v2.CaptureRequest, v2.CaptureResponse]
 }
 
 // Guard calls proto.decide.v2.DecideService.Guard.
@@ -68,10 +81,18 @@ func (c *decideServiceClient) Guard(ctx context.Context, req *connect.Request[v2
 	return c.guard.CallUnary(ctx, req)
 }
 
+// Capture calls proto.decide.v2.DecideService.Capture.
+func (c *decideServiceClient) Capture(ctx context.Context, req *connect.Request[v2.CaptureRequest]) (*connect.Response[v2.CaptureResponse], error) {
+	return c.capture.CallUnary(ctx, req)
+}
+
 // DecideServiceHandler is an implementation of the proto.decide.v2.DecideService service.
 type DecideServiceHandler interface {
 	// Evaluate a set of guard rules and return a decision.
 	Guard(context.Context, *connect.Request[v2.GuardRequest]) (*connect.Response[v2.GuardResponse], error)
+	// Record facts about what the application did. Fire-and-forget: the ack
+	// means received, not durably recorded.
+	Capture(context.Context, *connect.Request[v2.CaptureRequest]) (*connect.Response[v2.CaptureResponse], error)
 }
 
 // NewDecideServiceHandler builds an HTTP handler from the service implementation.
@@ -82,10 +103,17 @@ func NewDecideServiceHandler(svc DecideServiceHandler, opts ...connect.HandlerOp
 		svc.Guard,
 		opts...,
 	)
+	decideServiceCaptureHandler := connect.NewUnaryHandler(
+		DecideServiceCaptureProcedure,
+		svc.Capture,
+		opts...,
+	)
 	return "/proto.decide.v2.DecideService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DecideServiceGuardProcedure:
 			decideServiceGuardHandler.ServeHTTP(w, r)
+		case DecideServiceCaptureProcedure:
+			decideServiceCaptureHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -97,4 +125,8 @@ type UnimplementedDecideServiceHandler struct{}
 
 func (UnimplementedDecideServiceHandler) Guard(context.Context, *connect.Request[v2.GuardRequest]) (*connect.Response[v2.GuardResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("proto.decide.v2.DecideService.Guard is not implemented"))
+}
+
+func (UnimplementedDecideServiceHandler) Capture(context.Context, *connect.Request[v2.CaptureRequest]) (*connect.Response[v2.CaptureResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("proto.decide.v2.DecideService.Capture is not implemented"))
 }

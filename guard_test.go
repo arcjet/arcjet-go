@@ -15,6 +15,9 @@ import (
 )
 
 type testGuardHandler struct {
+	// Capture is served as unimplemented; guard tests never call it.
+	decidev2connect.UnimplementedDecideServiceHandler
+
 	seen   *decidev2.GuardRequest
 	header http.Header
 	resp   *decidev2.GuardResponse

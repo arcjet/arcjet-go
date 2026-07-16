@@ -17,6 +17,9 @@ import (
 // empty submission lists; this variant tolerates them so callers can drive
 // it from any benchmark configuration.
 type benchGuardHandler struct {
+	// Capture is served as unimplemented; guard benchmarks never call it.
+	decidev2connect.UnimplementedDecideServiceHandler
+
 	resp *decidev2.GuardResponse
 }
 
