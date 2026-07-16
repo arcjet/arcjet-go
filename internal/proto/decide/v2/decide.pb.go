@@ -2355,15 +2355,11 @@ func (x *GuardResponse) GetErrors() []*ResultError {
 }
 
 // CaptureEvent is a single fact reported by the application about what it
-// did — never a judgment. Judgments (e.g. whether an event agrees with a
-// decision) are derived at read time, never sent on the wire. Nothing
-// client-sent is trusted: anything relied upon (team, receive time, event
-// identity) is derived server-side. See the capture ADR
-// (docs/adrs/2026-07-09-capture-trace-event-primitive.md).
-//
-// There is no client-supplied event ID: the server authors a unique,
-// time-sortable identifier for every event it receives. The wire never
-// suppresses duplicates.
+// did — never a judgment. Nothing client-sent is trusted: anything the
+// platform relies on (team, receive time, event identity) is derived
+// server-side. Event identifiers are authored by the server on receipt;
+// there is no client-supplied event ID, and duplicate events are never
+// suppressed on the wire.
 type CaptureEvent struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -2380,8 +2376,8 @@ type CaptureEvent struct {
 	// Optional join key referencing the decision (e.g. a GuardDecision.id)
 	// this event's action relates to.
 	DecisionId string `protobuf:"bytes,11,opt,name=decision_id,json=decisionId,proto3" json:"decision_id,omitempty"`
-	// What the application did, in customer vocabulary. Convention:
-	// "resource.verb", past tense (e.g. "refund.issued"). Required.
+	// What the application did. Convention: "resource.verb", past tense
+	// (e.g. "refund.issued"). Required.
 	Action string `protobuf:"bytes,20,opt,name=action,proto3" json:"action,omitempty"`
 	// Arbitrary key-value metadata. Customer-supplied and untrusted, same
 	// size caps as GuardRequest.metadata.
@@ -2521,9 +2517,9 @@ func (x *CaptureRequest) GetEvents() []*CaptureEvent {
 }
 
 // CaptureResponse is the response from the Capture RPC. Deliberately empty:
-// capture is fire-and-forget and there is no per-event ack status. The ack
-// means the request was received, not that events are durably recorded —
-// persistence is asynchronous via the guard-record pipeline.
+// capture is fire-and-forget with no per-event ack status. The ack means
+// the request was received, not that events are durably recorded —
+// persistence is asynchronous.
 type CaptureResponse struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
