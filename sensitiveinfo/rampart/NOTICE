@@ -1,0 +1,28 @@
+Arcjet Rampart sensitive-info backend for the Arcjet Go SDK
+Copyright 2026 Arcjet Inc.
+
+The Go source code in this module is licensed under the Apache License,
+Version 2.0 (the same license as the rest of github.com/arcjet/arcjet-go).
+
+------------------------------------------------------------------------------
+Bundled model
+------------------------------------------------------------------------------
+
+This module embeds the "Rampart" on-device PII detection model:
+
+    Rampart — Client-side PII redaction for AI assistants
+    Copyright 2026 National Design Studio
+    https://huggingface.co/nationaldesignstudio/rampart
+
+The model is licensed under the Creative Commons Attribution 4.0 International
+License (CC BY 4.0): https://creativecommons.org/licenses/by/4.0/
+
+The bundled artifacts derived from the model — weights.bin (repackaged, without
+modification to the underlying weights, from the model's onnx/model_q4.onnx via
+internal/modelgen) and vocab.txt (redistributed unmodified) — are subject to
+CC BY 4.0. Attribution to National Design Studio must be retained on
+redistribution.
+
+The model is a BertForTokenClassification network fine-tuned on
+ai4privacy/pii-masking-openpii-1.5m, derived from the base model
+nreimers/MiniLM-L6-H384-uncased.

@@ -2,8 +2,10 @@
 //
 // GET / runs each request through Shield, bot detection, and a token bucket
 // rate limit. POST /submit additionally scans the request body for sensitive
-// information (emails, credit card numbers) — the scanned text is analyzed
-// locally and never leaves the SDK.
+// information (emails, credit card numbers) with the bundled analyzer. POST
+// /submit-ner scans it with the optional on-device NER backend, which also
+// detects names, addresses, SSNs, and more. In every case the scanned text is
+// analyzed locally and never leaves the SDK.
 package main
 
 import (
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/arcjet/arcjet-go"
+	"github.com/arcjet/arcjet-go/sensitiveinfo/rampart"
 )
 
 func main() {
@@ -72,9 +75,39 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Optional on-device NER backend. It runs a quantized model embedded in the
+	// binary, so it detects far more entity types than the bundled analyzer
+	// (names, addresses, SSNs, tax/government IDs, …) while keeping the scanned
+	// text in-process. Loading dequantizes the weights once and is relatively
+	// expensive, so create it at startup and share it across requests.
+	backend, err := rampart.New(rampart.Options{})
+	if err != nil {
+		slog.Error("rampart: load on-device model", "err", err)
+		os.Exit(1)
+	}
+
+	// A second client whose sensitive-info rule uses the on-device backend.
+	// rampart.Entities() denies every type the backend can detect; pass a
+	// narrower slice (e.g. GivenName, Surname, SSN) to scope it down.
+	ajNER, err := arcjet.NewClient(arcjet.Config{
+		Key: key,
+		Rules: []arcjet.Rule{
+			arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{
+				Mode:    arcjet.ModeLive,
+				Deny:    rampart.Entities(),
+				Backend: backend,
+			}),
+		},
+	})
+	if err != nil {
+		slog.Error("arcjet: create NER client", "err", err)
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", hello(aj))
 	mux.HandleFunc("POST /submit", submit(aj))
+	mux.HandleFunc("POST /submit-ner", submitNER(ajNER))
 
 	srv := &http.Server{
 		Addr:              ":3000",
@@ -184,6 +217,67 @@ func submit(aj *arcjet.Client) http.HandlerFunc {
 				status = http.StatusTooManyRequests
 			}
 			writeJSON(w, status, map[string]any{
+				"error":  "Denied",
+				"reason": decision.Reason,
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"message": "Submission accepted"})
+	}
+}
+
+// submitNER scans the request body with the on-device NER backend. Unlike
+// submit, it reports the exact text of each detected entity and where it was
+// found, so you can see what the model picked up.
+func submitNER(aj *arcjet.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+		if err != nil {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+				"error": "Could not read request body",
+			})
+			return
+		}
+		text := string(body)
+
+		decision, err := aj.Protect(
+			r.Context(),
+			r,
+			// The text to scan stays in the SDK — it is never sent to Arcjet,
+			// and the on-device model runs in-process.
+			arcjet.WithSensitiveInfoValue(text),
+		)
+		if err != nil {
+			// Arcjet fails open — log and continue serving.
+			slog.Warn("arcjet: protect", "err", err)
+		}
+
+		if decision.IsDenied() {
+			if si := decision.Reason.SensitiveInfo; si != nil {
+				// Report each detection with its type and the matched text
+				// (Start/End are byte offsets into the scanned value).
+				found := make([]map[string]any, 0, len(si.Denied))
+				for _, e := range si.Denied {
+					match := ""
+					if e.Start >= 0 && e.End <= len(text) && e.Start <= e.End {
+						match = text[e.Start:e.End]
+					}
+					found = append(found, map[string]any{
+						"type":  e.Type,
+						"start": e.Start,
+						"end":   e.End,
+						"match": match,
+					})
+				}
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error":    "Sensitive information detected",
+					"detected": found,
+				})
+				return
+			}
+
+			writeJSON(w, http.StatusForbidden, map[string]any{
 				"error":  "Denied",
 				"reason": decision.Reason,
 			})
