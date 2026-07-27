@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -94,8 +95,16 @@ func (c *GuardClient) Close(ctx context.Context) error {
 type GuardRequest struct {
 	// Label identifies this Guard call.
 	Label string
-	// Metadata is optional key-value metadata for this Guard call.
-	Metadata map[string]string
+	// Metadata is optional metadata for this Guard call: string keys mapped to
+	// any JSON-serializable value, including nested maps and slices. Each
+	// top-level value is JSON-encoded by the SDK and stored verbatim.
+	//
+	// Server-enforced limits: 128 top-level keys, 4 KiB per serialized value,
+	// 10 levels of nesting, and key names limited to letters, digits, dash,
+	// dot, and underscore. Anything over a limit drops that one key and reports
+	// it on GuardDecision.Warnings. Nothing here can fail the call or change
+	// the decision.
+	Metadata Metadata
 	// CorrelationId is an optional, caller-supplied opaque identifier used to
 	// correlate this Guard call with other Guard and Protect calls that belong
 	// to the same workflow, agent run, or multi-step task. Unlike Metadata it
@@ -128,8 +137,12 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		return GuardDecision{}, err
 	}
 	start := time.Now()
+	// Metadata keys the SDK could not encode. These are reported to the server as
+	// untrusted local_warnings and surfaced on the decision, so a dropped key is
+	// never silent.
+	var warnings []Warning
 	submissions := make([]*decidev2.GuardRuleSubmission, 0, len(req.Rules))
-	for _, rule := range req.Rules {
+	for ruleIndex, rule := range req.Rules {
 		if rule == nil {
 			return GuardDecision{}, fmt.Errorf("arcjet: guard request: %w", ErrNilRule)
 		}
@@ -141,6 +154,15 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 			// No-op rule input (e.g. an analyzer that isn't shipped yet).
 			continue
 		}
+		// Encoded here rather than in submission() because the warning message
+		// names the rule by its index, which only this loop knows.
+		encoded, ruleWarnings := encodeMetadata(
+			wireSub.metadata,
+			fmt.Sprintf("rules[%d].", ruleIndex),
+		)
+		wireSub.MetadataJSON = encoded
+		warnings = append(warnings, ruleWarnings...)
+
 		data, err := jsonMarshal(wireSub)
 		if err != nil {
 			return GuardDecision{}, err
@@ -154,15 +176,30 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	elapsed := safeUint64FromInt64(time.Since(start).Milliseconds())
 	sentAt := safeUint64FromInt64(time.Now().UnixMilli())
 
+	envelopeMetadata, envelopeWarnings := encodeMetadata(req.Metadata, "")
+	warnings = append(warnings, envelopeWarnings...)
+
 	wireReq := &decidev2.GuardRequest{
 		UserAgent:           c.userAgent,
 		LocalEvalDurationMs: &elapsed,
 		SentAtUnixMs:        &sentAt,
 		Label:               req.Label,
-		Metadata:            cloneMap(req.Metadata),
+		MetadataJson:        envelopeMetadata,
 		RuleSubmissions:     submissions,
 		CorrelationId:       req.CorrelationId,
 	}
+
+	// Trim to the SDK ceiling across every metadata map on the request — the
+	// envelope plus one per rule — so an oversized blob cannot push the request
+	// past the 1 MiB protocol limit and get it rejected. A rejected request is a
+	// fail open, which would let metadata affect the decision.
+	budgetMaps := make([]map[string]string, 0, len(submissions)+1)
+	budgetMaps = append(budgetMaps, wireReq.GetMetadataJson())
+	for _, sub := range submissions {
+		budgetMaps = append(budgetMaps, sub.GetMetadataJson())
+	}
+	warnings = append(warnings, enforceMetadataBudget(budgetMaps)...)
+	wireReq.LocalWarnings = warningsToProtoV2(warnings)
 
 	connectReq := connect.NewRequest(wireReq)
 	connectReq.Header().Set("Authorization", "Bearer "+c.key)
@@ -173,9 +210,22 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		// programmer error. Return a usable ALLOW carrying a synthetic errored
 		// result so HasFailedOpen()/ErrorResults() flag it even if the caller
 		// ignores err.
-		return guardErrorDecision("TRANSPORT_ERROR", err.Error()), err
+		return withLocalWarnings(guardErrorDecision("TRANSPORT_ERROR", err.Error()), warnings), err
 	}
-	return guardDecisionFromProto(resp.Msg), nil
+	return withLocalWarnings(guardDecisionFromProto(resp.Msg), warnings), nil
+}
+
+// withLocalWarnings appends the SDK's own client-side warnings to a decision.
+//
+// The server persists local_warnings but never echoes them back on the response,
+// so without this a metadata key the SDK dropped would be invisible to the
+// caller.
+func withLocalWarnings(d GuardDecision, warnings []Warning) GuardDecision {
+	if len(warnings) == 0 {
+		return d
+	}
+	d.Warnings = append(d.Warnings, warnings...)
+	return d
 }
 
 // GuardRuleInput is a rule bound to runtime input for a Guard call.
@@ -190,11 +240,11 @@ type GuardRuleInput interface {
 type guardRuleBase struct {
 	configID string
 	label    string
-	metadata map[string]string
+	metadata Metadata
 	mode     Mode
 }
 
-func newGuardRuleBase(mode Mode, label string, metadata map[string]string) (guardRuleBase, error) {
+func newGuardRuleBase(mode Mode, label string, metadata Metadata) (guardRuleBase, error) {
 	if err := validateMode(mode); err != nil {
 		return guardRuleBase{}, err
 	}
@@ -206,7 +256,7 @@ func newGuardRuleBase(mode Mode, label string, metadata map[string]string) (guar
 	return guardRuleBase{
 		configID: newTypeID("gcfg"),
 		label:    label,
-		metadata: cloneMap(metadata),
+		metadata: maps.Clone(metadata),
 		mode:     normalizeMode(mode),
 	}, nil
 }
@@ -229,7 +279,7 @@ func (b guardRuleBase) submission(rule map[string]any) guardRuleSubmissionWire {
 		InputID:  newInputID(),
 		Rule:     rule,
 		Mode:     guardMode(b.mode),
-		Metadata: cloneMap(b.metadata),
+		metadata: maps.Clone(b.metadata),
 	}
 	if b.label != "" {
 		sub.Label = &b.label
@@ -251,8 +301,9 @@ type GuardTokenBucketOptions struct {
 	Bucket string
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
-	// Metadata is recorded with every invocation of this rule.
-	Metadata map[string]string
+	// Metadata is recorded with every invocation of this rule. See
+	// GuardRequest.Metadata for the accepted shape and limits.
+	Metadata Metadata
 }
 
 // GuardTokenBucketRule is a configured Guard token bucket rule.
@@ -357,8 +408,9 @@ type GuardFixedWindowOptions struct {
 	Bucket string
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
-	// Metadata is recorded with every invocation of this rule.
-	Metadata map[string]string
+	// Metadata is recorded with every invocation of this rule. See
+	// GuardRequest.Metadata for the accepted shape and limits.
+	Metadata Metadata
 }
 
 // GuardFixedWindowRule is a configured Guard fixed window rule.
@@ -453,8 +505,9 @@ type GuardSlidingWindowOptions struct {
 	Bucket string
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
-	// Metadata is recorded with every invocation of this rule.
-	Metadata map[string]string
+	// Metadata is recorded with every invocation of this rule. See
+	// GuardRequest.Metadata for the accepted shape and limits.
+	Metadata Metadata
 }
 
 // GuardSlidingWindowRule is a configured Guard sliding window rule.
@@ -543,8 +596,9 @@ type GuardPromptInjectionOptions struct {
 	Mode Mode
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
-	// Metadata is recorded with every invocation of this rule.
-	Metadata map[string]string
+	// Metadata is recorded with every invocation of this rule. See
+	// GuardRequest.Metadata for the accepted shape and limits.
+	Metadata Metadata
 }
 
 // GuardPromptInjectionRule is a configured Guard prompt injection rule.
@@ -617,8 +671,9 @@ type ExperimentalGuardModerateContentOptions struct {
 	Mode Mode
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
-	// Metadata is recorded with every invocation of this rule.
-	Metadata map[string]string
+	// Metadata is recorded with every invocation of this rule. See
+	// GuardRequest.Metadata for the accepted shape and limits.
+	Metadata Metadata
 }
 
 // ExperimentalGuardModerateContentRule is a configured Guard content
@@ -700,8 +755,9 @@ type GuardSensitiveInfoOptions struct {
 	Deny []EntityType
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
-	// Metadata is recorded with every invocation of this rule.
-	Metadata map[string]string
+	// Metadata is recorded with every invocation of this rule. See
+	// GuardRequest.Metadata for the accepted shape and limits.
+	Metadata Metadata
 }
 
 // GuardSensitiveInfoRule is a configured local Guard sensitive information rule.
@@ -829,8 +885,9 @@ type GuardCustomOptions struct {
 	Func GuardCustomFunc
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
-	// Metadata is recorded with every invocation of this rule.
-	Metadata map[string]string
+	// Metadata is recorded with every invocation of this rule. See
+	// GuardRequest.Metadata for the accepted shape and limits.
+	Metadata Metadata
 }
 
 // GuardCustomRule is a configured custom local Guard rule.

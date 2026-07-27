@@ -92,7 +92,7 @@ func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {
 
 	decision, err := client.Guard(context.Background(), GuardRequest{
 		Label:         "tools.weather",
-		Metadata:      map[string]string{"env": "test"},
+		Metadata:      Metadata{"env": "test", "user": map[string]any{"id": "u_1"}},
 		CorrelationId: "wf_abcdef",
 		Rules:         []GuardRuleInput{limit.Key("user_123", 2)},
 	})
@@ -113,8 +113,21 @@ func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {
 	if seen.GetLabel() != "tools.weather" {
 		t.Fatalf("label = %q", seen.GetLabel())
 	}
-	if seen.GetMetadata()["env"] != "test" {
-		t.Fatalf("metadata = %#v", seen.GetMetadata())
+	// Values go on the wire JSON-encoded per top-level key.
+	if got := seen.GetMetadataJson()["env"]; got != `"test"` {
+		t.Fatalf("metadata_json[env] = %q", got)
+	}
+	if got := seen.GetMetadataJson()["user"]; got != `{"id":"u_1"}` {
+		t.Fatalf("metadata_json[user] = %q", got)
+	}
+	// The legacy plain-string map is not dual-written: the server prefers
+	// metadata_json and falls back to `metadata` only for older SDKs.
+	//nolint:staticcheck // asserting the deprecated field stays empty is the point
+	if got := seen.GetMetadata(); len(got) != 0 {
+		t.Fatalf("legacy metadata = %#v", got)
+	}
+	if got := seen.GetLocalWarnings(); len(got) != 0 {
+		t.Fatalf("local_warnings = %#v", got)
 	}
 	if seen.GetCorrelationId() != "wf_abcdef" {
 		t.Fatalf("correlation_id = %q", seen.GetCorrelationId())
@@ -299,7 +312,7 @@ func TestGuardRuleBuilders(t *testing.T) {
 		MaxRequests: 10,
 		Bucket:      "jobs.sync",
 		Label:       "fixed",
-		Metadata:    map[string]string{"a": "b"},
+		Metadata:    Metadata{"a": "b"},
 	})
 	if err != nil {
 		t.Fatal(err)

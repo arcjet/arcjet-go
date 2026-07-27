@@ -831,8 +831,8 @@ var (
 func GetWeather(ctx context.Context, userID, message string) error {
 	decision, err := guard.Guard(ctx, arcjet.GuardRequest{
 		Label: "tools.get-weather", // hardcoded string, not fmt.Sprintf
-		Metadata: map[string]string{
-			"userId": userID,
+		Metadata: arcjet.Metadata{
+			"user": map[string]any{"id": userID},
 		},
 		Rules: []arcjet.GuardRuleInput{
 			userLimit.Key(userID, 1),
@@ -1101,7 +1101,59 @@ for _, w := range decision.Warnings {
 | --- | --- | --- |
 | `Rules` | `[]arcjet.GuardRuleInput` | Bound rule inputs (required) |
 | `Label` | `string` | Hardcoded label identifying this guard call (required) |
-| `Metadata` | `map[string]string` | Optional key-value metadata recorded in the dashboard |
+| `Metadata` | `arcjet.Metadata` | Optional structured metadata — see [Metadata](#metadata) |
+| `CorrelationId` | `string` | Opaque id correlating this call with other `Guard`/`Protect` calls |
+
+### Metadata
+
+`Guard`, `Protect`, and every guard rule accept `Metadata`: an
+`arcjet.Metadata` (a `map[string]any`) whose values may be **any
+JSON-serializable value**, including nested maps and slices. It is attached to
+the decision for correlation and analytics.
+
+```go
+decision, err := guard.Guard(ctx, arcjet.GuardRequest{
+	Label: "tools.get-weather",
+	Metadata: arcjet.Metadata{
+		"user":        map[string]any{"id": userID, "plan": "pro"},
+		"toolName":    "get_weather",
+		"duration_ms": 160,
+		"success":     true,
+	},
+	Rules: []arcjet.GuardRuleInput{userLimit.Key(userID, 1)},
+})
+```
+
+Each top-level value is JSON-encoded by the SDK and stored verbatim, so an exact
+`int64` survives. Server-enforced limits:
+
+| Limit | Value | Over the limit |
+| --- | --- | --- |
+| Top-level keys | 128 | Extra keys dropped |
+| Serialized bytes / value | 4 KiB | That key dropped |
+| Nesting depth / value | 10 | That key dropped |
+| Key names | letters, digits, `-`, `.`, `_` | That key dropped |
+
+Nothing here can fail a call or change a decision — metadata is excluded from
+fingerprinting and from the decision cache key. Every dropped key is reported:
+server-side drops arrive on `decision.Warnings`, one per key, and the SDK adds a
+single warning naming every key it could not encode (a channel, a func, a cycle,
+`NaN`, or a string holding invalid UTF-8).
+
+The SDK also drops keys once one request's metadata exceeds 768 KiB in total
+(`arcjet.MaxMetadataBytes`, keys plus JSON-encoded values, counted before
+compression). That ceiling sits well above anything the server would accept and
+exists only so oversized metadata cannot push a request past the 1 MiB protocol
+limit, where it would be rejected outright and fail open.
+
+Metadata is untrusted and is not redacted — do not put secrets or PII in it.
+
+Rule-level metadata is merged with `Guard`-level metadata shallowly: a duplicate
+key's whole value is replaced, never deep-merged.
+
+Go maps have no insertion order, so keys are processed in sorted order. That
+makes which keys survive an over-limit blob reproducible, but it differs from the
+JavaScript and Python SDKs, which preserve insertion order.
 
 ### DRY_RUN mode
 

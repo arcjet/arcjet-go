@@ -249,6 +249,10 @@ type Decision struct {
 	TTL int
 	IP  IPDetails
 	Raw json.RawMessage
+	// Warnings are non-fatal diagnostics for this call — for example a metadata
+	// key the SDK could not encode and dropped before sending. The decision is
+	// still valid; warnings never change the conclusion.
+	Warnings []Warning
 }
 
 // IsAllowed reports whether Arcjet allowed the request.

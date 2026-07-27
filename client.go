@@ -307,6 +307,20 @@ type ProtectOptions struct {
 	// workflow or agent run. It does not affect the decision and is excluded
 	// from the decision cache key.
 	CorrelationId string
+	// Metadata is optional structured metadata for correlation and analytics:
+	// string keys mapped to any JSON-serializable value, including nested maps
+	// and slices. Each top-level value is JSON-encoded by the SDK and stored
+	// verbatim.
+	//
+	// Server-enforced limits: 128 top-level keys, 4 KiB per serialized value, 10
+	// levels of nesting, and key names limited to letters, digits, dash, dot,
+	// and underscore. Anything over a limit drops that one key. Nothing here can
+	// fail the call or change the decision — metadata is excluded from
+	// fingerprinting and from the decision cache key.
+	//
+	// Prefer this over Extra, which stays a flat string map of SDK-derived
+	// request context.
+	Metadata Metadata
 }
 
 // ProtectOption configures a single Client.Protect or Client.ProtectDetails call.
@@ -380,6 +394,14 @@ func WithCorrelationId(id string) ProtectOption {
 	return func(o *ProtectOptions) { o.CorrelationId = id }
 }
 
+// WithMetadata sets structured metadata for correlation and analytics: string
+// keys mapped to any JSON-serializable value, including nested maps and slices.
+// It does not affect the decision and is excluded from the decision cache key.
+// See ProtectOptions.Metadata for the limits.
+func WithMetadata(metadata Metadata) ProtectOption {
+	return func(o *ProtectOptions) { o.Metadata = maps.Clone(metadata) }
+}
+
 // Protect evaluates an HTTP request with the client's configured rules.
 func (c *Client) Protect(ctx context.Context, r *http.Request, opts ...ProtectOption) (Decision, error) {
 	if r == nil {
@@ -442,9 +464,20 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 		fingerprints = c.ruleFingerprints(ctx, details)
 	}
 
+	// Metadata is JSON-encoded once and attached to every request this call may
+	// send (Decide, or a Report on a local deny). Keys the SDK could not encode
+	// are reported to the server as untrusted local_warnings and surfaced on the
+	// decision, so a dropped key is never silent.
+	metadataJSON, warnings := encodeMetadata(options.Metadata, "")
+	// Trim to the SDK ceiling so an oversized blob cannot push the request past
+	// the 1 MiB protocol limit and get it rejected — a rejected request is a fail
+	// open.
+	warnings = append(warnings, enforceMetadataBudget([]map[string]string{metadataJSON})...)
+	localWarnings := warningsToProtoV1(warnings)
+
 	if local := c.evaluateLocal(ctx, details, options, fingerprints); local.liveDeny() {
-		c.reportLocal(ctx, details, rules, local.decision)
-		return decisionFromProto(local.decision), nil
+		c.reportLocal(ctx, details, rules, local.decision, metadataJSON, localWarnings)
+		return withProtectWarnings(decisionFromProto(local.decision), warnings), nil
 	}
 
 	// c.characteristics is set once during NewClient / WithRule and never
@@ -456,6 +489,8 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 		Details:         details.toProto(),
 		Rules:           rules,
 		Characteristics: c.characteristics,
+		MetadataJson:    metadataJSON,
+		LocalWarnings:   localWarnings,
 	})
 	req.Header().Set("Authorization", "Bearer "+c.key)
 	req.Header().Set("User-Agent", c.userAgent)
@@ -465,7 +500,33 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 		return Decision{}, err
 	}
 	c.cacheDecideResults(resp.Msg.GetDecision(), fingerprints)
-	return decisionFromProto(resp.Msg.GetDecision()), nil
+	return withProtectWarnings(decisionFromProto(resp.Msg.GetDecision()), warnings), nil
+}
+
+// withProtectWarnings appends the SDK's own client-side warnings to a decision.
+//
+// Protect has no server-side warning channel, so this is how a dropped metadata
+// key reaches the caller. arcjet-js and arcjet-py log instead; the Go SDK takes
+// no logger, so the decision carries them.
+func withProtectWarnings(d Decision, warnings []Warning) Decision {
+	if len(warnings) == 0 {
+		return d
+	}
+	d.Warnings = append(d.Warnings, warnings...)
+	return d
+}
+
+// warningsToProtoV1 converts SDK warnings into the v1alpha1 proto Warning
+// messages carried by DecideRequest.local_warnings and ReportRequest.local_warnings.
+func warningsToProtoV1(warnings []Warning) []*decidev1.Warning {
+	if len(warnings) == 0 {
+		return nil
+	}
+	out := make([]*decidev1.Warning, 0, len(warnings))
+	for _, w := range warnings {
+		out = append(out, &decidev1.Warning{Code: w.Code, Message: w.Message})
+	}
+	return out
 }
 
 // ruleFingerprints computes one cache fingerprint per rule, indexed to align
@@ -547,7 +608,14 @@ func (c *Client) cacheDecideResults(decision *decidev1.Decision, fingerprints []
 	}
 }
 
-func (c *Client) reportLocal(ctx context.Context, details ProtectDetails, rules []*decidev1.Rule, decision *decidev1.Decision) {
+func (c *Client) reportLocal(
+	ctx context.Context,
+	details ProtectDetails,
+	rules []*decidev1.Rule,
+	decision *decidev1.Decision,
+	metadataJSON map[string]string,
+	localWarnings []*decidev1.Warning,
+) {
 	if decision == nil {
 		return
 	}
@@ -562,6 +630,8 @@ func (c *Client) reportLocal(ctx context.Context, details ProtectDetails, rules 
 			Decision:        decision,
 			Rules:           rules,
 			Characteristics: c.characteristics,
+			MetadataJson:    metadataJSON,
+			LocalWarnings:   localWarnings,
 		})
 		req.Header().Set("Authorization", "Bearer "+c.key)
 		req.Header().Set("User-Agent", c.userAgent)

@@ -9,12 +9,20 @@ import (
 )
 
 type guardRuleSubmissionWire struct {
-	ConfigID string            `json:"configId"`
-	InputID  string            `json:"inputId"`
-	Label    *string           `json:"label,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-	Rule     map[string]any    `json:"rule"`
-	Mode     string            `json:"mode"`
+	ConfigID string  `json:"configId"`
+	InputID  string  `json:"inputId"`
+	Label    *string `json:"label,omitempty"`
+	// MetadataJSON carries per-key JSON-encoded metadata. The legacy plain-string
+	// `metadata` field is deliberately not written: the server prefers this one
+	// and falls back to the legacy map only for older SDKs.
+	MetadataJSON map[string]string `json:"metadataJson,omitempty"`
+	Rule         map[string]any    `json:"rule"`
+	Mode         string            `json:"mode"`
+
+	// metadata is the caller's un-encoded metadata. Unexported so it is not
+	// serialized: Guard encodes it once it knows the rule's index, which the
+	// warning message needs.
+	metadata Metadata
 }
 
 type guardResponseWire struct {
