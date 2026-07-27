@@ -68,6 +68,10 @@ func needsEscape(r rune) bool {
 	return r < 0x20 ||
 		(r >= 0x7f && r <= 0x9f) ||
 		(r >= 0xd800 && r <= 0xdfff) ||
+		// The key list wraps each name in double quotes, so an unescaped quote
+		// or backslash could forge the appearance of extra keys.
+		r == 0x22 ||
+		r == 0x5c ||
 		r == 0x2028 ||
 		r == 0x2029
 }

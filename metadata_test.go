@@ -177,6 +177,26 @@ func TestSanitizeKeyEscapes(t *testing.T) {
 	}
 }
 
+func TestSanitizeKeyEscapesQuotesAndBackslashes(t *testing.T) {
+	// The key list wraps each name in double quotes, so a key containing one
+	// could otherwise look like several keys.
+	_, warnings := encodeMetadata(Metadata{`ev"il", "other`: make(chan int)}, "")
+	if !strings.Contains(warnings[0].Message, "1 key(s)") {
+		t.Fatalf("message = %q", warnings[0].Message)
+	}
+	// Only the two quotes the formatter itself added remain.
+	if got := strings.Count(warnings[0].Message, `"`); got != 2 {
+		t.Fatalf("quote count = %d in %q", got, warnings[0].Message)
+	}
+	if !strings.Contains(warnings[0].Message, `ev\x22il\x22, \x22other`) {
+		t.Fatalf("message = %q", warnings[0].Message)
+	}
+
+	if got := sanitizeKey(`back\slash`); got != `back\x5cslash` {
+		t.Fatalf("sanitizeKey = %q", got)
+	}
+}
+
 func TestSanitizeKeyTruncatesOnTokenBoundary(t *testing.T) {
 	// Never a half escape sequence, and never a split rune.
 	long := sanitizeKey(strings.Repeat("x", 200))
