@@ -22,6 +22,10 @@ var (
 	ErrInvalidMode = errors.New("invalid mode")
 	// ErrAllowDenyConflict is returned when a rule sets both Allow and Deny.
 	ErrAllowDenyConflict = errors.New("allow and deny are mutually exclusive")
+	// ErrUnsupportedEntityType is returned when a sensitive-info rule lists an
+	// entity type that neither the bundled analyzer nor a configured backend
+	// can detect.
+	ErrUnsupportedEntityType = errors.New("unsupported sensitive info entity type")
 	// ErrInvalidProxy is returned when a trusted proxy IP or CIDR is invalid.
 	ErrInvalidProxy = errors.New("invalid trusted proxy")
 	// ErrInvalidPlatform is returned when Config.Platform is not a recognized

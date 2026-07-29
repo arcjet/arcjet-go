@@ -8,11 +8,16 @@ replace github.com/arcjet/arcjet-go => ../..
 
 require github.com/arcjet/arcjet-go v0.1.0
 
+require golang.org/x/text v0.40.0 // indirect
+
 require (
 	connectrpc.com/connect v1.20.0 // indirect
+	github.com/arcjet/arcjet-go/sensitiveinfo/rampart v0.0.0
 	github.com/gofrs/uuid/v5 v5.4.0 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	go.jetify.com/typeid v1.3.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace github.com/arcjet/arcjet-go/sensitiveinfo/rampart => ../../sensitiveinfo/rampart

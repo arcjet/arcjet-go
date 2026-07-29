@@ -326,4 +326,11 @@ linters:
           - staticcheck
           - unparam
           - unused
+      # Offline weight-conversion tooling and the bundled-model (de)serializer:
+      # a focused ONNX protobuf reader and a length-prefixed blob codec that only
+      # run at build time on the trusted, size-bounded bundled model.
+      - path: internal/(modelgen|blob)/
+        linters:
+          - gocyclo
+          - gosec
     warn-unused: false

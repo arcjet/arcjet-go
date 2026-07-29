@@ -318,6 +318,11 @@ type SensitiveInfoOptions struct {
 	Allow []EntityType
 	// Deny lists entity types denied in scanned text.
 	Deny []EntityType
+	// Backend optionally replaces the bundled WebAssembly analyzer with a
+	// pluggable detection engine (see [SensitiveInfoBackend]). When set,
+	// detection runs entirely through the backend. Required to allow or deny
+	// any entity type the bundled analyzer does not detect on its own.
+	Backend SensitiveInfoBackend
 }
 
 // SensitiveInfo creates a sensitive information detection rule. The text
@@ -340,6 +345,9 @@ func SensitiveInfo(opts SensitiveInfoOptions) Rule {
 		},
 		local: func(ctx context.Context, details ProtectDetails, options ProtectOptions, evaluator *localEvaluator) (*localDecision, error) {
 			if err := validateSensitiveInfoOptions(opts); err != nil {
+				return nil, err
+			}
+			if err := validateSensitiveInfoEntities(opts.Allow, opts.Deny, opts.Backend, evaluator.hasCustomDetect()); err != nil {
 				return nil, err
 			}
 			return evaluator.detectSensitiveInfo(ctx, opts, details, options)

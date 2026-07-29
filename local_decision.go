@@ -41,6 +41,9 @@ type localEvaluator struct {
 	factory   *jsreq.JsReqFactory
 	closed    bool
 	callbacks jsreq.Callbacks
+	// detect is the public custom detection callback, retained so the
+	// pluggable-backend path can forward it (the wasm path uses callbacks).
+	detect SensitiveInfoDetect
 }
 
 // newLocalEvaluator returns an evaluator and eagerly compiles the shared
@@ -72,7 +75,7 @@ func newLocalEvaluator(ctx context.Context, rules []Rule, detect SensitiveInfoDe
 // until the first call that needs it. Used by GuardClient, which doesn't
 // see its rules until each Guard call.
 func newLazyLocalEvaluator(detect SensitiveInfoDetect) *localEvaluator {
-	return &localEvaluator{callbacks: jsreqCallbacks(detect)}
+	return &localEvaluator{callbacks: jsreqCallbacks(detect), detect: detect}
 }
 
 // hasCustomDetect reports whether a user-supplied sensitive-info detect
@@ -244,7 +247,7 @@ func (e *localEvaluator) detectSensitiveInfo(ctx context.Context, opts Sensitive
 	if protectOpts.SensitiveInfoValue == "" {
 		return nil, nil
 	}
-	outcome, err := e.scanSensitiveInfo(ctx, protectOpts.SensitiveInfoValue, opts.Allow, opts.Deny)
+	outcome, err := e.scanSensitiveInfo(ctx, protectOpts.SensitiveInfoValue, opts.Allow, opts.Deny, opts.Backend)
 	if err != nil {
 		return nil, err
 	}
@@ -260,16 +263,29 @@ func (e *localEvaluator) detectSensitiveInfo(ctx context.Context, opts Sensitive
 	return localDeny("local_sensitive_info", opts.Mode, 0, reason), nil
 }
 
+// detectedEntity is the backend-agnostic shape of one identified entity, used
+// so the WASM analyzer and a pluggable [SensitiveInfoBackend] feed a common
+// downstream path.
+type detectedEntity struct {
+	Start          uint32
+	End            uint32
+	IdentifiedType EntityType
+}
+
 // sensitiveInfoOutcome is the shared shape both the HTTP-path
 // `SensitiveInfo` rule and the Guard `GuardSensitiveInfoRule.Text`
-// callback use after running the wasm analyzer.
+// callback use after running the wasm analyzer or a backend.
 type sensitiveInfoOutcome struct {
-	Allowed   []jsreq.DetectedSensitiveInfoEntity
-	Denied    []jsreq.DetectedSensitiveInfoEntity
+	Allowed   []detectedEntity
+	Denied    []detectedEntity
 	ElapsedMs uint64
 }
 
-func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, allow, deny []EntityType) (sensitiveInfoOutcome, error) {
+func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, allow, deny []EntityType, backend SensitiveInfoBackend) (sensitiveInfoOutcome, error) {
+	if backend != nil {
+		return scanSensitiveInfoBackend(ctx, text, allow, deny, backend, e.detect)
+	}
+
 	inst, release, err := e.instance(ctx)
 	if err != nil {
 		return sensitiveInfoOutcome{}, err
@@ -279,8 +295,27 @@ func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, all
 	start := time.Now()
 	result := inst.DetectSensitiveInfo(ctx, text, sensitiveInfoConfig(allow, deny, e.hasCustomDetect()))
 	return sensitiveInfoOutcome{
-		Allowed:   result.Allowed,
-		Denied:    result.Denied,
+		Allowed:   detectedEntitiesFromWire(result.Allowed),
+		Denied:    detectedEntitiesFromWire(result.Denied),
+		ElapsedMs: safeUint64FromInt64(time.Since(start).Milliseconds()),
+	}, nil
+}
+
+// scanSensitiveInfoBackend dispatches detection to a pluggable backend,
+// forwarding any custom detect callback (which the backend may ignore).
+func scanSensitiveInfoBackend(ctx context.Context, text string, allow, deny []EntityType, backend SensitiveInfoBackend, detect SensitiveInfoDetect) (sensitiveInfoOutcome, error) {
+	start := time.Now()
+	var opts *SensitiveInfoBackendOptions
+	if detect != nil {
+		opts = &SensitiveInfoBackendOptions{Detect: detect}
+	}
+	result, err := backend.Detect(ctx, backendContext(), text, backendEntities(allow, deny), opts)
+	if err != nil {
+		return sensitiveInfoOutcome{}, err
+	}
+	return sensitiveInfoOutcome{
+		Allowed:   detectedEntitiesFromBackend(result.Allowed),
+		Denied:    detectedEntitiesFromBackend(result.Denied),
 		ElapsedMs: safeUint64FromInt64(time.Since(start).Milliseconds()),
 	}, nil
 }
@@ -482,7 +517,58 @@ func sensitiveInfoEntityWire(v EntityType) jsreq.SensitiveInfoEntity {
 	}
 }
 
-func identifiedEntitiesWire(entities []jsreq.DetectedSensitiveInfoEntity) []*decidev1.IdentifiedEntity {
+// detectedEntitiesFromWire converts the wasm analyzer's detected entities into
+// the backend-agnostic shape. Entities whose type does not resolve to a name
+// are dropped so every downstream consumer (the HTTP deny gate counts entities,
+// the Guard path counts type names) agrees on which entities exist.
+func detectedEntitiesFromWire(entities []jsreq.DetectedSensitiveInfoEntity) []detectedEntity {
+	if len(entities) == 0 {
+		return nil
+	}
+	out := make([]detectedEntity, 0, len(entities))
+	for _, e := range entities {
+		t := EntityType(identifiedEntityType(e.IdentifiedType))
+		if t == "" {
+			continue
+		}
+		out = append(out, detectedEntity{
+			Start:          e.Start,
+			End:            e.End,
+			IdentifiedType: t,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// detectedEntitiesFromBackend converts a backend's detected entities into the
+// backend-agnostic shape. Entities with an empty type are dropped so the HTTP
+// and Guard paths agree on which entities exist (an unnamed entity cannot be
+// reported and must not, on its own, flip a decision to deny).
+func detectedEntitiesFromBackend(entities []DetectedSensitiveInfoEntity) []detectedEntity {
+	if len(entities) == 0 {
+		return nil
+	}
+	out := make([]detectedEntity, 0, len(entities))
+	for _, e := range entities {
+		if e.Type == "" {
+			continue
+		}
+		out = append(out, detectedEntity{
+			Start:          safeUint32(e.Start),
+			End:            safeUint32(e.End),
+			IdentifiedType: e.Type,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func identifiedEntitiesWire(entities []detectedEntity) []*decidev1.IdentifiedEntity {
 	if len(entities) == 0 {
 		return nil
 	}
@@ -491,7 +577,7 @@ func identifiedEntitiesWire(entities []jsreq.DetectedSensitiveInfoEntity) []*dec
 		out[i] = &decidev1.IdentifiedEntity{
 			Start:          e.Start,
 			End:            e.End,
-			IdentifiedType: identifiedEntityType(e.IdentifiedType),
+			IdentifiedType: string(e.IdentifiedType),
 		}
 	}
 	return out
@@ -500,14 +586,14 @@ func identifiedEntitiesWire(entities []jsreq.DetectedSensitiveInfoEntity) []*dec
 // identifiedEntityTypes projects detected entities down to their type
 // names, deduplicating in encounter order. Used by Guard submissions
 // which carry only the type list, not start/end indices.
-func identifiedEntityTypes(entities []jsreq.DetectedSensitiveInfoEntity) []string {
+func identifiedEntityTypes(entities []detectedEntity) []string {
 	if len(entities) == 0 {
 		return nil
 	}
 	seen := make(map[string]struct{}, len(entities))
 	out := make([]string, 0, len(entities))
 	for _, e := range entities {
-		t := identifiedEntityType(e.IdentifiedType)
+		t := string(e.IdentifiedType)
 		if t == "" {
 			continue
 		}

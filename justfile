@@ -8,7 +8,10 @@
 # directive. `go tool -modfile=tools/go.mod` runs that pinned version, while
 # `./...` still resolves against the main module at the repo root.
 
-golangci := "go tool -modfile=tools/go.mod golangci-lint"
+# Absolute modfile path so the pinned golangci-lint also runs from inside the
+# sensitiveinfo/rampart submodule (where a relative tools/go.mod would not
+# resolve). `./...` still resolves against whichever module is the cwd.
+golangci := "go tool -modfile=" + justfile_directory() + "/tools/go.mod golangci-lint"
 
 # List available tasks.
 default:
@@ -24,6 +27,7 @@ check: fmt-check tidy-check lint build test
 # Auto-fix formatting: Go (goimports import grouping, etc.) and this justfile.
 format:
     {{ golangci }} fmt
+    cd sensitiveinfo/rampart && {{ golangci }} fmt
     just --fmt
 
 # Verify the justfile is formatted (run `just format` to fix); fails if not.
@@ -33,18 +37,29 @@ fmt-check:
 # Lint with golangci-lint; also fails on unformatted code (matches CI Lint job).
 lint:
     {{ golangci }} run ./...
+    cd sensitiveinfo/rampart && {{ golangci }} run ./...
 
 # Lint and auto-apply fixes where the linters support it.
 lint-fix:
     {{ golangci }} run --fix ./...
+    cd sensitiveinfo/rampart && {{ golangci }} run --fix ./...
 
 # Build all packages (matches the CI build step).
 build:
     go build ./...
+    go -C sensitiveinfo/rampart build ./...
 
-# Run tests the way CI does (race detector on, test order shuffled).
+# Run tests the way CI does (race detector on, test order shuffled). The rampart
+# module runs the embedded model, so it is slower than the root suite.
 test:
     go test -race -shuffle=on ./...
+    # rampart runs the embedded model, and -race over that heavy inference is
+    # slow. The inference is internally parallel (parallelFor), and the
+    # concurrency test drives real Detect calls, so running only that test under
+    # -race still covers both the pooled buffers and the matmul parallelism. Run
+    # everything else without -race (fast).
+    go -C sensitiveinfo/rampart test -shuffle=on -skip '^TestAdversarialConcurrentDetect$' ./...
+    go -C sensitiveinfo/rampart test -race -run '^TestAdversarialConcurrentDetect$' ./...
 
 # Regenerate gravity wasm bindings (pass `--from-monorepo [path]` to refresh .wasm first).
 wasm *args:
@@ -66,10 +81,11 @@ wasm-check:
       exit 1
     fi
 
-# Tidy the main module and the tools module.
+# Tidy the main module, the tools module, and the rampart module.
 tidy:
     go mod tidy
     go -C tools mod tidy
+    go -C sensitiveinfo/rampart mod tidy
 
 # Verify go.mod / go.sum are tidy (matches the CI tidy gate); fails if not.
 tidy-check:
@@ -77,8 +93,11 @@ tidy-check:
     set -euo pipefail
     go mod tidy
     go -C tools mod tidy
-    if [[ -n "$(git status --porcelain go.mod go.sum tools/go.mod tools/go.sum)" ]]; then
+    go -C sensitiveinfo/rampart mod tidy
+    files=(go.mod go.sum tools/go.mod tools/go.sum \
+           sensitiveinfo/rampart/go.mod sensitiveinfo/rampart/go.sum)
+    if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
       echo "error: go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes." >&2
-      git --no-pager diff -- go.mod go.sum tools/go.mod tools/go.sum
+      git --no-pager diff -- "${files[@]}"
       exit 1
     fi

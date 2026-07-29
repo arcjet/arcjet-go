@@ -698,6 +698,11 @@ type GuardSensitiveInfoOptions struct {
 	Allow []EntityType
 	// Deny lists entity types denied in scanned text.
 	Deny []EntityType
+	// Backend optionally replaces the bundled WebAssembly analyzer with a
+	// pluggable detection engine (see [SensitiveInfoBackend]). Required to
+	// allow or deny any entity type the bundled analyzer does not detect on
+	// its own.
+	Backend SensitiveInfoBackend
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
 	// Metadata is recorded with every invocation of this rule.
@@ -706,9 +711,10 @@ type GuardSensitiveInfoOptions struct {
 
 // GuardSensitiveInfoRule is a configured local Guard sensitive information rule.
 type GuardSensitiveInfoRule struct {
-	base  guardRuleBase
-	allow []EntityType
-	deny  []EntityType
+	base    guardRuleBase
+	allow   []EntityType
+	deny    []EntityType
+	backend SensitiveInfoBackend
 }
 
 // GuardSensitiveInfo creates a local Guard sensitive information rule.
@@ -721,9 +727,10 @@ func GuardSensitiveInfo(opts GuardSensitiveInfoOptions) (*GuardSensitiveInfoRule
 		return nil, fmt.Errorf("arcjet: guard sensitive info: %w", ErrAllowDenyConflict)
 	}
 	return &GuardSensitiveInfoRule{
-		base:  base,
-		allow: append([]EntityType(nil), opts.Allow...),
-		deny:  append([]EntityType(nil), opts.Deny...),
+		base:    base,
+		allow:   append([]EntityType(nil), opts.Allow...),
+		deny:    append([]EntityType(nil), opts.Deny...),
+		backend: opts.Backend,
 	}, nil
 }
 
@@ -771,7 +778,11 @@ func (r *GuardSensitiveInfoRule) ErrorResult(d GuardDecision) *ArcjetError {
 func (r *GuardSensitiveInfoRule) Text(text string) GuardRuleInput {
 	allow := append([]EntityType(nil), r.allow...)
 	deny := append([]EntityType(nil), r.deny...)
+	backend := r.backend
 	return guardRuleInputFunc(func(ctx context.Context, eval *localEvaluator) (guardRuleSubmissionWire, error) {
+		if err := validateSensitiveInfoEntities(allow, deny, backend, eval.hasCustomDetect()); err != nil {
+			return guardRuleSubmissionWire{}, err
+		}
 		payload := map[string]any{
 			"inputTextHash": sha256Hex(text),
 		}
@@ -781,7 +792,7 @@ func (r *GuardSensitiveInfoRule) Text(text string) GuardRuleInput {
 		case len(deny) > 0:
 			payload["configEntitiesDeny"] = map[string]any{"entities": stringSlice(deny)}
 		}
-		outcome, err := eval.scanSensitiveInfo(ctx, text, allow, deny)
+		outcome, err := eval.scanSensitiveInfo(ctx, text, allow, deny, backend)
 		if err != nil {
 			payload["resultError"] = map[string]any{"message": err.Error(), "code": "AJ1200"}
 			// Fail open: the scan error is reported to Arcjet via resultError in

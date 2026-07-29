@@ -42,9 +42,31 @@ const (
 // Sensitive information entity type identifiers for use with
 // SensitiveInfoOptions.Allow, SensitiveInfoOptions.Deny,
 // GuardSensitiveInfoOptions.Allow, and GuardSensitiveInfoOptions.Deny.
+// The first four are detected by the bundled WebAssembly analyzer. The
+// remainder require a backend that supports them (see [SensitiveInfoBackend]
+// and the github.com/arcjet/arcjet-go/sensitiveinfo/rampart module) or a custom
+// [SensitiveInfoDetect] callback; listing one without either is a
+// configuration error.
 const (
 	SensitiveInfoEmail            EntityType = "EMAIL"
 	SensitiveInfoPhoneNumber      EntityType = "PHONE_NUMBER"
 	SensitiveInfoIPAddress        EntityType = "IP_ADDRESS"
 	SensitiveInfoCreditCardNumber EntityType = "CREDIT_CARD_NUMBER"
+
+	SensitiveInfoURL              EntityType = "URL"
+	SensitiveInfoSSN              EntityType = "SSN"
+	SensitiveInfoGivenName        EntityType = "GIVEN_NAME"
+	SensitiveInfoSurname          EntityType = "SURNAME"
+	SensitiveInfoTaxID            EntityType = "TAX_ID"
+	SensitiveInfoBankAccount      EntityType = "BANK_ACCOUNT"
+	SensitiveInfoRoutingNumber    EntityType = "ROUTING_NUMBER"
+	SensitiveInfoGovernmentID     EntityType = "GOVERNMENT_ID"
+	SensitiveInfoPassport         EntityType = "PASSPORT"
+	SensitiveInfoDriversLicense   EntityType = "DRIVERS_LICENSE"
+	SensitiveInfoBuildingNumber   EntityType = "BUILDING_NUMBER"
+	SensitiveInfoStreetName       EntityType = "STREET_NAME"
+	SensitiveInfoSecondaryAddress EntityType = "SECONDARY_ADDRESS"
+	SensitiveInfoCity             EntityType = "CITY"
+	SensitiveInfoState            EntityType = "STATE"
+	SensitiveInfoZipCode          EntityType = "ZIP_CODE"
 )

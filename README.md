@@ -552,6 +552,144 @@ aj, err := arcjet.NewClient(arcjet.Config{
 })
 ```
 
+### On-device NER backend (more entity types)
+
+The built-in analyzer detects the four types above. For names, addresses, SSNs,
+tax and government IDs, and more, set `Backend` on the rule to the optional
+[`github.com/arcjet/arcjet-go/sensitiveinfo/rampart`](./sensitiveinfo/rampart)
+module. It runs a quantized BERT named-entity-recognition model **embedded in
+the binary** — entirely in-process, so (like the built-in analyzer) the scanned
+text never leaves the SDK and nothing is fetched at runtime.
+
+Install it (it is a separate module so the ~15 MB of weights only affect apps
+that opt in):
+
+```
+go get github.com/arcjet/arcjet-go/sensitiveinfo/rampart
+```
+
+Create the backend **once at startup** — loading dequantizes the weights and is
+relatively expensive — then share it across requests (it is safe for concurrent
+use):
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+
+	arcjet "github.com/arcjet/arcjet-go"
+	"github.com/arcjet/arcjet-go/sensitiveinfo/rampart"
+)
+
+func main() {
+	// Load the on-device model once. Reuse `backend` for every request.
+	backend, err := rampart.New(rampart.Options{
+		// Optional: raise the per-request character ceiling (default 4096) if
+		// you need to scan larger payloads — see the performance note below.
+		// MaxInputChars: 16384,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	aj, err := arcjet.NewClient(arcjet.Config{
+		Key: arcjetKey,
+		Rules: []arcjet.Rule{
+			arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{
+				Mode: arcjet.ModeLive,
+				// Block names, emails, and US SSNs. Use rampart.Entities() to
+				// deny every type the backend can detect.
+				Deny: []arcjet.EntityType{
+					arcjet.SensitiveInfoGivenName,
+					arcjet.SensitiveInfoSurname,
+					arcjet.SensitiveInfoEmail,
+					arcjet.SensitiveInfoSSN,
+				},
+				Backend: backend,
+			}),
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	http.HandleFunc("/message", func(w http.ResponseWriter, r *http.Request) {
+		message := r.FormValue("message")
+
+		decision, err := aj.Protect(r.Context(), r,
+			arcjet.WithSensitiveInfoValue(message))
+		if err != nil {
+			// Fail open (or closed) per your risk tolerance.
+			log.Printf("arcjet: %v", err)
+		}
+
+		if decision.Reason.IsSensitiveInfo() {
+			// Inspect exactly what was found and where (byte offsets into the
+			// scanned text).
+			if si := decision.Reason.SensitiveInfo; si != nil {
+				for _, e := range si.Denied {
+					log.Printf("blocked %s at [%d:%d] = %q",
+						e.Type, e.Start, e.End, message[e.Start:e.End])
+				}
+			}
+			http.Error(w, "Please remove personal information", http.StatusBadRequest)
+			return
+		}
+
+		w.Write([]byte("ok"))
+	})
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+The backend detects these entity types (pass any of them to `Allow`/`Deny`, or
+use `rampart.Entities()` for the whole set):
+
+| Constant | Value | Detected by |
+| --- | --- | --- |
+| `SensitiveInfoEmail` | `EMAIL` | recognizer + model |
+| `SensitiveInfoPhoneNumber` | `PHONE_NUMBER` | recognizer + model |
+| `SensitiveInfoIPAddress` | `IP_ADDRESS` | recognizer |
+| `SensitiveInfoCreditCardNumber` | `CREDIT_CARD_NUMBER` | recognizer (Luhn-validated) |
+| `SensitiveInfoURL` | `URL` | recognizer + model |
+| `SensitiveInfoSSN` | `SSN` | recognizer |
+| `SensitiveInfoGivenName` | `GIVEN_NAME` | model |
+| `SensitiveInfoSurname` | `SURNAME` | model |
+| `SensitiveInfoTaxID` | `TAX_ID` | model |
+| `SensitiveInfoBankAccount` | `BANK_ACCOUNT` | model |
+| `SensitiveInfoRoutingNumber` | `ROUTING_NUMBER` | model |
+| `SensitiveInfoGovernmentID` | `GOVERNMENT_ID` | model |
+| `SensitiveInfoPassport` | `PASSPORT` | model |
+| `SensitiveInfoDriversLicense` | `DRIVERS_LICENSE` | model |
+| `SensitiveInfoBuildingNumber` | `BUILDING_NUMBER` | model |
+| `SensitiveInfoStreetName` | `STREET_NAME` | model |
+| `SensitiveInfoSecondaryAddress` | `SECONDARY_ADDRESS` | model |
+| `SensitiveInfoCity` | `CITY` | model |
+| `SensitiveInfoState` | `STATE` | model |
+| `SensitiveInfoZipCode` | `ZIP_CODE` | model |
+
+Deterministic recognizers (email, URL, IP, phone, SSN, Luhn-validated cards) run
+alongside the NER model and take precedence on overlapping text. Listing a
+non-built-in entity type without a backend (or a `SensitiveInfoDetect` callback)
+is a configuration error.
+
+> **Performance:** inference runs on the request path. Cost scales with input
+> length — text is scanned in 480-character windows, each a full model pass
+> (order of tens of milliseconds per window on a typical multi-core server).
+> Two mechanisms bound worst-case cost so a large input cannot become a
+> denial-of-service vector. `Options.MaxInputChars` is a hard character ceiling;
+> it defaults to `4096`, which keeps the worst case to roughly ten windows (well
+> under a second even with no caller timeout). Separately, `Detect` honors
+> context cancellation between windows, so the incoming request's context
+> deadline also caps total inference. Raise `MaxInputChars` if you need to scan
+> larger payloads and can afford the latency.
+
+See the [module README](./sensitiveinfo/rampart/README.md) for the full entity
+list and details.
+
 To redact rather than block sensitive information, see
 [Redacting sensitive information](#redacting-sensitive-information) below.
 
