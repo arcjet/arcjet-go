@@ -342,8 +342,8 @@ func TestPhoneRecognizer(t *testing.T) {
 }
 
 func TestDefaultRecognizersOrder(t *testing.T) {
-	if len(DefaultRecognizers) != 6 {
-		t.Fatalf("len(DefaultRecognizers) = %d, want 6", len(DefaultRecognizers))
+	if len(DefaultRecognizers) != 5 {
+		t.Fatalf("len(DefaultRecognizers) = %d, want 5", len(DefaultRecognizers))
 	}
 	// Verify the order matches Python's default_recognizers by probing each
 	// recognizer with an input only it should match.
@@ -356,7 +356,6 @@ func TestDefaultRecognizersOrder(t *testing.T) {
 		{"a@b.co", arcjet.SensitiveInfoEmail},
 		{"https://example.com", arcjet.SensitiveInfoURL},
 		{"::1", arcjet.SensitiveInfoIPAddress},
-		{"555-234-5678", arcjet.SensitiveInfoPhoneNumber},
 	}
 	for i, p := range probes {
 		got := DefaultRecognizers[i](p.value)
@@ -367,6 +366,9 @@ func TestDefaultRecognizersOrder(t *testing.T) {
 		if got[0].Type != p.wantType {
 			t.Errorf("DefaultRecognizers[%d](%q) type = %q, want %q", i, p.value, got[0].Type, p.wantType)
 		}
+	}
+	if got := RunRecognizers("bank account 0123456789", DefaultRecognizers); len(got) != 0 {
+		t.Errorf("bank account matched a default recognizer: %+v", got)
 	}
 }
 
