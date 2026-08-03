@@ -49,6 +49,16 @@ func hasEntity(entities []arcjet.DetectedSensitiveInfoEntity, value string, typ 
 	return false
 }
 
+func joinedEntityText(entities []arcjet.DetectedSensitiveInfoEntity, value string, typ arcjet.EntityType) string {
+	var result strings.Builder
+	for _, entity := range entities {
+		if entity.Type == typ && entity.Start >= 0 && entity.End <= len(value) {
+			result.WriteString(value[entity.Start:entity.End])
+		}
+	}
+	return result.String()
+}
+
 func TestDetectNamesAndPlaces(t *testing.T) {
 	b := testBackend(t)
 	value := "My name is Sarah and I live in London"
@@ -78,6 +88,22 @@ func TestDetectStructuredViaRecognizers(t *testing.T) {
 		if !hasEntity(res.Denied, value, c.typ, c.want) {
 			t.Errorf("expected %s (%q) in denied %+v", c.typ, c.want, res.Denied)
 		}
+	}
+}
+
+func TestModelDistinguishesBankAccountsAndRoutingNumbersFromPhones(t *testing.T) {
+	b := testBackend(t)
+	value := "Details on file: name: Alex Morgan; email: alex.morgan@client-corp.example; ssn: 431-55-9928; bank_account: 0123456789; routing_number: 022000020"
+	res := detect(t, b, value, arcjet.SensitiveInfoEntities{Deny: true, Entities: Entities()})
+
+	if got := joinedEntityText(res.Denied, value, arcjet.SensitiveInfoBankAccount); got != "0123456789" {
+		t.Errorf("BANK_ACCOUNT text = %q, want %q; denied=%+v", got, "0123456789", res.Denied)
+	}
+	if got := joinedEntityText(res.Denied, value, arcjet.SensitiveInfoRoutingNumber); got != "022000020" {
+		t.Errorf("ROUTING_NUMBER text = %q, want %q; denied=%+v", got, "022000020", res.Denied)
+	}
+	if got := joinedEntityText(res.Denied, value, arcjet.SensitiveInfoPhoneNumber); got != "" {
+		t.Errorf("unexpected PHONE_NUMBER text %q; denied=%+v", got, res.Denied)
 	}
 }
 

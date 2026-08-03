@@ -651,7 +651,7 @@ use `rampart.Entities()` for the whole set):
 | Constant | Value | Detected by |
 | --- | --- | --- |
 | `SensitiveInfoEmail` | `EMAIL` | recognizer + model |
-| `SensitiveInfoPhoneNumber` | `PHONE_NUMBER` | recognizer + model |
+| `SensitiveInfoPhoneNumber` | `PHONE_NUMBER` | model |
 | `SensitiveInfoIPAddress` | `IP_ADDRESS` | recognizer |
 | `SensitiveInfoCreditCardNumber` | `CREDIT_CARD_NUMBER` | recognizer (Luhn-validated) |
 | `SensitiveInfoURL` | `URL` | recognizer + model |
@@ -671,10 +671,11 @@ use `rampart.Entities()` for the whole set):
 | `SensitiveInfoState` | `STATE` | model |
 | `SensitiveInfoZipCode` | `ZIP_CODE` | model |
 
-Deterministic recognizers (email, URL, IP, phone, SSN, Luhn-validated cards) run
-alongside the NER model and take precedence on overlapping text. Listing a
-non-built-in entity type without a backend (or a `SensitiveInfoDetect` callback)
-is a configuration error.
+Deterministic recognizers (email, URL, IP, SSN, Luhn-validated cards) run
+alongside the NER model and take precedence on overlapping text. Phone numbers
+are left to the model because their digit shape overlaps with financial and
+government identifiers. Listing a non-built-in entity type without a backend
+(or a `SensitiveInfoDetect` callback) is a configuration error.
 
 > **Performance:** inference runs on the request path. Cost scales with input
 > length — text is scanned in 480-character windows, each a full model pass
