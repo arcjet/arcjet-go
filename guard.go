@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -37,6 +38,9 @@ type GuardConfig struct {
 	// didn't recognise. Shared across every GuardSensitiveInfo rule on
 	// this client.
 	SensitiveInfoDetect SensitiveInfoDetect
+	// SensitiveInfoBackend evaluates sensitive-info rules projected by remote
+	// policies. If nil, the bundled WebAssembly analyzer is used.
+	SensitiveInfoBackend SensitiveInfoBackend
 }
 
 // GuardClient evaluates non-HTTP inputs such as tool calls, jobs, and queues.
@@ -48,6 +52,7 @@ type GuardClient struct {
 	guardClient decidev2connect.DecideServiceClient
 	userAgent   string
 	local       *localEvaluator
+	policy      *remotePolicyRuntime
 }
 
 // NewGuardClient creates a reusable Guard client.
@@ -72,14 +77,16 @@ func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 		httpClient = http.DefaultClient
 	}
 	ua := userAgent("arcjet-guard-go", version)
-	return &GuardClient{
+	client := &GuardClient{
 		key:         key,
 		userAgent:   ua,
 		guardClient: decidev2connect.NewDecideServiceClient(httpClient, baseURL),
 		// Lazy: only Guard rules that evaluate locally (today just
 		// sensitive info) trigger wasm compilation.
 		local: newLazyLocalEvaluator(cfg.SensitiveInfoDetect),
-	}, nil
+	}
+	client.policy = newRemotePolicyRuntime(client.guardClient, key, ua, client.local, cfg.SensitiveInfoBackend)
+	return client, nil
 }
 
 // Close releases the locally-compiled wasm factory, if any. Safe to call
@@ -95,6 +102,10 @@ func (c *GuardClient) Close(ctx context.Context) error {
 type GuardRequest struct {
 	// Label identifies this Guard call.
 	Label string
+	// Actor is an optional actor identity available to remote policies.
+	Actor *string
+	// Inputs are explicitly typed and exposed values for remote policies.
+	Inputs map[string]GuardPolicyInput
 	// Metadata is optional metadata for this Guard call: string keys mapped to
 	// any JSON-serializable value, including nested maps and slices. Each
 	// top-level value is JSON-encoded by the SDK and stored verbatim.
@@ -179,6 +190,13 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	envelopeMetadata, envelopeWarnings := encodeMetadata(req.Metadata, "")
 	warnings = append(warnings, envelopeWarnings...)
 
+	policyInputs, policyRevision, policyResults, hasLocal, err := c.policy.prepare(ctx, req.Label, req.Inputs, false)
+	if err != nil {
+		if errors.Is(err, ErrInvalidPolicyInput) {
+			return GuardDecision{}, err
+		}
+		return withLocalWarnings(guardErrorDecision("REMOTE_POLICY_UNAVAILABLE", "remote Guard policy preparation failed"), warnings), err
+	}
 	wireReq := &decidev2.GuardRequest{
 		UserAgent:           c.userAgent,
 		LocalEvalDurationMs: &elapsed,
@@ -187,7 +205,12 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		MetadataJson:        envelopeMetadata,
 		RuleSubmissions:     submissions,
 		CorrelationId:       req.CorrelationId,
+		PolicyInputs:        policyInputs,
+		LocalPolicyRevision: policyRevision,
+		LocalPolicyResults:  policyResults,
+		PolicyCapabilities:  guardPolicyCapabilities,
 	}
+	wireReq.Actor = req.Actor
 
 	// Trim to the SDK ceiling across every metadata map on the request — the
 	// envelope plus one per rule — so an oversized blob cannot push the request
@@ -211,6 +234,19 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		// result so HasFailedOpen()/ErrorResults() flag it even if the caller
 		// ignores err.
 		return withLocalWarnings(guardErrorDecision("TRANSPORT_ERROR", err.Error()), warnings), err
+	}
+	if hasLocal && resp.Msg.GetDecision() != nil && resp.Msg.GetDecision().GetPolicyEvaluation() != nil {
+		e := resp.Msg.GetDecision().GetPolicyEvaluation()
+		if e.GetRefreshRequired() || (policyRevision != "" && e.GetRevision() != "" && policyRevision != e.GetRevision()) {
+			wireReq.PolicyInputs, wireReq.LocalPolicyRevision, wireReq.LocalPolicyResults, _, err = c.policy.prepare(ctx, req.Label, req.Inputs, true)
+			if err != nil {
+				return withLocalWarnings(guardErrorDecision("REMOTE_POLICY_UNAVAILABLE", "remote Guard policy preparation failed"), warnings), err
+			}
+			resp, err = c.guardClient.Guard(ctx, connectReq)
+			if err != nil {
+				return withLocalWarnings(guardErrorDecision("TRANSPORT_ERROR", err.Error()), warnings), err
+			}
+		}
 	}
 	return withLocalWarnings(guardDecisionFromProto(resp.Msg), warnings), nil
 }

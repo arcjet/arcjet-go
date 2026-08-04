@@ -114,6 +114,8 @@ const (
 	ReasonNotRun ReasonType = "NOT_RUN"
 	// ReasonCustom means a custom guard rule determined the result.
 	ReasonCustom ReasonType = "CUSTOM"
+	// ReasonInputConstraint means a remote policy input constraint determined the result.
+	ReasonInputConstraint ReasonType = "INPUT_CONSTRAINT"
 )
 
 // LogValue implements [slog.LogValuer] so ReasonType logs as its string form.
@@ -154,6 +156,14 @@ const (
 	GuardRuleTypePromptInjection GuardRuleType = "PROMPT_INJECTION"
 	// GuardRuleTypeModerateContent identifies a Guard content moderation rule.
 	GuardRuleTypeModerateContent GuardRuleType = "MODERATE_CONTENT"
+	// GuardRuleTypeAllowedStringValues identifies an allowed-values constraint.
+	GuardRuleTypeAllowedStringValues GuardRuleType = "ALLOWED_STRING_VALUES"
+	// GuardRuleTypeDeniedStringValues identifies a denied-values constraint.
+	GuardRuleTypeDeniedStringValues GuardRuleType = "DENIED_STRING_VALUES"
+	// GuardRuleTypeStringLength identifies a string-length constraint.
+	GuardRuleTypeStringLength GuardRuleType = "STRING_LENGTH"
+	// GuardRuleTypeStringListMembership identifies a string-list membership constraint.
+	GuardRuleTypeStringListMembership GuardRuleType = "STRING_LIST_MEMBERSHIP"
 	// GuardRuleTypeLocalSensitiveInfo identifies a local sensitive info Guard rule.
 	GuardRuleTypeLocalSensitiveInfo GuardRuleType = "LOCAL_SENSITIVE_INFO"
 	// GuardRuleTypeLocalCustom identifies a custom local Guard rule.

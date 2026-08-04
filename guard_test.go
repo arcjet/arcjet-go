@@ -9,15 +9,21 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	decidev2 "github.com/arcjet/arcjet-go/internal/proto/decide/v2"
 	"github.com/arcjet/arcjet-go/internal/proto/decide/v2/decidev2connect"
 )
 
 type testGuardHandler struct {
-	seen   *decidev2.GuardRequest
-	header http.Header
-	resp   *decidev2.GuardResponse
+	seen            *decidev2.GuardRequest
+	seenRequests    []*decidev2.GuardRequest
+	header          http.Header
+	resp            *decidev2.GuardResponse
+	guardResponses  []*decidev2.GuardResponse
+	policyResponses []*decidev2.GetGuardPolicyResponse
+	guardCalls      int
+	policyCalls     int
 	// errToReturn, when non-nil, makes Guard return a transport error instead
 	// of a response — used to exercise the fail-open-on-transport path.
 	errToReturn error
@@ -25,9 +31,14 @@ type testGuardHandler struct {
 
 func (h *testGuardHandler) Guard(ctx context.Context, req *connect.Request[decidev2.GuardRequest]) (*connect.Response[decidev2.GuardResponse], error) {
 	h.seen = req.Msg
+	h.seenRequests = append(h.seenRequests, proto.Clone(req.Msg).(*decidev2.GuardRequest))
 	h.header = req.Header()
+	h.guardCalls++
 	if h.errToReturn != nil {
 		return nil, h.errToReturn
+	}
+	if len(h.guardResponses) >= h.guardCalls {
+		return connect.NewResponse(h.guardResponses[h.guardCalls-1]), nil
 	}
 	if h.resp != nil {
 		return connect.NewResponse(h.resp), nil
@@ -55,6 +66,16 @@ func (h *testGuardHandler) Guard(ctx context.Context, req *connect.Request[decid
 				},
 			},
 		},
+	}), nil
+}
+
+func (h *testGuardHandler) GetGuardPolicy(_ context.Context, _ *connect.Request[decidev2.GetGuardPolicyRequest]) (*connect.Response[decidev2.GetGuardPolicyResponse], error) {
+	h.policyCalls++
+	if len(h.policyResponses) >= h.policyCalls {
+		return connect.NewResponse(h.policyResponses[h.policyCalls-1]), nil
+	}
+	return connect.NewResponse(&decidev2.GetGuardPolicyResponse{
+		Status: decidev2.GuardPolicyLookupStatus_GUARD_POLICY_LOOKUP_STATUS_NOT_CONFIGURED,
 	}), nil
 }
 
@@ -145,6 +166,94 @@ func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {
 	}
 	if sub.GetMode() != decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE {
 		t.Fatalf("mode = %s", sub.GetMode())
+	}
+}
+
+func TestGuardPolicyOnlyRequestCarriesActorInputsAndCapabilities(t *testing.T) {
+	handler := &testGuardHandler{resp: &decidev2.GuardResponse{Decision: &decidev2.GuardDecision{
+		Id:         "gdec_policy_only",
+		Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+	}}}
+	client, closeServer := newGuardTestClient(t, handler)
+	defer closeServer()
+
+	actor := ""
+	decision, err := client.Guard(context.Background(), GuardRequest{
+		Label: "email.sent",
+		Actor: &actor,
+		Inputs: map[string]GuardPolicyInput{
+			"recipient": GuardPolicyServerString("user@example.com"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.ID != "gdec_policy_only" {
+		t.Fatalf("decision ID = %q", decision.ID)
+	}
+	seen := handler.seen
+	if len(seen.GetRuleSubmissions()) != 0 {
+		t.Fatalf("rule submissions = %#v", seen.GetRuleSubmissions())
+	}
+	if seen.Actor == nil || seen.GetActor() != "" {
+		t.Fatalf("actor presence/value = %#v/%q", seen.Actor, seen.GetActor())
+	}
+	if got := seen.GetPolicyInputs()["recipient"].GetServer().GetStringValue(); got != "user@example.com" {
+		t.Fatalf("recipient = %q", got)
+	}
+	if got := seen.GetPolicyCapabilities(); len(got) != 2 || got[0] != "guard-policy-v1" || got[1] != "local-sensitive-info-v1" {
+		t.Fatalf("policy capabilities = %#v", got)
+	}
+}
+
+func TestGuardRefreshesRemotePolicyAndRetriesExactlyOnce(t *testing.T) {
+	handler := &testGuardHandler{
+		policyResponses: []*decidev2.GetGuardPolicyResponse{
+			{
+				Status: decidev2.GuardPolicyLookupStatus_GUARD_POLICY_LOOKUP_STATUS_AVAILABLE,
+				Policy: &decidev2.GuardLocalPolicyProjection{PolicyId: "policy", Revision: "rev-1"},
+			},
+			{
+				Status: decidev2.GuardPolicyLookupStatus_GUARD_POLICY_LOOKUP_STATUS_AVAILABLE,
+				Policy: &decidev2.GuardLocalPolicyProjection{PolicyId: "policy", Revision: "rev-2"},
+			},
+		},
+		guardResponses: []*decidev2.GuardResponse{
+			{Decision: &decidev2.GuardDecision{
+				Id:         "first",
+				Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+				PolicyEvaluation: &decidev2.GuardPolicyEvaluation{
+					Revision:        "rev-2",
+					Status:          decidev2.GuardPolicyStatus_GUARD_POLICY_STATUS_INCOMPLETE,
+					RefreshRequired: true,
+				},
+			}},
+			{Decision: &decidev2.GuardDecision{
+				Id:         "second",
+				Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+				PolicyEvaluation: &decidev2.GuardPolicyEvaluation{
+					Revision:        "rev-2",
+					Status:          decidev2.GuardPolicyStatus_GUARD_POLICY_STATUS_APPLIED,
+					RefreshRequired: true,
+				},
+			}},
+		},
+	}
+	client, closeServer := newGuardTestClient(t, handler)
+	defer closeServer()
+
+	decision, err := client.Guard(context.Background(), GuardRequest{
+		Label:  "email.sent",
+		Inputs: map[string]GuardPolicyInput{"body": GuardPolicyLocalString("private")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.ID != "second" || handler.guardCalls != 2 || handler.policyCalls != 2 {
+		t.Fatalf("decision/calls = %q/%d/%d", decision.ID, handler.guardCalls, handler.policyCalls)
+	}
+	if len(handler.seenRequests) != 2 || handler.seenRequests[0].GetLocalPolicyRevision() != "rev-1" || handler.seenRequests[1].GetLocalPolicyRevision() != "rev-2" {
+		t.Fatalf("request revisions = %#v", handler.seenRequests)
 	}
 }
 

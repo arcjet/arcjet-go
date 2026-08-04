@@ -3,6 +3,8 @@ package arcjet
 import (
 	"encoding/json"
 	"testing"
+
+	decidev2 "github.com/arcjet/arcjet-go/internal/proto/decide/v2"
 )
 
 func TestParseReasonVariants(t *testing.T) {
@@ -283,6 +285,91 @@ func TestGuardDecisionDenyWithErrorIsNotFailedOpen(t *testing.T) {
 	}
 	if len(d.ErrorResults()) != 1 {
 		t.Error("the errored rule should still surface via ErrorResults()")
+	}
+}
+
+func TestGuardPolicyResultConversionAndSeparation(t *testing.T) {
+	resp := &decidev2.GuardResponse{Decision: &decidev2.GuardDecision{
+		Id:         "gdec_policy",
+		Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+		PolicyEvaluation: &decidev2.GuardPolicyEvaluation{
+			Revision: "rev-1",
+			Status:   decidev2.GuardPolicyStatus_GUARD_POLICY_STATUS_APPLIED,
+		},
+		PolicyRuleResults: []*decidev2.GuardPolicyRuleResult{
+			{
+				ResultId:       "result-allowed",
+				PolicyId:       "policy-id",
+				PolicyRevision: "rev-1",
+				RuleId:         "allowed-rule",
+				Type:           decidev2.GuardRuleType_GUARD_RULE_TYPE_ALLOWED_STRING_VALUES,
+				Mode:           decidev2.GuardRuleMode_GUARD_RULE_MODE_UNSPECIFIED,
+				Execution:      decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SERVER,
+				Source:         decidev2.GuardRuleSource_GUARD_RULE_SOURCE_REMOTE,
+				Result: &decidev2.GuardPolicyRuleResult_AllowedStringValues{AllowedStringValues: &decidev2.ResultStringConstraint{
+					Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+				}},
+			},
+			{
+				RuleId:    "length-rule",
+				Type:      decidev2.GuardRuleType_GUARD_RULE_TYPE_STRING_LENGTH,
+				Mode:      decidev2.GuardRuleMode(99),
+				Execution: decidev2.GuardRuleExecution(99),
+				Result: &decidev2.GuardPolicyRuleResult_StringLength{StringLength: &decidev2.ResultStringConstraint{
+					Conclusion: decidev2.GuardConclusion(99),
+				}},
+			},
+		},
+	}}
+
+	decision := guardDecisionFromProto(resp)
+	if decision.ID != "gdec_policy" || len(decision.Results) != 0 || len(decision.PolicyResults) != 2 {
+		t.Fatalf("decision separation = %#v", decision)
+	}
+	if decision.PolicyEvaluation == nil || decision.PolicyEvaluation.Status != GuardPolicyStatusApplied {
+		t.Fatalf("policy evaluation = %#v", decision.PolicyEvaluation)
+	}
+	allowed := decision.PolicyResults[0]
+	if allowed.Conclusion != ConclusionDeny || allowed.Reason != ReasonInputConstraint || allowed.Mode != ModeLive || allowed.Execution != GuardRuleExecutionServer || allowed.Source != GuardRuleSourceRemote {
+		t.Fatalf("allowed-values result = %#v", allowed)
+	}
+	if allowed.AllowedStringValues == nil || allowed.AllowedStringValues.MatchOperator == nil || *allowed.AllowedStringValues.MatchOperator != GuardStringMatchOperatorExact {
+		t.Fatalf("default match operator = %#v", allowed.AllowedStringValues)
+	}
+	length := decision.PolicyResults[1]
+	if length.Conclusion != ConclusionAllow || length.Mode != ModeLive || length.Execution != GuardRuleExecutionUnknown {
+		t.Fatalf("future enum fail-open result = %#v", length)
+	}
+	if length.StringLength == nil || length.StringLength.MatchOperator != nil {
+		t.Fatalf("string-length match operator = %#v", length.StringLength)
+	}
+}
+
+func TestGuardPolicyUnknownStatusAndUnavailableFailOpen(t *testing.T) {
+	unknown := guardDecisionFromProto(&decidev2.GuardResponse{Decision: &decidev2.GuardDecision{
+		Id:         "unknown",
+		Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+		PolicyEvaluation: &decidev2.GuardPolicyEvaluation{
+			Status: decidev2.GuardPolicyStatus(99),
+		},
+	}})
+	if unknown.ID != "unknown" || unknown.PolicyEvaluation == nil || unknown.PolicyEvaluation.Status != GuardPolicyStatusUnknown || unknown.HasFailedOpen() {
+		t.Fatalf("unknown policy status = %#v", unknown)
+	}
+
+	unavailable := GuardDecision{
+		Conclusion:       ConclusionAllow,
+		PolicyEvaluation: &GuardPolicyEvaluation{Status: GuardPolicyStatusUnavailable},
+	}
+	if !unavailable.HasFailedOpen() {
+		t.Fatal("unavailable policy did not fail open")
+	}
+	errors := unavailable.ErrorResults()
+	if len(errors) != 1 || errors[0].Error == nil || errors[0].Error.Code != "REMOTE_POLICY_UNAVAILABLE" {
+		t.Fatalf("unavailable policy errors = %#v", errors)
+	}
+	if len(unavailable.Results) != 0 || len(unavailable.PolicyResults) != 0 {
+		t.Fatal("synthetic policy error polluted public results")
 	}
 }
 

@@ -1008,6 +1008,39 @@ func GetWeather(ctx context.Context, userID, message string) error {
 > stay greppable, and the dashboard groups by them. Interpolation produces a
 > sea of distinct-looking entries instead of one bucket per operation.
 
+### Remote Guard policies
+
+Remote policies let a Guard label be governed from Arcjet without requiring
+every rule to be compiled into the application. Supply an authenticated actor
+and explicitly typed inputs with each call; `Rules` may be empty for a
+policy-only evaluation.
+
+```go
+actor := authenticatedUser.ID // derive from trusted server-side state
+decision, err := guard.Guard(ctx, arcjet.GuardRequest{
+	Label: "email.sent",
+	Actor: &actor,
+	Inputs: map[string]arcjet.GuardPolicyInput{
+		"recipient": arcjet.GuardPolicyServerString(recipient),
+		"allowedRecipients": arcjet.GuardPolicyServerStringList(
+			allowedRecipients,
+		),
+		"body": arcjet.GuardPolicyLocalString(body),
+	},
+})
+```
+
+Server inputs are sent to Arcjet as their declared type. Local strings remain
+in process: the SDK sends a domain-separated SHA-256 digest and, when required
+by the policy, locally computed sensitive-information evidence containing only
+entity types and offsets. The digest supports correlation; it is not
+anonymization and low-entropy values may still be guessable.
+
+Remote rule results are exposed through `decision.PolicyResults`, separately
+from positional SDK rule `decision.Results`. Check `decision.HasFailedOpen()`
+when your application must fail closed if a remote policy is incomplete or
+unavailable.
+
 ### Rate limiting
 
 Token bucket, fixed window, and sliding window algorithms are available.
