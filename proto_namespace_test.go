@@ -56,14 +56,16 @@ func TestVendoredProtoIsNamespaced(t *testing.T) {
 // namespaced package.
 func TestConnectRoutesArePinnedToCanonicalWire(t *testing.T) {
 	routes := map[string]string{
-		"decide": decidev1alpha1connect.DecideServiceDecideProcedure,
-		"report": decidev1alpha1connect.DecideServiceReportProcedure,
-		"guard":  decidev2connect.DecideServiceGuardProcedure,
+		"decide":       decidev1alpha1connect.DecideServiceDecideProcedure,
+		"report":       decidev1alpha1connect.DecideServiceReportProcedure,
+		"guard":        decidev2connect.DecideServiceGuardProcedure,
+		"guard-policy": decidev2connect.DecideServiceGetGuardPolicyProcedure,
 	}
 	want := map[string]string{
-		"decide": "/proto.decide.v1alpha1.DecideService/Decide",
-		"report": "/proto.decide.v1alpha1.DecideService/Report",
-		"guard":  "/proto.decide.v2.DecideService/Guard",
+		"decide":       "/proto.decide.v1alpha1.DecideService/Decide",
+		"report":       "/proto.decide.v1alpha1.DecideService/Report",
+		"guard":        "/proto.decide.v2.DecideService/Guard",
+		"guard-policy": "/proto.decide.v2.DecideService/GetGuardPolicy",
 	}
 	for name, got := range routes {
 		if got != want[name] {
