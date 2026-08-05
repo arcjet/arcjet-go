@@ -148,7 +148,7 @@ func TestDecisionFromProtoThreatIntelligence(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := decisionFromProto(&populated).IP.Threat
-	if got == nil || got.RiskLevel != "high" || got.Confidence != "medium" || got.Reputation != "malicious" || got.BackgroundNoise != 7 || len(got.Activities) != 1 {
+	if got == nil || got.RiskLevel != "high" || got.Confidence != "medium" || got.Reputation != "malicious" || len(got.Activities) != 1 {
 		t.Fatalf("threat intelligence not preserved: %#v", got)
 	}
 

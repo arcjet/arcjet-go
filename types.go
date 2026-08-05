@@ -475,14 +475,13 @@ type IPDetails struct {
 
 // ThreatIntelligence contains Arcjet's threat assessment for an IP address.
 type ThreatIntelligence struct {
-	RiskLevel       string   `json:"riskLevel,omitempty"`
-	Confidence      string   `json:"confidence,omitempty"`
-	Reputation      string   `json:"reputation,omitempty"`
-	IsSafe          bool     `json:"isSafe,omitempty"`
-	NetworkTypes    []string `json:"networkTypes,omitempty"`
-	Activities      []string `json:"activities,omitempty"`
-	Entities        []string `json:"entities,omitempty"`
-	EntityName      string   `json:"entityName,omitempty"`
-	Service         string   `json:"service,omitempty"`
-	BackgroundNoise int32    `json:"backgroundNoise,omitempty"`
+	RiskLevel    string   `json:"riskLevel,omitempty"`
+	Confidence   string   `json:"confidence,omitempty"`
+	Reputation   string   `json:"reputation,omitempty"`
+	IsSafe       bool     `json:"isSafe,omitempty"`
+	NetworkTypes []string `json:"networkTypes,omitempty"`
+	Activities   []string `json:"activities,omitempty"`
+	Entities     []string `json:"entities,omitempty"`
+	EntityName   string   `json:"entityName,omitempty"`
+	Service      string   `json:"service,omitempty"`
 }
