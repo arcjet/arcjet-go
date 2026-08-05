@@ -910,7 +910,6 @@ if ip.Threat != nil {
 	log.Println(threat.RiskLevel, threat.Confidence, threat.Reputation)
 	log.Println(threat.IsSafe, threat.NetworkTypes, threat.Activities)
 	log.Println(threat.Entities, threat.EntityName, threat.Service)
-	log.Println(threat.BackgroundNoise)
 }
 ```
 
@@ -919,8 +918,7 @@ Available fields include geolocation (`Latitude`, `Longitude`, `City`,
 `ASNType`, `ASNCountry`), and reputation (`IsVPN`, `IsProxy`, `IsTor`,
 `IsHosting`, `IsRelay`). `Threat`, when present, provides `RiskLevel`,
 `Confidence`, `Reputation`, `IsSafe`, `NetworkTypes`, `Activities`, `Entities`,
-`EntityName`, `Service`, and `BackgroundNoise`. `BackgroundNoise` is the raw
-value reported by the service.
+`EntityName`, and `Service`.
 
 ## Arcjet Guard
 
