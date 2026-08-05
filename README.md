@@ -906,15 +906,21 @@ log.Println(ip.IsVPN, ip.IsHosting)  // reputation
 
 // Threat is optional because threat intelligence may not be available.
 if ip.Threat != nil {
-	log.Println(ip.Threat.RiskLevel, ip.Threat.Activities)
+	threat := ip.Threat
+	log.Println(threat.RiskLevel, threat.Confidence, threat.Reputation)
+	log.Println(threat.IsSafe, threat.NetworkTypes, threat.Activities)
+	log.Println(threat.Entities, threat.EntityName, threat.Service)
+	log.Println(threat.BackgroundNoise)
 }
 ```
 
 Available fields include geolocation (`Latitude`, `Longitude`, `City`,
 `Region`, `Country`, `Continent`), network (`ASN`, `ASNName`, `ASNDomain`,
 `ASNType`, `ASNCountry`), and reputation (`IsVPN`, `IsProxy`, `IsTor`,
-`IsHosting`, `IsRelay`). `Threat`, when present, provides Arcjet's threat
-intelligence assessment, including risk, confidence, and observed activities.
+`IsHosting`, `IsRelay`). `Threat`, when present, provides `RiskLevel`,
+`Confidence`, `Reputation`, `IsSafe`, `NetworkTypes`, `Activities`, `Entities`,
+`EntityName`, `Service`, and `BackgroundNoise`. `BackgroundNoise` is the raw
+value reported by the service.
 
 ## Arcjet Guard
 
