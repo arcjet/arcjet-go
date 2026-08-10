@@ -456,28 +456,42 @@ type RuleResult struct {
 
 // IPDetails contains geolocation, network, and reputation details for a request IP.
 type IPDetails struct {
-	Latitude       float64           `json:"latitude,omitempty"`
-	Longitude      float64           `json:"longitude,omitempty"`
-	AccuracyRadius int32             `json:"accuracyRadius,omitempty"`
-	Timezone       string            `json:"timezone,omitempty"`
-	PostalCode     string            `json:"postalCode,omitempty"`
-	City           string            `json:"city,omitempty"`
-	Region         string            `json:"region,omitempty"`
-	Country        string            `json:"country,omitempty"`
-	CountryName    string            `json:"countryName,omitempty"`
-	Continent      string            `json:"continent,omitempty"`
-	ContinentName  string            `json:"continentName,omitempty"`
-	ASN            string            `json:"asn,omitempty"`
-	ASNName        string            `json:"asnName,omitempty"`
-	ASNDomain      string            `json:"asnDomain,omitempty"`
-	ASNType        string            `json:"asnType,omitempty"`
-	ASNCountry     string            `json:"asnCountry,omitempty"`
-	Service        string            `json:"service,omitempty"`
-	IsHosting      bool              `json:"isHosting,omitempty"`
-	IsVPN          bool              `json:"isVpn,omitempty"`
-	IsProxy        bool              `json:"isProxy,omitempty"`
-	IsTor          bool              `json:"isTor,omitempty"`
-	IsRelay        bool              `json:"isRelay,omitempty"`
-	IsAbuser       bool              `json:"isAbuser,omitempty"`
-	Bots           map[string]string `json:"bots,omitempty"`
+	Latitude       float64             `json:"latitude,omitempty"`
+	Longitude      float64             `json:"longitude,omitempty"`
+	AccuracyRadius int32               `json:"accuracyRadius,omitempty"`
+	Timezone       string              `json:"timezone,omitempty"`
+	PostalCode     string              `json:"postalCode,omitempty"`
+	City           string              `json:"city,omitempty"`
+	Region         string              `json:"region,omitempty"`
+	Country        string              `json:"country,omitempty"`
+	CountryName    string              `json:"countryName,omitempty"`
+	Continent      string              `json:"continent,omitempty"`
+	ContinentName  string              `json:"continentName,omitempty"`
+	ASN            string              `json:"asn,omitempty"`
+	ASNName        string              `json:"asnName,omitempty"`
+	ASNDomain      string              `json:"asnDomain,omitempty"`
+	ASNType        string              `json:"asnType,omitempty"`
+	ASNCountry     string              `json:"asnCountry,omitempty"`
+	Service        string              `json:"service,omitempty"`
+	IsHosting      bool                `json:"isHosting,omitempty"`
+	IsVPN          bool                `json:"isVpn,omitempty"`
+	IsProxy        bool                `json:"isProxy,omitempty"`
+	IsTor          bool                `json:"isTor,omitempty"`
+	IsRelay        bool                `json:"isRelay,omitempty"`
+	IsAbuser       bool                `json:"isAbuser,omitempty"`
+	Bots           map[string]string   `json:"bots,omitempty"`
+	Threat         *ThreatIntelligence `json:"threat,omitempty"`
+}
+
+// ThreatIntelligence contains Arcjet's threat assessment for an IP address.
+type ThreatIntelligence struct {
+	RiskLevel    string   `json:"riskLevel,omitempty"`
+	Confidence   string   `json:"confidence,omitempty"`
+	Reputation   string   `json:"reputation,omitempty"`
+	IsSafe       bool     `json:"isSafe,omitempty"`
+	NetworkTypes []string `json:"networkTypes,omitempty"`
+	Activities   []string `json:"activities,omitempty"`
+	Entities     []string `json:"entities,omitempty"`
+	EntityName   string   `json:"entityName,omitempty"`
+	Service      string   `json:"service,omitempty"`
 }

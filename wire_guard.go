@@ -2,6 +2,7 @@ package arcjet
 
 import (
 	"encoding/json"
+	"strconv"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -269,14 +270,49 @@ type GuardSlidingWindowResult struct {
 
 // GuardPromptResult contains Guard prompt injection result details.
 type GuardPromptResult struct {
-	Conclusion Conclusion `json:"conclusion"`
-	Detected   bool       `json:"detected"`
+	Conclusion Conclusion         `json:"conclusion"`
+	Detected   bool               `json:"detected"`
+	Billing    *GuardBillingUsage `json:"billing,omitempty"`
 }
 
 // GuardModerateContentResult contains Guard content moderation result details.
 type GuardModerateContentResult struct {
-	Conclusion Conclusion `json:"conclusion"`
-	Detected   bool       `json:"detected"`
+	Conclusion Conclusion         `json:"conclusion"`
+	Detected   bool               `json:"detected"`
+	Billing    *GuardBillingUsage `json:"billing,omitempty"`
+}
+
+// GuardBillingUsage contains metered usage for a Guard rule evaluation.
+type GuardBillingUsage struct {
+	Unit  string `json:"unit"`
+	Count uint64 `json:"count"`
+}
+
+// UnmarshalJSON accepts the quoted uint64 representation emitted by
+// protojson while retaining the natural uint64 public API.
+func (b *GuardBillingUsage) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Unit  string          `json:"unit"`
+		Count json.RawMessage `json:"count"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	b.Unit = wire.Unit
+	if len(wire.Count) == 0 {
+		b.Count = 0
+		return nil
+	}
+	var quoted string
+	if err := json.Unmarshal(wire.Count, &quoted); err == nil {
+		count, err := strconv.ParseUint(quoted, 10, 64)
+		if err != nil {
+			return err
+		}
+		b.Count = count
+		return nil
+	}
+	return json.Unmarshal(wire.Count, &b.Count)
 }
 
 // GuardSensitiveInfoResult contains Guard sensitive information result details.

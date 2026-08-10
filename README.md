@@ -903,12 +903,22 @@ ip := decision.IP
 log.Println(ip.City, ip.CountryName) // geolocation
 log.Println(ip.ASN, ip.ASNName)      // ASN / network
 log.Println(ip.IsVPN, ip.IsHosting)  // reputation
+
+// Threat is optional because threat intelligence may not be available.
+if ip.Threat != nil {
+	threat := ip.Threat
+	log.Println(threat.RiskLevel, threat.Confidence, threat.Reputation)
+	log.Println(threat.IsSafe, threat.NetworkTypes, threat.Activities)
+	log.Println(threat.Entities, threat.EntityName, threat.Service)
+}
 ```
 
 Available fields include geolocation (`Latitude`, `Longitude`, `City`,
 `Region`, `Country`, `Continent`), network (`ASN`, `ASNName`, `ASNDomain`,
 `ASNType`, `ASNCountry`), and reputation (`IsVPN`, `IsProxy`, `IsTor`,
-`IsHosting`, `IsRelay`).
+`IsHosting`, `IsRelay`). `Threat`, when present, provides `RiskLevel`,
+`Confidence`, `Reputation`, `IsSafe`, `NetworkTypes`, `Activities`, `Entities`,
+`EntityName`, and `Service`.
 
 ## Arcjet Guard
 
@@ -1155,7 +1165,16 @@ if err != nil {
 if decision.IsDenied() && decision.Reason == arcjet.ReasonPromptInjection {
 	return errors.New("prompt injection detected")
 }
+
+// Billing is optional. Prompt injection usage is measured in tokens.
+if result := promptScan.Result(decision); result != nil && result.Billing != nil {
+	fmt.Printf("charged %d %s\n", result.Billing.Count, result.Billing.Unit)
+}
 ```
+
+Guard prompt injection billing uses the `tokens` unit, while content moderation
+billing uses `text_units`. Billing is a pointer and can be nil when usage data
+is not returned; check it before reading `Unit` or `Count`.
 
 ### Custom rules
 

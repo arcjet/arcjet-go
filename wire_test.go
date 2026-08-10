@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"google.golang.org/protobuf/encoding/protojson"
+
+	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
 	decidev2 "github.com/arcjet/arcjet-go/internal/proto/decide/v2"
 )
 
@@ -139,6 +142,30 @@ func TestDecisionFromProtoNilFailsToError(t *testing.T) {
 	}
 }
 
+func TestDecisionFromProtoThreatIntelligence(t *testing.T) {
+	var populated decidev1.Decision
+	if err := protojson.Unmarshal([]byte(`{"ipDetails":{"threat":{"riskLevel":"high","confidence":"medium","reputation":"malicious","isSafe":false,"networkTypes":["hosting"],"activities":["scanning"],"entities":["scanner"],"entityName":"example","service":"cloud","backgroundNoise":7}}}`), &populated); err != nil {
+		t.Fatal(err)
+	}
+	got := decisionFromProto(&populated).IP.Threat
+	if got == nil || got.RiskLevel != "high" || got.Confidence != "medium" || got.Reputation != "malicious" || len(got.Activities) != 1 {
+		t.Fatalf("threat intelligence not preserved: %#v", got)
+	}
+
+	var empty decidev1.Decision
+	if err := protojson.Unmarshal([]byte(`{"ipDetails":{"threat":{}}}`), &empty); err != nil {
+		t.Fatal(err)
+	}
+	if got := decisionFromProto(&empty).IP.Threat; got == nil {
+		t.Fatal("present empty threat intelligence should remain non-nil")
+	}
+
+	var missing decidev1.Decision
+	if got := decisionFromProto(&missing).IP.Threat; got != nil {
+		t.Fatalf("missing threat intelligence = %#v, want nil", got)
+	}
+}
+
 func TestParseGuardRuleType(t *testing.T) {
 	cases := map[string]GuardRuleType{
 		"GUARD_RULE_TYPE_TOKEN_BUCKET":         GuardRuleTypeTokenBucket,
@@ -184,6 +211,37 @@ func TestGuardDecisionFromProtoNilFailsOpen(t *testing.T) {
 	}
 	if len(d.ErrorResults()) != 1 {
 		t.Error("nil response should surface one errored result")
+	}
+}
+
+func TestGuardDecisionFromProtoBillingUsage(t *testing.T) {
+	var populated decidev2.GuardResponse
+	if err := protojson.Unmarshal([]byte(`{"decision":{"ruleResults":[{"type":"GUARD_RULE_TYPE_PROMPT_INJECTION","promptInjection":{"billing":{"unit":"tokens","count":"18446744073709551615"}}},{"type":"GUARD_RULE_TYPE_MODERATE_CONTENT","moderateContent":{"billing":{"unit":"text_units","count":"3"}}}]}}`), &populated); err != nil {
+		t.Fatal(err)
+	}
+	results := guardDecisionFromProto(&populated).Results
+	if len(results) != 2 || results[0].PromptInjection == nil || results[0].PromptInjection.Billing == nil || results[0].PromptInjection.Billing.Unit != "tokens" || results[0].PromptInjection.Billing.Count != ^uint64(0) {
+		t.Fatalf("prompt billing not preserved: %#v", results)
+	}
+	if results[1].ModerateContent == nil || results[1].ModerateContent.Billing == nil || results[1].ModerateContent.Billing.Unit != "text_units" || results[1].ModerateContent.Billing.Count != 3 {
+		t.Fatalf("moderation billing not preserved: %#v", results[1])
+	}
+
+	var empty decidev2.GuardResponse
+	if err := protojson.Unmarshal([]byte(`{"decision":{"ruleResults":[{"type":"GUARD_RULE_TYPE_PROMPT_INJECTION","promptInjection":{"billing":{}}}]}}`), &empty); err != nil {
+		t.Fatal(err)
+	}
+	if billing := guardDecisionFromProto(&empty).Results[0].PromptInjection.Billing; billing == nil || billing.Unit != "" || billing.Count != 0 {
+		t.Fatalf("present empty billing not preserved: %#v", billing)
+	}
+
+	var missing decidev2.GuardResponse
+	if err := protojson.Unmarshal([]byte(`{"decision":{"ruleResults":[{"type":"GUARD_RULE_TYPE_PROMPT_INJECTION","promptInjection":{}},{"type":"GUARD_RULE_TYPE_MODERATE_CONTENT","moderateContent":{}}]}}`), &missing); err != nil {
+		t.Fatal(err)
+	}
+	results = guardDecisionFromProto(&missing).Results
+	if results[0].PromptInjection.Billing != nil || results[1].ModerateContent.Billing != nil {
+		t.Fatalf("missing billing should remain nil: %#v", results)
 	}
 }
 
