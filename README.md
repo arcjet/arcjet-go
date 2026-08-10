@@ -945,6 +945,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -983,8 +984,15 @@ func GetWeather(ctx context.Context, userID, message string) error {
 		},
 	})
 	if err != nil {
-		// Guard fails open — log and continue.
-		return nil
+		log.Printf("arcjet guard: %v", err)
+	}
+	if decision.HasFailedOpen() {
+		// Guard itself fails open. This tool is sensitive, so fail closed.
+		return errors.New("guard unavailable; refusing to run the tool")
+	}
+	if err != nil {
+		// Programmer errors return no usable decision and must be handled.
+		return fmt.Errorf("guard could not evaluate request: %w", err)
 	}
 	if decision.IsDenied() {
 		// Use the per-rule accessor to recover details — rate limit reset
@@ -1007,6 +1015,25 @@ func GetWeather(ctx context.Context, userID, message string) error {
 > `"tools.get-weather"`, not `fmt.Sprintf("tools.%s", name)`. Hardcoded labels
 > stay greppable, and the dashboard groups by them. Interpolation produces a
 > sea of distinct-looking entries instead of one bucket per operation.
+
+`Guard()` is the low-level API and fails **open** on runtime degradation: it
+returns an `ALLOW` decision for which `HasFailedOpen()` is `true`. Go has no
+agent helper that flips this default, so applications wrapping sensitive tool
+calls or actions must gate manually on `HasFailedOpen()`, as in the example
+above.
+
+Unavailability is broader than an Arcjet Cloud outage. `HasFailedOpen()` also
+covers an incomplete remote policy, a deadline or transport failure, a missing
+or malformed decision, and a local or server-returned rule error. A transport
+or remote-policy preparation failure may return both the fail-open decision and
+a non-nil `error`; use the error for observability and `HasFailedOpen()` for the
+security outcome. Programmer errors instead return the zero-value decision and
+a non-nil error and must always be handled.
+
+A real `DENY` is a completed policy decision and is distinct from an
+unavailable evaluation. Applications commonly alert or retry when
+`HasFailedOpen()` is true, while handling a real denial without retrying the
+action.
 
 ### Remote Guard policies
 
@@ -1037,9 +1064,9 @@ entity types and offsets. The digest supports correlation; it is not
 anonymization and low-entropy values may still be guessable.
 
 Remote rule results are exposed through `decision.PolicyResults`, separately
-from positional SDK rule `decision.Results`. Check `decision.HasFailedOpen()`
-when your application must fail closed if a remote policy is incomplete or
-unavailable.
+from positional SDK rule `decision.Results`. `Guard()` remains fail open when a
+remote policy is incomplete or unavailable; check `decision.HasFailedOpen()`
+when your application must fail closed.
 
 ### Rate limiting
 
@@ -1116,6 +1143,15 @@ decision, err := guard.Guard(ctx, arcjet.GuardRequest{
 	Rules: []arcjet.GuardRuleInput{promptScan.Text(userMessage)},
 })
 
+if err != nil {
+	log.Printf("arcjet guard: %v", err)
+}
+if decision.HasFailedOpen() {
+	return errors.New("guard unavailable; refusing to send input to the model")
+}
+if err != nil {
+	return fmt.Errorf("guard could not evaluate request: %w", err)
+}
 if decision.IsDenied() && decision.Reason == arcjet.ReasonPromptInjection {
 	return errors.New("prompt injection detected")
 }
