@@ -231,28 +231,47 @@ func wirePolicyInputs(inputs map[string]GuardPolicyInput) (map[string]*decidev2.
 	return wire, values, local, nil
 }
 
-func (r *remotePolicyRuntime) prepare(ctx context.Context, label string, inputs map[string]GuardPolicyInput, force bool) (map[string]*decidev2.GuardPolicyInput, string, []*decidev2.GuardLocalPolicyResult, bool, error) {
+type preparedRemotePolicy struct {
+	inputs         map[string]*decidev2.GuardPolicyInput
+	revision       string
+	results        []*decidev2.GuardLocalPolicyResult
+	hasLocal       bool
+	sanitizeInputs bool
+	decision       *GuardDecision
+}
+
+func (r *remotePolicyRuntime) prepare(ctx context.Context, label string, inputs map[string]GuardPolicyInput, force bool) (preparedRemotePolicy, error) {
 	wire, values, hasLocal, err := wirePolicyInputs(inputs)
 	if err != nil {
-		return nil, "", nil, false, err
+		return preparedRemotePolicy{}, err
 	}
+	prepared := preparedRemotePolicy{inputs: wire, hasLocal: hasLocal}
 	if !hasLocal {
-		return wire, "", nil, false, nil
+		return prepared, nil
 	}
 	entry, err := r.get(ctx, label, force)
 	if err != nil {
-		return wire, "", nil, true, err
+		return prepared, err
 	}
 	if entry.policy == nil {
-		return wire, "", nil, true, nil
+		return prepared, nil
 	}
-	results := r.localResults(ctx, entry.policy, values)
-	return wire, entry.policy.GetRevision(), results, true, nil
+	results, sanitizeInputs, denied := r.localResults(ctx, entry.policy, values)
+	prepared.revision = entry.policy.GetRevision()
+	prepared.results = results
+	prepared.sanitizeInputs = sanitizeInputs
+	if denied {
+		d := localPolicyDenial(entry.policy, results)
+		prepared.decision = &d
+	}
+	return prepared, nil
 }
 
-func (r *remotePolicyRuntime) localResults(ctx context.Context, policy *decidev2.GuardLocalPolicyProjection, values map[string]policyInputValue) []*decidev2.GuardLocalPolicyResult {
+func (r *remotePolicyRuntime) localResults(ctx context.Context, policy *decidev2.GuardLocalPolicyProjection, values map[string]policyInputValue) ([]*decidev2.GuardLocalPolicyResult, bool, bool) {
 	rules := policy.GetSensitiveInfoRules()
 	results := make([]*decidev2.GuardLocalPolicyResult, 0, len(rules))
+	sanitizeInputs := false
+	denied := false
 	for _, rule := range rules {
 		v, ok := values[rule.GetInputName()]
 		if !ok || !v.local {
@@ -262,9 +281,60 @@ func (r *remotePolicyRuntime) localResults(ctx context.Context, policy *decidev2
 		if !ok {
 			continue
 		}
-		results = append(results, r.localResult(ctx, policy, rule, text))
+		if denied {
+			results = append(results, localPolicyNotRun(policy, rule, text))
+			continue
+		}
+		result := r.localResult(ctx, policy, rule, text)
+		results = append(results, result)
+		if result.GetLocalSensitiveInfo().GetConclusion() == decidev2.GuardConclusion_GUARD_CONCLUSION_DENY {
+			sanitizeInputs = true
+			if rule.GetMode() == decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE {
+				denied = true
+			}
+		}
 	}
-	return results
+	return results, sanitizeInputs, denied
+}
+
+func localPolicyNotRun(policy *decidev2.GuardLocalPolicyProjection, rule *decidev2.GuardLocalSensitiveInfoRule, text string) *decidev2.GuardLocalPolicyResult {
+	return &decidev2.GuardLocalPolicyResult{
+		PolicyId: policy.GetPolicyId(), PolicyRevision: policy.GetRevision(), RuleId: rule.GetRuleId(),
+		InputName: rule.GetInputName(), ValueSha256: localPolicyDigest(text), Type: decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO,
+		Result: &decidev2.GuardLocalPolicyResult_NotRun{NotRun: &decidev2.ResultNotRun{}},
+	}
+}
+
+func localPolicyDenial(policy *decidev2.GuardLocalPolicyProjection, results []*decidev2.GuardLocalPolicyResult) GuardDecision {
+	rules := make(map[string]*decidev2.GuardLocalSensitiveInfoRule, len(policy.GetSensitiveInfoRules()))
+	for _, rule := range policy.GetSensitiveInfoRules() {
+		rules[rule.GetRuleId()] = rule
+	}
+	decision := GuardDecision{
+		ID:               "",
+		Conclusion:       ConclusionDeny,
+		Reason:           ReasonSensitiveInfo,
+		PolicyEvaluation: &GuardPolicyEvaluation{Revision: policy.GetRevision(), Status: GuardPolicyStatusApplied},
+		PolicyResults:    make([]GuardPolicyResult, 0, len(results)),
+	}
+	for _, result := range results {
+		rule := rules[result.GetRuleId()]
+		wire := &decidev2.GuardPolicyRuleResult{
+			PolicyId: result.GetPolicyId(), PolicyRevision: result.GetPolicyRevision(), RuleId: result.GetRuleId(),
+			Type: result.GetType(), Mode: rule.GetMode(), Execution: decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SDK,
+			Source: decidev2.GuardRuleSource_GUARD_RULE_SOURCE_REMOTE,
+		}
+		switch value := result.GetResult().(type) {
+		case *decidev2.GuardLocalPolicyResult_LocalSensitiveInfo:
+			wire.Result = &decidev2.GuardPolicyRuleResult_LocalSensitiveInfo{LocalSensitiveInfo: value.LocalSensitiveInfo}
+		case *decidev2.GuardLocalPolicyResult_Error:
+			wire.Result = &decidev2.GuardPolicyRuleResult_Error{Error: value.Error}
+		case *decidev2.GuardLocalPolicyResult_NotRun:
+			wire.Result = &decidev2.GuardPolicyRuleResult_NotRun{NotRun: value.NotRun}
+		}
+		decision.PolicyResults = append(decision.PolicyResults, policyResultFromProto(wire))
+	}
+	return decision
 }
 
 func (r *remotePolicyRuntime) localResult(ctx context.Context, policy *decidev2.GuardLocalPolicyProjection, rule *decidev2.GuardLocalSensitiveInfoRule, text string) *decidev2.GuardLocalPolicyResult {

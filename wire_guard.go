@@ -62,6 +62,8 @@ type guardRuleResultWire struct {
 
 // GuardDecision is the result of a Guard evaluation.
 type GuardDecision struct {
+	// ID is the server decision ID. It is empty when best-effort reporting of a
+	// locally enforced decision fails.
 	ID         string
 	Conclusion Conclusion
 	Reason     ReasonType

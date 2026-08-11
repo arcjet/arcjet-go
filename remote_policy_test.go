@@ -155,7 +155,7 @@ func TestRemotePolicyFetchCancellationDoesNotCancelSharedFetch(t *testing.T) {
 func TestRemotePolicyFetchFailureIsCachedUnavailableWithoutFailingGuardPreparation(t *testing.T) {
 	client := &blockingPolicyClient{err: errors.New("unavailable")}
 	runtime := newRemotePolicyRuntime(client, "key", "ua", newLazyLocalEvaluator(nil), nil)
-	wire, revision, results, local, err := runtime.prepare(
+	prepared, err := runtime.prepare(
 		context.Background(),
 		"label",
 		map[string]GuardPolicyInput{"body": GuardPolicyLocalString("private")},
@@ -164,8 +164,8 @@ func TestRemotePolicyFetchFailureIsCachedUnavailableWithoutFailingGuardPreparati
 	if err != nil {
 		t.Fatalf("prepare error = %v", err)
 	}
-	if !local || revision != "" || len(results) != 0 || wire["body"].GetLocal() == nil {
-		t.Fatalf("prepared policy = wire:%#v revision:%q results:%#v local:%v", wire, revision, results, local)
+	if !prepared.hasLocal || prepared.decision != nil || prepared.revision != "" || len(prepared.results) != 0 || prepared.inputs["body"].GetLocal() == nil {
+		t.Fatalf("prepared policy = %#v", prepared)
 	}
 	if got := client.callCount(); got != 1 {
 		t.Fatalf("GetGuardPolicy calls = %d", got)
@@ -221,14 +221,14 @@ func TestRemotePolicyLocalEvidenceIsMinimalAndDeduplicated(t *testing.T) {
 		},
 		refreshAt: now.Add(time.Minute),
 	}
-	_, revision, results, _, err := runtime.prepare(context.Background(), "label", map[string]GuardPolicyInput{"body": GuardPolicyLocalString("private body")}, false)
+	prepared, err := runtime.prepare(context.Background(), "label", map[string]GuardPolicyInput{"body": GuardPolicyLocalString("private body")}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if revision != "revision-1" || len(results) != 1 {
-		t.Fatalf("revision/results = %q/%d", revision, len(results))
+	if prepared.revision != "revision-1" || len(prepared.results) != 1 {
+		t.Fatalf("revision/results = %q/%d", prepared.revision, len(prepared.results))
 	}
-	result := results[0]
+	result := prepared.results[0]
 	if result.GetPolicyId() != "policy-id" || result.GetRuleId() != "rule-id" || result.GetInputName() != "body" {
 		t.Fatalf("local evidence identity = %#v", result)
 	}

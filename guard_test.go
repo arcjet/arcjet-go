@@ -3,6 +3,7 @@ package arcjet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ type testGuardHandler struct {
 	header          http.Header
 	resp            *decidev2.GuardResponse
 	guardResponses  []*decidev2.GuardResponse
+	guardErrors     []error
 	policyResponses []*decidev2.GetGuardPolicyResponse
 	guardCalls      int
 	policyCalls     int
@@ -34,6 +36,9 @@ func (h *testGuardHandler) Guard(ctx context.Context, req *connect.Request[decid
 	h.seenRequests = append(h.seenRequests, proto.Clone(req.Msg).(*decidev2.GuardRequest))
 	h.header = req.Header()
 	h.guardCalls++
+	if len(h.guardErrors) >= h.guardCalls && h.guardErrors[h.guardCalls-1] != nil {
+		return nil, h.guardErrors[h.guardCalls-1]
+	}
 	if h.errToReturn != nil {
 		return nil, h.errToReturn
 	}
@@ -254,6 +259,326 @@ func TestGuardRefreshesRemotePolicyAndRetriesExactlyOnce(t *testing.T) {
 	}
 	if len(handler.seenRequests) != 2 || handler.seenRequests[0].GetLocalPolicyRevision() != "rev-1" || handler.seenRequests[1].GetLocalPolicyRevision() != "rev-2" {
 		t.Fatalf("request revisions = %#v", handler.seenRequests)
+	}
+}
+
+func projectedSensitiveInfoPolicy(revision string, modes ...decidev2.GuardRuleMode) *decidev2.GetGuardPolicyResponse {
+	rules := make([]*decidev2.GuardLocalSensitiveInfoRule, len(modes))
+	for i, mode := range modes {
+		rules[i] = &decidev2.GuardLocalSensitiveInfoRule{
+			RuleId: fmt.Sprintf("rule-%d", i+1), InputName: "body", Mode: mode,
+			EntityFilter: &decidev2.GuardLocalSensitiveInfoRule_EntitiesDeny{EntitiesDeny: &decidev2.EntityList{Entities: []string{"EMAIL"}}},
+		}
+	}
+	return &decidev2.GetGuardPolicyResponse{
+		Status: decidev2.GuardPolicyLookupStatus_GUARD_POLICY_LOOKUP_STATUS_AVAILABLE,
+		Policy: &decidev2.GuardLocalPolicyProjection{PolicyId: "policy", Revision: revision, SensitiveInfoRules: rules},
+	}
+}
+
+func TestGuardLiveProjectedSensitiveInfoDenialUsesSanitizedGuardRPC(t *testing.T) {
+	handler := &testGuardHandler{
+		policyResponses: []*decidev2.GetGuardPolicyResponse{
+			projectedSensitiveInfoPolicy("rev-1", decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE, decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE),
+		},
+		resp: &decidev2.GuardResponse{Decision: &decidev2.GuardDecision{
+			Id: "server-denial", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+			Reason: decidev2.GuardReason_GUARD_REASON_SENSITIVE_INFO,
+			PolicyRuleResults: []*decidev2.GuardPolicyRuleResult{
+				{
+					PolicyId: "policy", PolicyRevision: "rev-1", RuleId: "rule-1",
+					Type: decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO, Mode: decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE,
+					Execution: decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SDK, Source: decidev2.GuardRuleSource_GUARD_RULE_SOURCE_REMOTE,
+					Result: &decidev2.GuardPolicyRuleResult_LocalSensitiveInfo{LocalSensitiveInfo: &decidev2.ResultLocalSensitiveInfo{
+						Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY, Detected: true, DetectedEntityTypes: []string{"EMAIL"},
+					}},
+				},
+				{
+					PolicyId: "policy", PolicyRevision: "rev-1", RuleId: "rule-2",
+					Type: decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO, Mode: decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE,
+					Execution: decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SDK, Source: decidev2.GuardRuleSource_GUARD_RULE_SOURCE_REMOTE,
+					Result: &decidev2.GuardPolicyRuleResult_NotRun{NotRun: &decidev2.ResultNotRun{}},
+				},
+			},
+		}},
+	}
+	client, _ := newGuardTestClient(t, handler)
+	client.policy.backend = policySensitiveInfoBackend{}
+
+	customCalls := 0
+	custom, err := GuardCustom(GuardCustomOptions{
+		Mode: ModeLive,
+		Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
+			customCalls++
+			return GuardCustomResult{Conclusion: ConclusionAllow}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	actor := "sensitive-actor"
+	decision, err := client.Guard(context.Background(), GuardRequest{
+		Label:         "message.send",
+		Actor:         &actor,
+		CorrelationId: "sensitive-correlation",
+		Inputs: map[string]GuardPolicyInput{
+			"body":   GuardPolicyLocalString("secret user@example.com"),
+			"server": GuardPolicyServerString("must not be transported"),
+		},
+		Metadata: Metadata{"retained": "metadata-marker", "invalid": make(chan int)},
+		Rules:    []GuardRuleInput{custom.Input(map[string]string{"side_effect": "must not run"})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.IsDenied() || decision.ID != "server-denial" || handler.guardCalls != 1 || customCalls != 0 {
+		t.Fatalf("decision/Guard/custom calls = %#v/%d/%d", decision, handler.guardCalls, customCalls)
+	}
+	seen := handler.seen
+	if len(seen.GetRuleSubmissions()) != 0 || seen.GetActor() != actor || seen.GetMetadataJson()["retained"] != `"metadata-marker"` || seen.GetCorrelationId() != "sensitive-correlation" || seen.GetUserAgent() == "" || seen.GetLabel() != "message.send" || seen.LocalEvalDurationMs == nil || seen.SentAtUnixMs == nil {
+		t.Fatalf("normal denial envelope = %#v", seen)
+	}
+	if len(seen.GetPolicyInputs()) != 1 || seen.GetPolicyInputs()["body"].GetLocal() == nil || seen.GetPolicyInputs()["server"] != nil {
+		t.Fatalf("sanitized policy inputs = %#v", seen.GetPolicyInputs())
+	}
+	if seen.GetLocalPolicyRevision() != "rev-1" || len(seen.GetLocalPolicyResults()) != 2 || len(seen.GetPolicyCapabilities()) != 2 {
+		t.Fatalf("local policy evidence = %#v", seen)
+	}
+	if len(seen.GetLocalWarnings()) != 1 {
+		t.Fatalf("reported metadata warnings = %#v", seen.GetLocalWarnings())
+	}
+	if len(decision.PolicyResults) != 2 || decision.PolicyResults[0].LocalSensitiveInfo == nil || !decision.PolicyResults[1].NotRun || decision.PolicyResults[0].Source != GuardRuleSourceRemote || decision.PolicyResults[1].Source != GuardRuleSourceRemote {
+		t.Fatalf("sequential policy results = %#v", decision.PolicyResults)
+	}
+	if len(decision.Warnings) != 1 {
+		t.Fatalf("envelope metadata warnings = %#v", decision.Warnings)
+	}
+}
+
+func TestGuardRefreshLiveProjectedSensitiveInfoSanitizesRetry(t *testing.T) {
+	handler := &testGuardHandler{
+		policyResponses: []*decidev2.GetGuardPolicyResponse{
+			projectedSensitiveInfoPolicy("rev-1"),
+			projectedSensitiveInfoPolicy("rev-2", decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE),
+		},
+		guardResponses: []*decidev2.GuardResponse{
+			{Decision: &decidev2.GuardDecision{
+				Id: "first", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+				PolicyEvaluation: &decidev2.GuardPolicyEvaluation{Revision: "rev-2", Status: decidev2.GuardPolicyStatus_GUARD_POLICY_STATUS_INCOMPLETE, RefreshRequired: true},
+			}},
+			{Decision: &decidev2.GuardDecision{Id: "refresh-denial", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY}},
+		},
+	}
+	client, _ := newGuardTestClient(t, handler)
+	client.policy.backend = policySensitiveInfoBackend{}
+
+	custom, err := GuardCustom(GuardCustomOptions{Mode: ModeLive, Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
+		return GuardCustomResult{Conclusion: ConclusionAllow}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := "sensitive-actor"
+	decision, err := client.Guard(context.Background(), GuardRequest{
+		Label:         "message.send",
+		Actor:         &actor,
+		CorrelationId: "sensitive-correlation",
+		Inputs: map[string]GuardPolicyInput{
+			"body": GuardPolicyLocalString("secret user@example.com"), "server": GuardPolicyServerString("raw secret"),
+		},
+		Metadata: Metadata{"retained": "metadata-marker"},
+		Rules:    []GuardRuleInput{custom.Input(nil)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.IsDenied() || decision.ID != "refresh-denial" || handler.guardCalls != 2 || handler.policyCalls != 2 {
+		t.Fatalf("decision/Guard/policy calls = %#v/%d/%d", decision, handler.guardCalls, handler.policyCalls)
+	}
+	second := handler.seenRequests[1]
+	if len(second.GetRuleSubmissions()) != 1 || second.GetMetadataJson()["retained"] != `"metadata-marker"` || second.GetActor() != actor || second.GetCorrelationId() != "sensitive-correlation" || second.GetPolicyInputs()["server"] != nil || second.GetPolicyInputs()["body"].GetLocal() == nil {
+		t.Fatalf("sanitized refresh request = %#v", second)
+	}
+}
+
+func TestGuardLiveProjectedSensitiveInfoReportingFailurePreservesDenial(t *testing.T) {
+	handler := &testGuardHandler{
+		policyResponses: []*decidev2.GetGuardPolicyResponse{projectedSensitiveInfoPolicy("rev-1", decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE)},
+		errToReturn:     errors.New("offline"),
+	}
+	client, _ := newGuardTestClient(t, handler)
+	client.policy.backend = policySensitiveInfoBackend{}
+	decision, err := client.Guard(context.Background(), GuardRequest{Label: "message.send", Inputs: map[string]GuardPolicyInput{"body": GuardPolicyLocalString("user@example.com")}})
+	if err == nil || !decision.IsDenied() || decision.ID != "" || handler.guardCalls != 1 {
+		t.Fatalf("decision/error/calls = %#v/%v/%d", decision, err, handler.guardCalls)
+	}
+}
+
+func TestGuardLiveProjectedSensitiveInfoRejectsIncompleteReportingResponse(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		resp *decidev2.GuardResponse
+	}{
+		{name: "missing decision", resp: &decidev2.GuardResponse{}},
+		{name: "missing decision ID", resp: &decidev2.GuardResponse{Decision: &decidev2.GuardDecision{Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := &testGuardHandler{
+				policyResponses: []*decidev2.GetGuardPolicyResponse{projectedSensitiveInfoPolicy("rev-1", decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE)},
+				resp:            test.resp,
+			}
+			client, _ := newGuardTestClient(t, handler)
+			client.policy.backend = policySensitiveInfoBackend{}
+			decision, err := client.Guard(context.Background(), GuardRequest{Label: "message.send", Inputs: map[string]GuardPolicyInput{"body": GuardPolicyLocalString("user@example.com")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !decision.IsDenied() || decision.ID != "" {
+				t.Fatalf("decision = %#v", decision)
+			}
+		})
+	}
+}
+
+func TestGuardRefreshLiveProjectedSensitiveInfoRejectsIncompleteReportingResponse(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		resp *decidev2.GuardResponse
+	}{
+		{name: "missing decision", resp: &decidev2.GuardResponse{}},
+		{name: "missing decision ID", resp: &decidev2.GuardResponse{Decision: &decidev2.GuardDecision{Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := &testGuardHandler{
+				policyResponses: []*decidev2.GetGuardPolicyResponse{
+					projectedSensitiveInfoPolicy("rev-1"),
+					projectedSensitiveInfoPolicy("rev-2", decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE),
+				},
+				guardResponses: []*decidev2.GuardResponse{
+					{Decision: &decidev2.GuardDecision{Id: "first", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW, PolicyEvaluation: &decidev2.GuardPolicyEvaluation{RefreshRequired: true}}},
+					test.resp,
+				},
+			}
+			client, _ := newGuardTestClient(t, handler)
+			client.policy.backend = policySensitiveInfoBackend{}
+			decision, err := client.Guard(context.Background(), GuardRequest{Label: "message.send", Inputs: map[string]GuardPolicyInput{"body": GuardPolicyLocalString("user@example.com")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !decision.IsDenied() || decision.ID != "" || handler.guardCalls != 2 {
+				t.Fatalf("decision/calls = %#v/%d", decision, handler.guardCalls)
+			}
+		})
+	}
+}
+
+func TestGuardDryRunProjectedSensitiveInfoContinuesToGuardRPC(t *testing.T) {
+	handler := &testGuardHandler{
+		policyResponses: []*decidev2.GetGuardPolicyResponse{projectedSensitiveInfoPolicy("rev-1", decidev2.GuardRuleMode_GUARD_RULE_MODE_DRY_RUN, decidev2.GuardRuleMode_GUARD_RULE_MODE_DRY_RUN)},
+		resp:            &decidev2.GuardResponse{Decision: &decidev2.GuardDecision{Id: "server", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW}},
+	}
+	client, _ := newGuardTestClient(t, handler)
+	client.policy.backend = policySensitiveInfoBackend{}
+
+	customCalls := 0
+	custom, err := GuardCustom(GuardCustomOptions{Mode: ModeLive, Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
+		customCalls++
+		return GuardCustomResult{Conclusion: ConclusionAllow}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := client.Guard(context.Background(), GuardRequest{
+		Label: "message.send", Inputs: map[string]GuardPolicyInput{
+			"body": GuardPolicyLocalString("secret user@example.com"), "server": GuardPolicyServerString("server-policy-marker"),
+		}, Metadata: Metadata{"retained": "metadata-marker"}, Rules: []GuardRuleInput{custom.Input(nil)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.ID != "server" || handler.guardCalls != 1 || customCalls != 1 {
+		t.Fatalf("decision/Guard calls = %#v/%d", decision, handler.guardCalls)
+	}
+	if handler.seen.GetPolicyInputs()["server"] != nil || handler.seen.GetPolicyInputs()["body"].GetLocal() == nil || handler.seen.GetMetadataJson()["retained"] != `"metadata-marker"` || len(handler.seen.GetRuleSubmissions()) != 1 {
+		t.Fatalf("dry-run request = %#v", handler.seen)
+	}
+	if got := handler.seen.GetLocalPolicyResults(); len(got) != 2 || got[0].GetLocalSensitiveInfo().GetConclusion() != decidev2.GuardConclusion_GUARD_CONCLUSION_DENY || got[1].GetLocalSensitiveInfo().GetConclusion() != decidev2.GuardConclusion_GUARD_CONCLUSION_DENY {
+		t.Fatalf("dry-run local results = %#v", got)
+	}
+}
+
+func TestGuardRefreshDryRunProjectedSensitiveInfoSanitizesRetry(t *testing.T) {
+	handler := &testGuardHandler{
+		policyResponses: []*decidev2.GetGuardPolicyResponse{
+			projectedSensitiveInfoPolicy("rev-1"),
+			projectedSensitiveInfoPolicy("rev-2", decidev2.GuardRuleMode_GUARD_RULE_MODE_DRY_RUN),
+		},
+		guardResponses: []*decidev2.GuardResponse{
+			{Decision: &decidev2.GuardDecision{Id: "first", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW, PolicyEvaluation: &decidev2.GuardPolicyEvaluation{RefreshRequired: true}}},
+			{Decision: &decidev2.GuardDecision{Id: "ordinary-retry", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW}},
+		},
+	}
+	client, _ := newGuardTestClient(t, handler)
+	client.policy.backend = policySensitiveInfoBackend{}
+	decision, err := client.Guard(context.Background(), GuardRequest{Label: "message.send", Inputs: map[string]GuardPolicyInput{
+		"body": GuardPolicyLocalString("user@example.com"), "server": GuardPolicyServerString("server-policy-marker"),
+	}, Metadata: Metadata{"retained": "metadata-marker"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := handler.seenRequests[1]
+	if decision.ID != "ordinary-retry" || second.GetPolicyInputs()["server"] != nil || second.GetPolicyInputs()["body"].GetLocal() == nil || second.GetMetadataJson()["retained"] != `"metadata-marker"` {
+		t.Fatalf("decision/retry = %#v/%#v", decision, second)
+	}
+}
+
+func TestGuardRefreshKeepsInitialDryRunSanitizationSticky(t *testing.T) {
+	handler := &testGuardHandler{
+		policyResponses: []*decidev2.GetGuardPolicyResponse{
+			projectedSensitiveInfoPolicy("rev-1", decidev2.GuardRuleMode_GUARD_RULE_MODE_DRY_RUN),
+			projectedSensitiveInfoPolicy("rev-2"),
+		},
+		guardResponses: []*decidev2.GuardResponse{
+			{Decision: &decidev2.GuardDecision{Id: "first", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW, PolicyEvaluation: &decidev2.GuardPolicyEvaluation{RefreshRequired: true}}},
+			{Decision: &decidev2.GuardDecision{Id: "ordinary-retry", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW}},
+		},
+	}
+	client, _ := newGuardTestClient(t, handler)
+	client.policy.backend = policySensitiveInfoBackend{}
+	custom, err := GuardCustom(GuardCustomOptions{Mode: ModeLive, Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
+		return GuardCustomResult{Conclusion: ConclusionAllow}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := client.Guard(context.Background(), GuardRequest{
+		Label: "message.send",
+		Inputs: map[string]GuardPolicyInput{
+			"body": GuardPolicyLocalString("user@example.com"), "server": GuardPolicyServerString("server-policy-marker"),
+		},
+		Metadata: Metadata{"retained": "metadata-marker"},
+		Rules:    []GuardRuleInput{custom.Input(nil)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.ID != "ordinary-retry" || decision.IsDenied() || handler.guardCalls != 2 {
+		t.Fatalf("decision/calls = %#v/%d", decision, handler.guardCalls)
+	}
+	for i, seen := range handler.seenRequests {
+		if seen.GetPolicyInputs()["server"] != nil || seen.GetPolicyInputs()["body"].GetLocal() == nil {
+			t.Fatalf("request %d restored server input: %#v", i+1, seen.GetPolicyInputs())
+		}
+		if seen.GetMetadataJson()["retained"] != `"metadata-marker"` || len(seen.GetRuleSubmissions()) != 1 {
+			t.Fatalf("request %d lost envelope/submissions: %#v", i+1, seen)
+		}
+	}
+	if got := handler.seenRequests[0].GetLocalPolicyResults(); len(got) != 1 || got[0].GetLocalSensitiveInfo().GetConclusion() != decidev2.GuardConclusion_GUARD_CONCLUSION_DENY {
+		t.Fatalf("initial dry-run detection = %#v", got)
+	}
+	if got := handler.seenRequests[1].GetLocalPolicyResults(); len(got) != 0 {
+		t.Fatalf("refreshed no-detection results = %#v", got)
 	}
 }
 
