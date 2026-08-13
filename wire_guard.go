@@ -182,6 +182,7 @@ type GuardPromptResult struct {
 }
 
 // GuardModerateContentResult contains Guard content moderation result details.
+// Detected is the binary verdict; Billing is optional usage in text_units.
 type GuardModerateContentResult struct {
 	Conclusion Conclusion         `json:"conclusion"`
 	Detected   bool               `json:"detected"`

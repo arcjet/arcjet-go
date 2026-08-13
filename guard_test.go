@@ -325,7 +325,7 @@ func TestGuardRuleBuilders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	moderate, err := ExperimentalGuardModerateContent(ExperimentalGuardModerateContentOptions{Mode: ModeLive})
+	moderate, err := GuardModerateContent(GuardModerateContentOptions{Mode: ModeLive})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -613,8 +613,8 @@ func TestGuardPromptInjectionResultAccessors(t *testing.T) {
 	}
 }
 
-func TestExperimentalGuardModerateContentResultAccessors(t *testing.T) {
-	rule, err := ExperimentalGuardModerateContent(ExperimentalGuardModerateContentOptions{Mode: ModeLive})
+func TestGuardModerateContentResultAccessors(t *testing.T) {
+	rule, err := GuardModerateContent(GuardModerateContentOptions{Mode: ModeLive})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,6 +624,16 @@ func TestExperimentalGuardModerateContentResultAccessors(t *testing.T) {
 	}}
 	if rule.Result(d) != mc || rule.DeniedResult(d) != mc {
 		t.Error("moderate content accessors did not return result")
+	}
+}
+
+func TestExperimentalGuardModerateContentDeprecatedAlias(t *testing.T) {
+	rule, err := ExperimentalGuardModerateContent(ExperimentalGuardModerateContentOptions{Mode: ModeLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule == nil {
+		t.Fatal("deprecated alias must return a GuardModerateContentRule")
 	}
 }
 
@@ -735,7 +745,7 @@ func TestGuardErrorResultAcrossRuleTypes(t *testing.T) {
 	fw, _ := GuardFixedWindow(GuardFixedWindowOptions{Mode: ModeLive, Window: time.Minute, MaxRequests: 10})
 	sw, _ := GuardSlidingWindow(GuardSlidingWindowOptions{Mode: ModeLive, Interval: time.Minute, MaxRequests: 10})
 	pi, _ := GuardPromptInjection(GuardPromptInjectionOptions{Mode: ModeLive})
-	mc, _ := ExperimentalGuardModerateContent(ExperimentalGuardModerateContentOptions{Mode: ModeLive})
+	mc, _ := GuardModerateContent(GuardModerateContentOptions{Mode: ModeLive})
 	si, _ := GuardSensitiveInfo(GuardSensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}})
 	cr, _ := GuardCustom(GuardCustomOptions{
 		Mode: ModeLive,

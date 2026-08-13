@@ -200,6 +200,7 @@ double-counting traffic.
 | --- | :---: | :---: |
 | Rate Limiting | ✅ | ✅ |
 | Prompt Injection Detection | ✅ | ✅ |
+| Content Moderation | — | ✅ |
 | Sensitive Information Detection | ✅ | ✅ |
 | Bot Protection | ✅ | — |
 | Shield WAF | ✅ | — |
@@ -230,7 +231,7 @@ double-counting traffic.
 | If your app has...      | Recommended features                                                                                                  |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | LLM / AI chat endpoints | Prompt injection + token bucket rate limit + bot protection + shield                                                  |
-| AI agent tool calls     | [Arcjet Guard](#arcjet-guard) — rate limiting + prompt injection + custom rules                                       |
+| AI agent tool calls     | [Arcjet Guard](#arcjet-guard) — rate limiting + prompt injection + content moderation + custom rules                   |
 | MCP servers             | [Arcjet Guard](#arcjet-guard) — tool calls run over stdio/SSE, not HTTP, so use guard rules at each tool call site    |
 | Background jobs/workers | [Arcjet Guard](#arcjet-guard) — no HTTP request at the protection site                                                |
 | Public API              | Rate limiting + bot protection + shield                                                                               |
@@ -925,7 +926,8 @@ Available fields include geolocation (`Latitude`, `Longitude`, `City`,
 `arcjet.NewGuardClient` is a lower-level API designed for AI agent tool calls
 and background tasks where there is no HTTP request object. It gives you
 fine-grained, per-call control over rate limiting, prompt injection detection,
-sensitive information detection (via `GuardSensitiveInfo`), and custom rules.
+content moderation (via `GuardModerateContent`), sensitive information
+detection (via `GuardSensitiveInfo`), and custom rules.
 
 ### How it differs from `NewClient`
 
@@ -1103,9 +1105,36 @@ if result := promptScan.Result(decision); result != nil && result.Billing != nil
 }
 ```
 
-Guard prompt injection billing uses the `tokens` unit, while content moderation
-billing uses `text_units`. Billing is a pointer and can be nil when usage data
-is not returned; check it before reading `Unit` or `Count`.
+Guard prompt injection billing uses the `tokens` unit. Billing is a pointer and
+can be nil when usage data is not returned; check it before reading `Unit` or
+`Count`.
+
+### Content moderation
+
+Use on untrusted text to detect and block disallowed content before it reaches a
+model, tool, or user-facing output.
+
+```go
+moderation, err := arcjet.GuardModerateContent(arcjet.GuardModerateContentOptions{Mode: arcjet.ModeLive})
+
+decision, err := guard.Guard(ctx, arcjet.GuardRequest{
+	Label: "tools.generate",
+	Rules: []arcjet.GuardRuleInput{moderation.Text(userMessage)},
+})
+
+if decision.IsDenied() && decision.Reason == arcjet.ReasonModerateContent {
+	return errors.New("content flagged by moderation")
+}
+
+// Billing is optional. Content moderation usage is measured in text_units.
+if result := moderation.Result(decision); result != nil && result.Billing != nil {
+	fmt.Printf("charged %d %s\n", result.Billing.Count, result.Billing.Unit)
+}
+```
+
+The result is a binary `Detected` verdict plus optional `Billing` in
+`text_units`. Billing is a pointer and can be nil when usage data is not
+returned; check it before reading `Unit` or `Count`.
 
 ### Custom rules
 
@@ -1154,6 +1183,8 @@ for _, result := range decision.Results {
 			result.TokenBucket.ResetAtUnixSeconds)
 	case result.PromptInjection != nil:
 		log.Printf("prompt injection detected=%v", result.PromptInjection.Detected)
+	case result.ModerateContent != nil:
+		log.Printf("content moderation detected=%v", result.ModerateContent.Detected)
 	case result.LocalSensitiveInfo != nil:
 		log.Printf("sensitive info detected=%v types=%v",
 			result.LocalSensitiveInfo.Detected,
