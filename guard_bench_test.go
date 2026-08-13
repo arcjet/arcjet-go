@@ -24,6 +24,10 @@ func (h *benchGuardHandler) Guard(_ context.Context, _ *connect.Request[decidev2
 	return connect.NewResponse(h.resp), nil
 }
 
+func (h *benchGuardHandler) Capture(_ context.Context, _ *connect.Request[decidev2.CaptureRequest]) (*connect.Response[decidev2.CaptureResponse], error) {
+	return connect.NewResponse(&decidev2.CaptureResponse{}), nil
+}
+
 func newBenchGuardClient(b *testing.B) *GuardClient {
 	b.Helper()
 	handler := &benchGuardHandler{resp: &decidev2.GuardResponse{

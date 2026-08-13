@@ -60,12 +60,14 @@ func TestConnectRoutesArePinnedToCanonicalWire(t *testing.T) {
 		"report":       decidev1alpha1connect.DecideServiceReportProcedure,
 		"guard":        decidev2connect.DecideServiceGuardProcedure,
 		"guard-policy": decidev2connect.DecideServiceGetGuardPolicyProcedure,
+		"capture":      decidev2connect.DecideServiceCaptureProcedure,
 	}
 	want := map[string]string{
 		"decide":       "/proto.decide.v1alpha1.DecideService/Decide",
 		"report":       "/proto.decide.v1alpha1.DecideService/Report",
 		"guard":        "/proto.decide.v2.DecideService/Guard",
 		"guard-policy": "/proto.decide.v2.DecideService/GetGuardPolicy",
+		"capture":      "/proto.decide.v2.DecideService/Capture",
 	}
 	for name, got := range routes {
 		if got != want[name] {

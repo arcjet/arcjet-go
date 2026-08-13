@@ -928,6 +928,8 @@ and background tasks where there is no HTTP request object. It gives you
 fine-grained, per-call control over rate limiting, prompt injection detection,
 content moderation (via `GuardModerateContent`), sensitive information
 detection (via `GuardSensitiveInfo`), and custom rules.
+Use `Capture` to record what the application did after a Guard call — visibility
+data, never a security decision.
 
 ### How it differs from `NewClient`
 
@@ -1365,6 +1367,52 @@ for _, w := range decision.Warnings {
 | `Label` | `string` | Hardcoded label identifying this guard call (required) |
 | `Metadata` | `arcjet.Metadata` | Optional structured metadata — see [Metadata](#metadata) |
 | `CorrelationId` | `string` | Opaque id correlating this call with other `Guard`/`Protect` calls |
+
+### Capture
+
+Use `Capture` to record a fact about what your application did. Captures are
+visibility data, never security decisions — they do not affect `Guard` or
+`Protect` conclusions, and they never set `HasFailedOpen()`.
+
+```go
+guard.Capture(arcjet.CaptureEvent{
+	Action:        "refund.issued", // resource.verb, past tense
+	CorrelationId: runID,
+	DecisionId:    decision.ID,
+	Metadata: arcjet.Metadata{
+		"invoice":  map[string]any{"id": "inv_123", "amount": 4200},
+		"refunded": true,
+	},
+})
+```
+
+`Action` is required. Convention is `"resource.verb"` in the past tense
+(for example `"refund.issued"`). An empty action drops the event. Optional
+fields: `CorrelationId`, `DecisionId`, `Metadata`, and `OccurredAt` (zero
+means now). Every event is sent with source `"sdk"`.
+
+Capture is best-effort and never blocks or returns an error. The SDK keeps a
+bounded in-memory queue (1000 events), sends batches of up to 50 on size or a
+100 ms delay, drops the newest event when the queue is full, and never retries
+a failed batch.
+
+Call `Flush` during graceful shutdown so the final batch is not lost:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+defer cancel()
+guard.Flush(ctx) // one-second deadline if ctx has none
+_ = guard.Close(ctx)
+```
+
+`Flush` is optional, repeatable, and does not close the client. If its
+deadline expires, remaining events belonging to that flush are dropped and
+the client stays usable. `Close` flushes first, then releases local wasm.
+
+Metadata has the same nested-JSON shape and limits as `Guard`. A dropped key
+travels with the event as `local_warnings`. A capture that is dropped before
+it is sent (empty action, full queue) can only be observed locally — there is
+no decision to carry a warning.
 
 ### Metadata
 

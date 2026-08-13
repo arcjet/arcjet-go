@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -53,6 +54,13 @@ type GuardClient struct {
 	userAgent   string
 	local       *localEvaluator
 	policy      *remotePolicyRuntime
+
+	deliveryMu        sync.Mutex
+	delivery          *captureDelivery
+	diagnose          captureDiagnose
+	captureQueueSize  int
+	captureBatchSize  int
+	captureBatchDelay time.Duration
 }
 
 // NewGuardClient creates a reusable Guard client.
@@ -89,12 +97,14 @@ func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 	return client, nil
 }
 
-// Close releases the locally-compiled wasm factory, if any. Safe to call
-// even if no local Guard rule was ever used.
+// Close flushes any buffered capture events, then releases the
+// locally-compiled wasm factory, if any. Safe to call even if no local
+// Guard rule was ever used and nothing was captured.
 func (c *GuardClient) Close(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
+	c.Flush(ctx)
 	return c.local.close(ctx)
 }
 

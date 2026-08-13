@@ -18,7 +18,9 @@
 // like fmt.Sprintf("tools.%s", name), which defeats dashboard grouping. Each
 // rate-limit rule needs an explicit Key at call time; when there is no user
 // context (e.g. a stdio MCP server), pick a stable identifier such as the
-// deployment name rather than an empty string.
+// deployment name rather than an empty string. Call GuardClient.Capture to
+// record what the application did; it is best-effort visibility and never
+// changes a Guard or Protect decision. Call Flush during graceful shutdown.
 //
 // Arcjet is designed to fail open: if the service is unavailable, Protect and
 // Guard return an error and the caller should continue serving.
