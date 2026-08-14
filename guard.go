@@ -771,15 +771,8 @@ func (r *GuardPromptInjectionRule) ErrorResult(d GuardDecision) *ArcjetError {
 	return nil
 }
 
-// ExperimentalGuardModerateContentOptions configures a Guard content
-// moderation rule.
-//
-// Experimental: the rule name and result shape may change. This functionality
-// may not be available yet, so while this rule is experimental a call may
-// simply return an error result. Errors are fail open, so the decision reports
-// an error while the conclusion stays ALLOW. Check the latest version of this
-// SDK to see whether the rule is now stable.
-type ExperimentalGuardModerateContentOptions struct {
+// GuardModerateContentOptions configures a Guard content moderation rule.
+type GuardModerateContentOptions struct {
 	// Mode controls whether the rule enforces denials or only reports them.
 	Mode Mode
 	// Label identifies this rule in the Arcjet dashboard.
@@ -789,33 +782,22 @@ type ExperimentalGuardModerateContentOptions struct {
 	Metadata Metadata
 }
 
-// ExperimentalGuardModerateContentRule is a configured Guard content
-// moderation rule.
-//
-// Experimental: see [ExperimentalGuardModerateContent].
-type ExperimentalGuardModerateContentRule struct {
+// GuardModerateContentRule is a configured Guard content moderation rule.
+type GuardModerateContentRule struct {
 	base guardRuleBase
 }
 
-// ExperimentalGuardModerateContent creates a Guard content moderation rule.
-//
-// Experimental: the rule name and result shape may change, and the name is
-// deliberately prefixed to make that clear. This functionality may not be
-// available yet, so while this rule is experimental a call may simply return
-// an error result. Errors are fail open, so the conclusion stays ALLOW and
-// [GuardDecision.HasFailedOpen] reports true (inspect the errored result with
-// [GuardDecision.ErrorResults]). Check the latest version of this SDK to see
-// whether the rule is now stable.
-func ExperimentalGuardModerateContent(opts ExperimentalGuardModerateContentOptions) (*ExperimentalGuardModerateContentRule, error) {
+// GuardModerateContent creates a Guard content moderation rule.
+func GuardModerateContent(opts GuardModerateContentOptions) (*GuardModerateContentRule, error) {
 	base, err := newGuardRuleBase(opts.Mode, opts.Label, opts.Metadata)
 	if err != nil {
 		return nil, err
 	}
-	return &ExperimentalGuardModerateContentRule{base: base}, nil
+	return &GuardModerateContentRule{base: base}, nil
 }
 
 // Text binds text to moderate for one Guard call.
-func (r *ExperimentalGuardModerateContentRule) Text(text string) GuardRuleInput {
+func (r *GuardModerateContentRule) Text(text string) GuardRuleInput {
 	return guardRuleInputFunc(func(_ context.Context, _ *localEvaluator) (guardRuleSubmissionWire, error) {
 		return r.base.submission(map[string]any{"moderateContent": map[string]any{
 			"inputText": text,
@@ -825,7 +807,7 @@ func (r *ExperimentalGuardModerateContentRule) Text(text string) GuardRuleInput 
 
 // Result returns this rule's content moderation result from the given Guard
 // decision, or nil if the rule did not produce one.
-func (r *ExperimentalGuardModerateContentRule) Result(d GuardDecision) *GuardModerateContentResult {
+func (r *GuardModerateContentRule) Result(d GuardDecision) *GuardModerateContentResult {
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.Error == nil && res.ModerateContent != nil {
 			return res.ModerateContent
@@ -836,7 +818,7 @@ func (r *ExperimentalGuardModerateContentRule) Result(d GuardDecision) *GuardMod
 
 // DeniedResult returns this rule's content moderation result if it denied the
 // Guard call, or nil otherwise.
-func (r *ExperimentalGuardModerateContentRule) DeniedResult(d GuardDecision) *GuardModerateContentResult {
+func (r *GuardModerateContentRule) DeniedResult(d GuardDecision) *GuardModerateContentResult {
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.IsDenied() && res.ModerateContent != nil {
 			return res.ModerateContent
@@ -847,15 +829,34 @@ func (r *ExperimentalGuardModerateContentRule) DeniedResult(d GuardDecision) *Gu
 
 // ErrorResult returns this rule's error if it failed to evaluate, or nil
 // otherwise. Errors are fail-open, so an errored rule never surfaces through
-// Result or DeniedResult — this is the only accessor that returns it. While
-// this rule is experimental a call may simply return an error result.
-func (r *ExperimentalGuardModerateContentRule) ErrorResult(d GuardDecision) *ArcjetError {
+// Result or DeniedResult — this is the only accessor that returns it.
+func (r *GuardModerateContentRule) ErrorResult(d GuardDecision) *ArcjetError {
 	for _, res := range d.Results {
 		if res.ConfigID == r.base.configID && res.Error != nil {
 			return res.Error
 		}
 	}
 	return nil
+}
+
+// ExperimentalGuardModerateContentOptions is a deprecated alias of
+// [GuardModerateContentOptions].
+//
+// Deprecated: use [GuardModerateContentOptions]. This alias will be removed in 1.0.
+type ExperimentalGuardModerateContentOptions = GuardModerateContentOptions
+
+// ExperimentalGuardModerateContentRule is a deprecated alias of
+// [GuardModerateContentRule].
+//
+// Deprecated: use [GuardModerateContentRule]. This alias will be removed in 1.0.
+type ExperimentalGuardModerateContentRule = GuardModerateContentRule
+
+// ExperimentalGuardModerateContent is a deprecated alias of
+// [GuardModerateContent].
+//
+// Deprecated: use [GuardModerateContent]. This alias will be removed in 1.0.
+func ExperimentalGuardModerateContent(opts ExperimentalGuardModerateContentOptions) (*ExperimentalGuardModerateContentRule, error) {
+	return GuardModerateContent(opts)
 }
 
 // GuardSensitiveInfoOptions configures local Guard sensitive information detection.
