@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -37,6 +38,9 @@ type GuardConfig struct {
 	// didn't recognise. Shared across every GuardSensitiveInfo rule on
 	// this client.
 	SensitiveInfoDetect SensitiveInfoDetect
+	// SensitiveInfoBackend evaluates sensitive-info rules projected by remote
+	// policies. If nil, the bundled WebAssembly analyzer is used.
+	SensitiveInfoBackend SensitiveInfoBackend
 }
 
 // GuardClient evaluates non-HTTP inputs such as tool calls, jobs, and queues.
@@ -48,6 +52,7 @@ type GuardClient struct {
 	guardClient decidev2connect.DecideServiceClient
 	userAgent   string
 	local       *localEvaluator
+	policy      *remotePolicyRuntime
 }
 
 // NewGuardClient creates a reusable Guard client.
@@ -72,14 +77,16 @@ func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 		httpClient = http.DefaultClient
 	}
 	ua := userAgent("arcjet-guard-go", version)
-	return &GuardClient{
+	client := &GuardClient{
 		key:         key,
 		userAgent:   ua,
 		guardClient: decidev2connect.NewDecideServiceClient(httpClient, baseURL),
 		// Lazy: only Guard rules that evaluate locally (today just
 		// sensitive info) trigger wasm compilation.
 		local: newLazyLocalEvaluator(cfg.SensitiveInfoDetect),
-	}, nil
+	}
+	client.policy = newRemotePolicyRuntime(client.guardClient, key, ua, client.local, cfg.SensitiveInfoBackend)
+	return client, nil
 }
 
 // Close releases the locally-compiled wasm factory, if any. Safe to call
@@ -95,6 +102,10 @@ func (c *GuardClient) Close(ctx context.Context) error {
 type GuardRequest struct {
 	// Label identifies this Guard call.
 	Label string
+	// Actor is an optional actor identity available to remote policies.
+	Actor *string
+	// Inputs are explicitly typed and exposed values for remote policies.
+	Inputs map[string]GuardPolicyInput
 	// Metadata is optional metadata for this Guard call: string keys mapped to
 	// any JSON-serializable value, including nested maps and slices. Each
 	// top-level value is JSON-encoded by the SDK and stored verbatim.
@@ -140,7 +151,21 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	// Metadata keys the SDK could not encode. These are reported to the server as
 	// untrusted local_warnings and surfaced on the decision, so a dropped key is
 	// never silent.
-	var warnings []Warning
+	envelopeMetadata, warnings := encodeMetadata(req.Metadata, "")
+
+	prepared, err := c.policy.prepare(ctx, req.Label, req.Inputs, false)
+	if err != nil {
+		if errors.Is(err, ErrInvalidPolicyInput) {
+			return GuardDecision{}, err
+		}
+		return withLocalWarnings(guardErrorDecision("REMOTE_POLICY_UNAVAILABLE", "remote Guard policy preparation failed"), warnings), err
+	}
+	if prepared.decision != nil {
+		warnings = append(warnings, enforceMetadataBudget([]map[string]string{envelopeMetadata})...)
+		return c.reportLocalPolicyDenial(ctx, req, start, envelopeMetadata, prepared, warnings)
+	}
+	sanitizeInputs := prepared.sanitizeInputs
+
 	submissions := make([]*decidev2.GuardRuleSubmission, 0, len(req.Rules))
 	for ruleIndex, rule := range req.Rules {
 		if rule == nil {
@@ -175,10 +200,6 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	}
 	elapsed := safeUint64FromInt64(time.Since(start).Milliseconds())
 	sentAt := safeUint64FromInt64(time.Now().UnixMilli())
-
-	envelopeMetadata, envelopeWarnings := encodeMetadata(req.Metadata, "")
-	warnings = append(warnings, envelopeWarnings...)
-
 	wireReq := &decidev2.GuardRequest{
 		UserAgent:           c.userAgent,
 		LocalEvalDurationMs: &elapsed,
@@ -187,6 +208,14 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		MetadataJson:        envelopeMetadata,
 		RuleSubmissions:     submissions,
 		CorrelationId:       req.CorrelationId,
+		PolicyInputs:        prepared.inputs,
+		LocalPolicyRevision: prepared.revision,
+		LocalPolicyResults:  prepared.results,
+		PolicyCapabilities:  guardPolicyCapabilities,
+	}
+	wireReq.Actor = req.Actor
+	if sanitizeInputs {
+		wireReq.PolicyInputs = localOnlyPolicyInputs(wireReq.GetPolicyInputs())
 	}
 
 	// Trim to the SDK ceiling across every metadata map on the request — the
@@ -212,7 +241,91 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		// ignores err.
 		return withLocalWarnings(guardErrorDecision("TRANSPORT_ERROR", err.Error()), warnings), err
 	}
+	// Keep the forced refresh and retry together so a newly projected local
+	// denial can sanitize the retry RPC before reporting it.
+	//nolint:nestif // the nested branches are the refresh/retry transaction
+	if prepared.hasLocal && resp.Msg.GetDecision() != nil && resp.Msg.GetDecision().GetPolicyEvaluation() != nil {
+		e := resp.Msg.GetDecision().GetPolicyEvaluation()
+		if e.GetRefreshRequired() || (prepared.revision != "" && e.GetRevision() != "" && prepared.revision != e.GetRevision()) {
+			prepared, err = c.policy.prepare(ctx, req.Label, req.Inputs, true)
+			if err != nil {
+				return withLocalWarnings(guardErrorDecision("REMOTE_POLICY_UNAVAILABLE", "remote Guard policy preparation failed"), warnings), err
+			}
+			sanitizeInputs = sanitizeInputs || prepared.sanitizeInputs
+			if prepared.decision != nil {
+				wireReq.PolicyInputs = localOnlyPolicyInputs(prepared.inputs)
+				wireReq.LocalPolicyRevision, wireReq.LocalPolicyResults = prepared.revision, prepared.results
+				resp, err = c.guardClient.Guard(ctx, connectReq)
+				if err != nil {
+					return withLocalWarnings(*prepared.decision, warnings), err
+				}
+				decision := localPolicyReportedDecision(resp.Msg, *prepared.decision)
+				return withLocalWarnings(decision, warnings), nil
+			}
+			wireReq.PolicyInputs, wireReq.LocalPolicyRevision, wireReq.LocalPolicyResults = prepared.inputs, prepared.revision, prepared.results
+			if sanitizeInputs {
+				wireReq.PolicyInputs = localOnlyPolicyInputs(wireReq.GetPolicyInputs())
+			}
+			resp, err = c.guardClient.Guard(ctx, connectReq)
+			if err != nil {
+				return withLocalWarnings(guardErrorDecision("TRANSPORT_ERROR", err.Error()), warnings), err
+			}
+		}
+	}
 	return withLocalWarnings(guardDecisionFromProto(resp.Msg), warnings), nil
+}
+
+// reportLocalPolicyDenial makes a best-effort, privacy-safe Guard call so the
+// server can record the denial and assign its final decision ID. The local
+// denial remains authoritative if reporting fails.
+func (c *GuardClient) reportLocalPolicyDenial(ctx context.Context, req GuardRequest, start time.Time, metadata map[string]string, prepared preparedRemotePolicy, warnings []Warning) (GuardDecision, error) {
+	wireReq := localPolicyDenialRequest(req, c.userAgent, start, metadata, prepared, warnings)
+	connectReq := connect.NewRequest(wireReq)
+	connectReq.Header().Set("Authorization", "Bearer "+c.key)
+	connectReq.Header().Set("User-Agent", c.userAgent)
+	resp, err := c.guardClient.Guard(ctx, connectReq)
+	decision := *prepared.decision
+	if err != nil {
+		return withLocalWarnings(decision, warnings), err
+	}
+	decision = localPolicyReportedDecision(resp.Msg, decision)
+	return withLocalWarnings(decision, warnings), nil
+}
+
+func localPolicyDenialRequest(req GuardRequest, userAgent string, start time.Time, metadata map[string]string, prepared preparedRemotePolicy, warnings []Warning) *decidev2.GuardRequest {
+	elapsed := safeUint64FromInt64(time.Since(start).Milliseconds())
+	sentAt := safeUint64FromInt64(time.Now().UnixMilli())
+	return &decidev2.GuardRequest{
+		UserAgent:           userAgent,
+		LocalEvalDurationMs: &elapsed,
+		SentAtUnixMs:        &sentAt,
+		Label:               req.Label,
+		Actor:               req.Actor,
+		CorrelationId:       req.CorrelationId,
+		MetadataJson:        metadata,
+		PolicyInputs:        localOnlyPolicyInputs(prepared.inputs),
+		LocalPolicyRevision: prepared.revision,
+		LocalPolicyResults:  prepared.results,
+		PolicyCapabilities:  guardPolicyCapabilities,
+		LocalWarnings:       warningsToProtoV2(warnings),
+	}
+}
+
+func localPolicyReportedDecision(resp *decidev2.GuardResponse, fallback GuardDecision) GuardDecision {
+	if resp.GetDecision() == nil || resp.GetDecision().GetId() == "" {
+		return fallback
+	}
+	return guardDecisionFromProto(resp)
+}
+
+func localOnlyPolicyInputs(inputs map[string]*decidev2.GuardPolicyInput) map[string]*decidev2.GuardPolicyInput {
+	local := make(map[string]*decidev2.GuardPolicyInput)
+	for name, input := range inputs {
+		if input != nil && input.GetLocal() != nil {
+			local[name] = input
+		}
+	}
+	return local
 }
 
 // withLocalWarnings appends the SDK's own client-side warnings to a decision.

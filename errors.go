@@ -18,6 +18,9 @@ var (
 	ErrNilRequest = errors.New("request is nil")
 	// ErrNilRule is returned when a rule input is nil.
 	ErrNilRule = errors.New("rule is nil")
+	// ErrInvalidPolicyInput is returned when a Guard policy input is nil or
+	// cannot be represented by the remote-policy wire protocol.
+	ErrInvalidPolicyInput = errors.New("invalid guard policy input")
 	// ErrInvalidMode is returned when a Mode value is unrecognized.
 	ErrInvalidMode = errors.New("invalid mode")
 	// ErrAllowDenyConflict is returned when a rule sets both Allow and Deny.

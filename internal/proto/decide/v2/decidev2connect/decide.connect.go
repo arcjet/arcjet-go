@@ -37,10 +37,14 @@ const DecideServiceName = "proto.decide.v2.DecideService"
 // not the vendored proto's namespaced package — see the file comment.
 const DecideServiceGuardProcedure = "/proto.decide.v2.DecideService/Guard"
 
+// DecideServiceGetGuardPolicyProcedure is the canonical wire route.
+const DecideServiceGetGuardPolicyProcedure = "/proto.decide.v2.DecideService/GetGuardPolicy"
+
 // DecideServiceClient is a client for the proto.decide.v2.DecideService service.
 type DecideServiceClient interface {
 	// Evaluate a set of guard rules and return a decision.
 	Guard(context.Context, *connect.Request[v2.GuardRequest]) (*connect.Response[v2.GuardResponse], error)
+	GetGuardPolicy(context.Context, *connect.Request[v2.GetGuardPolicyRequest]) (*connect.Response[v2.GetGuardPolicyResponse], error)
 }
 
 // NewDecideServiceClient constructs a client for the proto.decide.v2.DecideService service.
@@ -55,12 +59,18 @@ func NewDecideServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			baseURL+DecideServiceGuardProcedure,
 			opts...,
 		),
+		getGuardPolicy: connect.NewClient[v2.GetGuardPolicyRequest, v2.GetGuardPolicyResponse](httpClient, baseURL+DecideServiceGetGuardPolicyProcedure, opts...),
 	}
 }
 
 // decideServiceClient implements DecideServiceClient.
 type decideServiceClient struct {
-	guard *connect.Client[v2.GuardRequest, v2.GuardResponse]
+	guard          *connect.Client[v2.GuardRequest, v2.GuardResponse]
+	getGuardPolicy *connect.Client[v2.GetGuardPolicyRequest, v2.GetGuardPolicyResponse]
+}
+
+func (c *decideServiceClient) GetGuardPolicy(ctx context.Context, req *connect.Request[v2.GetGuardPolicyRequest]) (*connect.Response[v2.GetGuardPolicyResponse], error) {
+	return c.getGuardPolicy.CallUnary(ctx, req)
 }
 
 // Guard calls proto.decide.v2.DecideService.Guard.
@@ -74,6 +84,10 @@ type DecideServiceHandler interface {
 	Guard(context.Context, *connect.Request[v2.GuardRequest]) (*connect.Response[v2.GuardResponse], error)
 }
 
+type decideServiceGetGuardPolicyHandler interface {
+	GetGuardPolicy(context.Context, *connect.Request[v2.GetGuardPolicyRequest]) (*connect.Response[v2.GetGuardPolicyResponse], error)
+}
+
 // NewDecideServiceHandler builds an HTTP handler from the service implementation.
 // It returns the path on which to mount the handler and the handler itself.
 func NewDecideServiceHandler(svc DecideServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
@@ -82,10 +96,17 @@ func NewDecideServiceHandler(svc DecideServiceHandler, opts ...connect.HandlerOp
 		svc.Guard,
 		opts...,
 	)
+	getGuardPolicy := UnimplementedDecideServiceHandler{}.GetGuardPolicy
+	if policySvc, ok := svc.(decideServiceGetGuardPolicyHandler); ok {
+		getGuardPolicy = policySvc.GetGuardPolicy
+	}
+	decideServiceGetGuardPolicyHandler := connect.NewUnaryHandler(DecideServiceGetGuardPolicyProcedure, getGuardPolicy, opts...)
 	return "/proto.decide.v2.DecideService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DecideServiceGuardProcedure:
 			decideServiceGuardHandler.ServeHTTP(w, r)
+		case DecideServiceGetGuardPolicyProcedure:
+			decideServiceGetGuardPolicyHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -97,4 +118,8 @@ type UnimplementedDecideServiceHandler struct{}
 
 func (UnimplementedDecideServiceHandler) Guard(context.Context, *connect.Request[v2.GuardRequest]) (*connect.Response[v2.GuardResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("proto.decide.v2.DecideService.Guard is not implemented"))
+}
+
+func (UnimplementedDecideServiceHandler) GetGuardPolicy(context.Context, *connect.Request[v2.GetGuardPolicyRequest]) (*connect.Response[v2.GetGuardPolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("proto.decide.v2.DecideService.GetGuardPolicy is not implemented"))
 }

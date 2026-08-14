@@ -62,10 +62,16 @@ type guardRuleResultWire struct {
 
 // GuardDecision is the result of a Guard evaluation.
 type GuardDecision struct {
+	// ID is the server decision ID. It is empty when best-effort reporting of a
+	// locally enforced decision fails.
 	ID         string
 	Conclusion Conclusion
 	Reason     ReasonType
 	Results    []GuardRuleResult
+	// PolicyEvaluation reports remote-policy selection and availability.
+	PolicyEvaluation *GuardPolicyEvaluation
+	// PolicyResults are remote-policy results, separate from positional SDK rule Results.
+	PolicyResults []GuardPolicyResult
 	// Warnings are decision-level diagnostics from request validation (e.g. an
 	// invalid metadata key that was stripped). The decision is still valid;
 	// warnings never change the conclusion.
@@ -93,7 +99,97 @@ func (d GuardDecision) ErrorResults() []GuardRuleResult {
 			out = append(out, r)
 		}
 	}
+	for _, r := range d.PolicyResults {
+		if r.Error != nil {
+			out = append(out, erroredGuardRuleResult("", "", r.Error.Code, r.Error.Message))
+		}
+	}
+	if d.PolicyEvaluation != nil && (d.PolicyEvaluation.Status == GuardPolicyStatusIncomplete || d.PolicyEvaluation.Status == GuardPolicyStatusUnavailable) {
+		out = append(out, erroredGuardRuleResult("", "", "REMOTE_POLICY_UNAVAILABLE", "remote Guard policy was unavailable"))
+	}
 	return out
+}
+
+// GuardPolicyStatus is the aggregate remote-policy evaluation status.
+type GuardPolicyStatus string
+
+const (
+	// GuardPolicyStatusUnknown represents an unspecified or future status.
+	GuardPolicyStatusUnknown GuardPolicyStatus = "UNKNOWN"
+	// GuardPolicyStatusNotConfigured means no remote policy matched the label.
+	GuardPolicyStatusNotConfigured GuardPolicyStatus = "NOT_CONFIGURED"
+	// GuardPolicyStatusApplied means the remote policy was fully evaluated.
+	GuardPolicyStatusApplied GuardPolicyStatus = "APPLIED"
+	// GuardPolicyStatusIncomplete means required policy evaluation was incomplete.
+	GuardPolicyStatusIncomplete GuardPolicyStatus = "INCOMPLETE"
+	// GuardPolicyStatusUnavailable means the remote policy could not be evaluated.
+	GuardPolicyStatusUnavailable GuardPolicyStatus = "UNAVAILABLE"
+)
+
+// GuardPolicyEvaluation describes remote-policy selection for a Guard call.
+type GuardPolicyEvaluation struct {
+	Revision        string            `json:"revision"`
+	Status          GuardPolicyStatus `json:"status"`
+	RefreshRequired bool              `json:"refreshRequired"`
+}
+
+// GuardPolicyResult is one remotely configured rule result. Variant fields are
+// nil unless that variant was evaluated; unknown variants fail open.
+type GuardPolicyResult struct {
+	ResultID             string                           `json:"resultId"`
+	PolicyID             string                           `json:"policyId"`
+	PolicyRevision       string                           `json:"policyRevision"`
+	RuleID               string                           `json:"ruleId"`
+	Type                 GuardRuleType                    `json:"type"`
+	Mode                 Mode                             `json:"mode"`
+	Execution            GuardRuleExecution               `json:"execution"`
+	Source               GuardRuleSource                  `json:"source"`
+	Conclusion           Conclusion                       `json:"conclusion"`
+	Reason               ReasonType                       `json:"reason"`
+	PromptInjection      *GuardPromptResult               `json:"promptInjection,omitempty"`
+	AllowedStringValues  *GuardStringConstraintResult     `json:"allowedStringValues,omitempty"`
+	DeniedStringValues   *GuardStringConstraintResult     `json:"deniedStringValues,omitempty"`
+	StringLength         *GuardStringConstraintResult     `json:"stringLength,omitempty"`
+	StringListMembership *GuardStringListMembershipResult `json:"stringListMembership,omitempty"`
+	LocalSensitiveInfo   *GuardSensitiveInfoResult        `json:"localSensitiveInfo,omitempty"`
+	Error                *ArcjetError                     `json:"error,omitempty"`
+	NotRun               bool                             `json:"notRun,omitempty"`
+}
+
+// GuardRuleExecution identifies where a remote rule was evaluated.
+type GuardRuleExecution string
+
+const (
+	GuardRuleExecutionUnknown GuardRuleExecution = "UNKNOWN"
+	GuardRuleExecutionSDK     GuardRuleExecution = "SDK"
+	GuardRuleExecutionServer  GuardRuleExecution = "SERVER"
+)
+
+// GuardRuleSource identifies where a rule was configured.
+type GuardRuleSource string
+
+const (
+	GuardRuleSourceRemote GuardRuleSource = "REMOTE"
+)
+
+// GuardStringMatchOperator identifies string matching semantics.
+type GuardStringMatchOperator string
+
+const (
+	GuardStringMatchOperatorExact       GuardStringMatchOperator = "EXACT"
+	GuardStringMatchOperatorEmailDomain GuardStringMatchOperator = "EMAIL_DOMAIN"
+	GuardStringMatchOperatorUnknown     GuardStringMatchOperator = "UNKNOWN"
+)
+
+type GuardStringConstraintResult struct {
+	Conclusion    Conclusion                `json:"conclusion"`
+	MatchOperator *GuardStringMatchOperator `json:"matchOperator,omitempty"`
+}
+
+// GuardStringListMembershipResult contains a string-list membership result.
+type GuardStringListMembershipResult struct {
+	Conclusion Conclusion `json:"conclusion"`
+	Matched    bool       `json:"matched"`
 }
 
 // HasFailedOpen reports whether this decision returned ALLOW only because a
@@ -303,6 +399,12 @@ func guardDecisionFromProto(resp *decidev2.GuardResponse) GuardDecision {
 	if resp == nil {
 		return guardErrorDecision("NO_DECISION", "empty guard response")
 	}
+	decision := resp.GetDecision()
+	if decision == nil {
+		return guardErrorDecision("NO_DECISION", "empty guard response")
+	}
+	// Keep the mature SDK-rule conversion independent while converting the new
+	// remote-policy surface directly from generated protobuf values.
 	data, err := protojson.Marshal(resp)
 	if err != nil {
 		return guardErrorDecision("TRANSPORT_ERROR", err.Error())
@@ -311,7 +413,130 @@ func guardDecisionFromProto(resp *decidev2.GuardResponse) GuardDecision {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return guardErrorDecision("TRANSPORT_ERROR", err.Error())
 	}
-	return wire.toGuardDecision()
+	out := wire.toGuardDecision()
+	if p := decision.GetPolicyEvaluation(); p != nil {
+		out.PolicyEvaluation = &GuardPolicyEvaluation{Revision: p.GetRevision(), Status: policyStatus(p.GetStatus()), RefreshRequired: p.GetRefreshRequired()}
+	}
+	out.PolicyResults = make([]GuardPolicyResult, 0, len(decision.GetPolicyRuleResults()))
+	for _, p := range decision.GetPolicyRuleResults() {
+		out.PolicyResults = append(out.PolicyResults, policyResultFromProto(p))
+	}
+	return out
+}
+
+func policyStatus(s decidev2.GuardPolicyStatus) GuardPolicyStatus {
+	switch s {
+	case decidev2.GuardPolicyStatus_GUARD_POLICY_STATUS_NOT_CONFIGURED:
+		return GuardPolicyStatusNotConfigured
+	case decidev2.GuardPolicyStatus_GUARD_POLICY_STATUS_APPLIED:
+		return GuardPolicyStatusApplied
+	case decidev2.GuardPolicyStatus_GUARD_POLICY_STATUS_INCOMPLETE:
+		return GuardPolicyStatusIncomplete
+	case decidev2.GuardPolicyStatus_GUARD_POLICY_STATUS_UNAVAILABLE:
+		return GuardPolicyStatusUnavailable
+	default:
+		return GuardPolicyStatusUnknown
+	}
+}
+
+func policyConclusion(c decidev2.GuardConclusion) Conclusion {
+	if c == decidev2.GuardConclusion_GUARD_CONCLUSION_DENY {
+		return ConclusionDeny
+	}
+	return ConclusionAllow
+}
+
+func policyRuleType(t decidev2.GuardRuleType) GuardRuleType {
+	switch t {
+	case decidev2.GuardRuleType_GUARD_RULE_TYPE_PROMPT_INJECTION:
+		return GuardRuleTypePromptInjection
+	case decidev2.GuardRuleType_GUARD_RULE_TYPE_ALLOWED_STRING_VALUES:
+		return GuardRuleTypeAllowedStringValues
+	case decidev2.GuardRuleType_GUARD_RULE_TYPE_DENIED_STRING_VALUES:
+		return GuardRuleTypeDeniedStringValues
+	case decidev2.GuardRuleType_GUARD_RULE_TYPE_STRING_LENGTH:
+		return GuardRuleTypeStringLength
+	case decidev2.GuardRuleType_GUARD_RULE_TYPE_STRING_LIST_MEMBERSHIP:
+		return GuardRuleTypeStringListMembership
+	case decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO:
+		return GuardRuleTypeLocalSensitiveInfo
+	default:
+		return GuardRuleTypeUnknown
+	}
+}
+
+func policyResultFromProto(p *decidev2.GuardPolicyRuleResult) GuardPolicyResult {
+	r := GuardPolicyResult{Conclusion: ConclusionAllow, Source: GuardRuleSourceRemote}
+	if p == nil {
+		return r
+	}
+	r.ResultID, r.PolicyID, r.PolicyRevision, r.RuleID = p.GetResultId(), p.GetPolicyId(), p.GetPolicyRevision(), p.GetRuleId()
+	r.Type = policyRuleType(p.GetType())
+	if p.GetMode() == decidev2.GuardRuleMode_GUARD_RULE_MODE_DRY_RUN {
+		r.Mode = ModeDryRun
+	} else {
+		r.Mode = ModeLive
+	}
+	switch p.GetExecution() {
+	case decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SDK:
+		r.Execution = GuardRuleExecutionSDK
+	case decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SERVER:
+		r.Execution = GuardRuleExecutionServer
+	default:
+		r.Execution = GuardRuleExecutionUnknown
+	}
+	setConstraint := func(v *decidev2.ResultStringConstraint, includeOperator bool) *GuardStringConstraintResult {
+		op := GuardStringMatchOperatorUnknown
+		switch v.GetMatchOperator() {
+		case decidev2.GuardStringMatchOperator_GUARD_STRING_MATCH_OPERATOR_UNSPECIFIED, decidev2.GuardStringMatchOperator_GUARD_STRING_MATCH_OPERATOR_EXACT:
+			op = GuardStringMatchOperatorExact
+		case decidev2.GuardStringMatchOperator_GUARD_STRING_MATCH_OPERATOR_EMAIL_DOMAIN:
+			op = GuardStringMatchOperatorEmailDomain
+		}
+		result := &GuardStringConstraintResult{Conclusion: policyConclusion(v.GetConclusion())}
+		if includeOperator {
+			result.MatchOperator = &op
+		}
+		return result
+	}
+	switch v := p.GetResult().(type) {
+	case *decidev2.GuardPolicyRuleResult_PromptInjection:
+		r.PromptInjection = &GuardPromptResult{Conclusion: policyConclusion(v.PromptInjection.GetConclusion()), Detected: v.PromptInjection.GetDetected()}
+		r.Conclusion = r.PromptInjection.Conclusion
+		r.Reason = ReasonPromptInjection
+	case *decidev2.GuardPolicyRuleResult_AllowedStringValues:
+		r.AllowedStringValues = setConstraint(v.AllowedStringValues, true)
+		r.Conclusion = r.AllowedStringValues.Conclusion
+		r.Reason = ReasonInputConstraint
+	case *decidev2.GuardPolicyRuleResult_DeniedStringValues:
+		r.DeniedStringValues = setConstraint(v.DeniedStringValues, true)
+		r.Conclusion = r.DeniedStringValues.Conclusion
+		r.Reason = ReasonInputConstraint
+	case *decidev2.GuardPolicyRuleResult_StringLength:
+		r.StringLength = setConstraint(v.StringLength, false)
+		r.Conclusion = r.StringLength.Conclusion
+		r.Reason = ReasonInputConstraint
+	case *decidev2.GuardPolicyRuleResult_StringListMembership:
+		r.StringListMembership = &GuardStringListMembershipResult{Conclusion: policyConclusion(v.StringListMembership.GetConclusion()), Matched: v.StringListMembership.GetMatched()}
+		r.Conclusion = r.StringListMembership.Conclusion
+		r.Reason = ReasonInputConstraint
+	case *decidev2.GuardPolicyRuleResult_LocalSensitiveInfo:
+		x := v.LocalSensitiveInfo
+		types := make([]EntityType, len(x.GetDetectedEntityTypes()))
+		for i, t := range x.GetDetectedEntityTypes() {
+			types[i] = EntityType(t)
+		}
+		r.LocalSensitiveInfo = &GuardSensitiveInfoResult{Conclusion: policyConclusion(x.GetConclusion()), Detected: x.GetDetected(), DetectedEntityTypes: types}
+		r.Conclusion = r.LocalSensitiveInfo.Conclusion
+		r.Reason = ReasonSensitiveInfo
+	case *decidev2.GuardPolicyRuleResult_Error:
+		r.Error = &ArcjetError{Code: v.Error.GetCode(), Message: v.Error.GetMessage()}
+		r.Reason = ReasonError
+	case *decidev2.GuardPolicyRuleResult_NotRun:
+		r.NotRun = true
+		r.Reason = ReasonNotRun
+	}
+	return r
 }
 
 func (r guardRuleResultWire) toGuardRuleResult() GuardRuleResult {
@@ -398,6 +623,14 @@ func parseGuardRuleType(s string) GuardRuleType {
 		return GuardRuleTypePromptInjection
 	case "GUARD_RULE_TYPE_MODERATE_CONTENT":
 		return GuardRuleTypeModerateContent
+	case "GUARD_RULE_TYPE_ALLOWED_STRING_VALUES":
+		return GuardRuleTypeAllowedStringValues
+	case "GUARD_RULE_TYPE_DENIED_STRING_VALUES":
+		return GuardRuleTypeDeniedStringValues
+	case "GUARD_RULE_TYPE_STRING_LENGTH":
+		return GuardRuleTypeStringLength
+	case "GUARD_RULE_TYPE_STRING_LIST_MEMBERSHIP":
+		return GuardRuleTypeStringListMembership
 	case "GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO":
 		return GuardRuleTypeLocalSensitiveInfo
 	case "GUARD_RULE_TYPE_LOCAL_CUSTOM":
