@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +30,12 @@ type testGuardHandler struct {
 	// errToReturn, when non-nil, makes Guard return a transport error instead
 	// of a response — used to exercise the fail-open-on-transport path.
 	errToReturn error
+
+	mu            sync.Mutex
+	captureSeen   []*decidev2.CaptureRequest
+	captureHeader http.Header
+	captureErr    error
+	captureBlock  chan struct{}
 }
 
 func (h *testGuardHandler) Guard(ctx context.Context, req *connect.Request[decidev2.GuardRequest]) (*connect.Response[decidev2.GuardResponse], error) {
@@ -82,6 +89,30 @@ func (h *testGuardHandler) GetGuardPolicy(_ context.Context, _ *connect.Request[
 	return connect.NewResponse(&decidev2.GetGuardPolicyResponse{
 		Status: decidev2.GuardPolicyLookupStatus_GUARD_POLICY_LOOKUP_STATUS_NOT_CONFIGURED,
 	}), nil
+}
+
+func (h *testGuardHandler) Capture(_ context.Context, req *connect.Request[decidev2.CaptureRequest]) (*connect.Response[decidev2.CaptureResponse], error) {
+	if h.captureBlock != nil {
+		<-h.captureBlock
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.captureSeen = append(h.captureSeen, req.Msg)
+	h.captureHeader = req.Header().Clone()
+	if h.captureErr != nil {
+		return nil, h.captureErr
+	}
+	return connect.NewResponse(&decidev2.CaptureResponse{}), nil
+}
+
+func (h *testGuardHandler) capturedEvents() []*decidev2.CaptureEvent {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var events []*decidev2.CaptureEvent
+	for _, req := range h.captureSeen {
+		events = append(events, req.GetEvents()...)
+	}
+	return events
 }
 
 func newGuardTestClient(t *testing.T, handler *testGuardHandler) (*GuardClient, func()) {
