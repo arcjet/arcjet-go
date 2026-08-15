@@ -533,6 +533,287 @@ func TestFlushAndCloseNilContext(t *testing.T) {
 	}
 }
 
+func TestEnsureDeliveryReusesAndAppliesDefaultDelay(t *testing.T) {
+	handler := &testGuardHandler{}
+	client, _ := newGuardTestClient(t, handler)
+	client.Capture(CaptureEvent{Action: "refund.issued"})
+	first := client.delivery
+	if first == nil {
+		t.Fatal("expected delivery after first Capture")
+	}
+	if first.batchDelay != defaultCaptureDelay {
+		t.Fatalf("batchDelay = %s, want default %s", first.batchDelay, defaultCaptureDelay)
+	}
+	client.Capture(CaptureEvent{Action: "email.sent"})
+	if client.delivery != first {
+		t.Fatal("second Capture must reuse the same delivery")
+	}
+	client.Flush(context.Background())
+	if events := handler.capturedEvents(); len(events) != 2 {
+		t.Fatalf("events = %d", len(events))
+	}
+}
+
+func TestSendCaptureEmptyIsNoop(t *testing.T) {
+	client, _ := newGuardTestClient(t, &testGuardHandler{})
+	if err := client.sendCapture(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.sendCapture([]*decidev2.CaptureEvent{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReportCaptureDiagnostic(t *testing.T) {
+	var client *GuardClient
+	client.reportCaptureDiagnostic(captureInputInvalidCode, 1)
+
+	live, _ := newGuardTestClient(t, &testGuardHandler{})
+	diag := &recordingDiagnose{}
+	live.diagnose = diag.report
+	live.Capture(CaptureEvent{})
+	if got := diag.snapshot(); len(got) != 1 || got[0] != captureInputInvalidCode {
+		t.Fatalf("diagnostics = %v", got)
+	}
+}
+
+func TestNewCaptureDeliveryDefaults(t *testing.T) {
+	d := newCaptureDelivery(captureDeliveryOptions{})
+	if d.batchDelay != defaultCaptureDelay {
+		t.Fatalf("batchDelay = %s", d.batchDelay)
+	}
+	if d.queueSize != defaultCaptureQueue || d.batchSize != defaultCaptureBatch {
+		t.Fatalf("queue/batch = %d/%d", d.queueSize, d.batchSize)
+	}
+	nopCaptureDiagnose(captureQueueFullCode, 1)
+	d.capture(nil)
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "refund.issued"}, nopCaptureDiagnose))
+	d.flush(context.Background())
+}
+
+func TestFlushEmptyDeliveryIsNoop(t *testing.T) {
+	d := newCaptureDelivery(captureDeliveryOptions{noBatchDelay: true})
+	d.flush(context.Background())
+}
+
+type pastDeadlineCtx struct{ context.Context }
+
+func (pastDeadlineCtx) Deadline() (time.Time, bool) {
+	return time.Now().Add(-time.Second), true
+}
+
+func TestFlushAlreadyExpiredDeadline(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	diag := &recordingDiagnose{}
+	d := newCaptureDelivery(captureDeliveryOptions{
+		queueSize:  10,
+		batchSize:  1,
+		batchDelay: time.Hour,
+		diagnose:   diag.report,
+		send: func([]*decidev2.CaptureEvent) error {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			return nil
+		},
+	})
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "in-flight"}, nopCaptureDiagnose))
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send did not start")
+	}
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "queued"}, nopCaptureDiagnose))
+	d.flush(pastDeadlineCtx{context.Background()})
+	if got := diag.snapshot(); len(got) != 1 || got[0] != captureFlushExpiredCode {
+		t.Fatalf("diagnostics = %v, want AJ3003", got)
+	}
+}
+
+func TestAbandonLockedClampsOutstanding(t *testing.T) {
+	d := newCaptureDelivery(captureDeliveryOptions{noBatchDelay: true})
+	d.mu.Lock()
+	d.queue = []queuedCapture{{
+		event: normalizeCaptureEvent(CaptureEvent{Action: "stale"}, nopCaptureDiagnose),
+		seq:   1,
+	}}
+	d.outstanding = 0
+	d.abandonLocked(1)
+	if d.outstanding != 0 {
+		t.Fatalf("outstanding = %d", d.outstanding)
+	}
+	if len(d.queue) != 0 {
+		t.Fatalf("queue = %d", len(d.queue))
+	}
+	d.mu.Unlock()
+}
+
+func TestCaptureDeliveryNopDiagnoseOnQueueFull(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	d := newCaptureDelivery(captureDeliveryOptions{
+		queueSize:    1,
+		batchSize:    1,
+		noBatchDelay: true,
+		send: func([]*decidev2.CaptureEvent) error {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			return nil
+		},
+	})
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "one"}, nopCaptureDiagnose))
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send did not start")
+	}
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "two"}, nopCaptureDiagnose))
+	close(release)
+	d.flush(context.Background())
+}
+
+func TestCollectBatchDelayGathersCompany(t *testing.T) {
+	sent := make(chan []string, 1)
+	d := newCaptureDelivery(captureDeliveryOptions{
+		queueSize:  10,
+		batchSize:  3,
+		batchDelay: 200 * time.Millisecond,
+		send: func(events []*decidev2.CaptureEvent) error {
+			actions := make([]string, len(events))
+			for i, event := range events {
+				actions[i] = event.GetAction()
+			}
+			sent <- actions
+			return nil
+		},
+	})
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "one"}, nopCaptureDiagnose))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		d.mu.Lock()
+		waiting := d.worker && len(d.queue) == 0 && !d.flushNow
+		d.mu.Unlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker did not enter the batch window")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "two"}, nopCaptureDiagnose))
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "three"}, nopCaptureDiagnose))
+	select {
+	case got := <-sent:
+		if len(got) != 3 || got[0] != "one" || got[1] != "two" || got[2] != "three" {
+			t.Fatalf("batch = %v, want [one two three]", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("batch was not gathered")
+	}
+}
+
+func TestCollectBatchDelayExpiresWithOne(t *testing.T) {
+	sent := make(chan string, 1)
+	d := newCaptureDelivery(captureDeliveryOptions{
+		queueSize:  10,
+		batchSize:  10,
+		batchDelay: time.Nanosecond,
+		send: func(events []*decidev2.CaptureEvent) error {
+			sent <- events[0].GetAction()
+			return nil
+		},
+	})
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "solo"}, nopCaptureDiagnose))
+	select {
+	case got := <-sent:
+		if got != "solo" {
+			t.Fatalf("action = %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("batch delay did not fire")
+	}
+}
+
+func TestCollectBatchDelayWaitsThenExpires(t *testing.T) {
+	sent := make(chan string, 1)
+	d := newCaptureDelivery(captureDeliveryOptions{
+		queueSize:  10,
+		batchSize:  10,
+		batchDelay: 15 * time.Millisecond,
+		send: func(events []*decidev2.CaptureEvent) error {
+			sent <- events[0].GetAction()
+			return nil
+		},
+	})
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "solo"}, nopCaptureDiagnose))
+	select {
+	case got := <-sent:
+		if got != "solo" {
+			t.Fatalf("action = %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("batch delay did not fire")
+	}
+}
+
+func TestCollectBatchDelayFlushCutsWait(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	d := newCaptureDelivery(captureDeliveryOptions{
+		queueSize:  10,
+		batchSize:  10,
+		batchDelay: time.Hour,
+		send: func(events []*decidev2.CaptureEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
+			for _, event := range events {
+				sent = append(sent, event.GetAction())
+			}
+			return nil
+		},
+	})
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "first"}, nopCaptureDiagnose))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		d.mu.Lock()
+		waiting := d.worker && len(d.queue) == 0 && !d.flushNow
+		d.mu.Unlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker did not enter the batch window")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "second"}, nopCaptureDiagnose))
+	d.flush(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 2 || sent[0] != "first" || sent[1] != "second" {
+		t.Fatalf("sent = %v", sent)
+	}
+}
+
+func TestUnimplementedCapture(t *testing.T) {
+	_, err := decidev2connect.UnimplementedDecideServiceHandler{}.Capture(
+		context.Background(),
+		connect.NewRequest(&decidev2.CaptureRequest{}),
+	)
+	if err == nil {
+		t.Fatal("expected unimplemented")
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
