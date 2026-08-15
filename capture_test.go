@@ -215,7 +215,7 @@ func TestCaptureDeliveryQueuesAndFlushes(t *testing.T) {
 }
 
 func TestCaptureDeliveryDropsNewestWhenFull(t *testing.T) {
-	started := make(chan struct{})
+	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	var mu sync.Mutex
 	var sent []string
@@ -226,10 +226,7 @@ func TestCaptureDeliveryDropsNewestWhenFull(t *testing.T) {
 		noBatchDelay: true,
 		diagnose:     diag.report,
 		send: func(events []*decidev2.CaptureEvent) error {
-			select {
-			case started <- struct{}{}:
-			default:
-			}
+			started <- struct{}{}
 			<-release
 			mu.Lock()
 			defer mu.Unlock()
@@ -262,7 +259,7 @@ func TestCaptureDeliveryDropsNewestWhenFull(t *testing.T) {
 }
 
 func TestCaptureDeliveryFlushExpiryDropsQueued(t *testing.T) {
-	started := make(chan struct{})
+	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	diag := &recordingDiagnose{}
@@ -272,10 +269,7 @@ func TestCaptureDeliveryFlushExpiryDropsQueued(t *testing.T) {
 		batchDelay: time.Hour,
 		diagnose:   diag.report,
 		send: func([]*decidev2.CaptureEvent) error {
-			select {
-			case started <- struct{}{}:
-			default:
-			}
+			started <- struct{}{}
 			<-release
 			return nil
 		},
@@ -298,7 +292,7 @@ func TestCaptureDeliveryFlushExpiryDropsQueued(t *testing.T) {
 }
 
 func TestCaptureDeliveryFlushExpiryKeepsLaterEvents(t *testing.T) {
-	started := make(chan struct{})
+	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	var mu sync.Mutex
 	var sent []string
@@ -309,10 +303,7 @@ func TestCaptureDeliveryFlushExpiryKeepsLaterEvents(t *testing.T) {
 		batchDelay: time.Hour,
 		diagnose:   diag.report,
 		send: func(events []*decidev2.CaptureEvent) error {
-			select {
-			case started <- struct{}{}:
-			default:
-			}
+			started <- struct{}{}
 			<-release
 			mu.Lock()
 			defer mu.Unlock()
@@ -603,7 +594,7 @@ func (pastDeadlineCtx) Deadline() (time.Time, bool) {
 }
 
 func TestFlushAlreadyExpiredDeadline(t *testing.T) {
-	started := make(chan struct{})
+	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	diag := &recordingDiagnose{}
@@ -613,10 +604,7 @@ func TestFlushAlreadyExpiredDeadline(t *testing.T) {
 		batchDelay: time.Hour,
 		diagnose:   diag.report,
 		send: func([]*decidev2.CaptureEvent) error {
-			select {
-			case started <- struct{}{}:
-			default:
-			}
+			started <- struct{}{}
 			<-release
 			return nil
 		},
@@ -653,17 +641,14 @@ func TestAbandonLockedClampsOutstanding(t *testing.T) {
 }
 
 func TestCaptureDeliveryNopDiagnoseOnQueueFull(t *testing.T) {
-	started := make(chan struct{})
+	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	d := newCaptureDelivery(captureDeliveryOptions{
 		queueSize:    1,
 		batchSize:    1,
 		noBatchDelay: true,
 		send: func([]*decidev2.CaptureEvent) error {
-			select {
-			case started <- struct{}{}:
-			default:
-			}
+			started <- struct{}{}
 			<-release
 			return nil
 		},
