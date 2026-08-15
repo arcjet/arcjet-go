@@ -103,14 +103,19 @@ func (c *GuardClient) Capture(event CaptureEvent) {
 
 // Flush drains buffered capture events.
 //
-// If ctx has no deadline, a one-second default is applied. On expiry,
-// remaining events that belonged to this flush are dropped. Events captured
-// while Flush is waiting are left alone so one caller's deadline cannot
-// discard another request's telemetry.
+// If ctx is nil or has no deadline, a one-second default is applied. On
+// expiry, queued events that already belonged to this flush are dropped.
+// Events captured while Flush is waiting stay queued so one caller's
+// deadline cannot discard another request's telemetry.
+//
+// In-flight POSTs are not cancelled. Each send uses its own one-second
+// timeout from [context.Background], so a flush deadline can expire while
+// a request is still in flight and later succeed. AJ3003 counts only the
+// queued events actually discarded.
 //
 // Flush is optional, repeatable, and does not close the client. A nil
 // client or a client that has never captured is a no-op.
-func (c *GuardClient) Flush(ctx context.Context) {
+func (c *GuardClient) Flush(ctx context.Context) { //nolint:contextcheck // nil ctx has no parent; apply the default deadline
 	if c == nil {
 		return
 	}
@@ -120,7 +125,11 @@ func (c *GuardClient) Flush(ctx context.Context) {
 	if delivery == nil {
 		return
 	}
-	if _, ok := ctx.Deadline(); !ok {
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), defaultCaptureFlush)
+		defer cancel()
+	} else if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultCaptureFlush)
 		defer cancel()

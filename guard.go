@@ -99,12 +99,16 @@ func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 
 // Close flushes any buffered capture events, then releases the
 // locally-compiled wasm factory, if any. Safe to call even if no local
-// Guard rule was ever used and nothing was captured.
+// Guard rule was ever used and nothing was captured. A nil ctx is treated
+// as [context.Background] for the flush (one-second default deadline).
 func (c *GuardClient) Close(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
 	c.Flush(ctx)
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return c.local.close(ctx)
 }
 

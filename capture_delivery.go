@@ -27,10 +27,19 @@ type captureDelivery struct {
 
 	mu          sync.Mutex
 	cond        *sync.Cond
-	queue       []*decidev2.CaptureEvent
+	queue       []queuedCapture
+	nextSeq     uint64
 	outstanding int
 	flushNow    bool
 	worker      bool
+}
+
+// queuedCapture is one enqueued event plus the sequence number assigned at
+// capture time. Flush uses that sequence as a barrier so an expired flush
+// can drop only the events it already owned.
+type queuedCapture struct {
+	event *decidev2.CaptureEvent
+	seq   uint64
 }
 
 type captureDeliveryOptions struct {
@@ -39,23 +48,25 @@ type captureDeliveryOptions struct {
 	queueSize  int
 	batchSize  int
 	batchDelay time.Duration
+	// noBatchDelay disables the batch window so a Flush does not wait for
+	// company. Tests use this. Production leaves it false and gets the
+	// default delay when batchDelay is unset.
+	noBatchDelay bool
 }
 
 func newCaptureDelivery(opts captureDeliveryOptions) *captureDelivery {
 	d := &captureDelivery{
-		send:       opts.send,
-		diagnose:   opts.diagnose,
-		queueSize:  positiveIntOr(opts.queueSize, defaultCaptureQueue),
-		batchSize:  positiveIntOr(opts.batchSize, defaultCaptureBatch),
-		batchDelay: opts.batchDelay,
+		send:      opts.send,
+		diagnose:  opts.diagnose,
+		queueSize: positiveIntOr(opts.queueSize, defaultCaptureQueue),
+		batchSize: positiveIntOr(opts.batchSize, defaultCaptureBatch),
 	}
-	if d.batchDelay < 0 {
-		d.batchDelay = defaultCaptureDelay
-	}
-	if opts.batchDelay == 0 && opts.batchSize == 0 && opts.queueSize == 0 {
-		// Zero values on a zero options struct mean defaults, including delay.
-		// An explicit batchDelay of 0 (tests that disable waiting) is preserved
-		// when any size override is set — see newCaptureDelivery callers.
+	switch {
+	case opts.noBatchDelay:
+		d.batchDelay = 0
+	case opts.batchDelay > 0:
+		d.batchDelay = opts.batchDelay
+	default:
 		d.batchDelay = defaultCaptureDelay
 	}
 	if d.diagnose == nil {
@@ -75,6 +86,14 @@ func positiveIntOr(value, fallback int) int {
 	return fallback
 }
 
+func eventsFromQueued(items []queuedCapture) []*decidev2.CaptureEvent {
+	out := make([]*decidev2.CaptureEvent, len(items))
+	for i, item := range items {
+		out[i] = item.event
+	}
+	return out
+}
+
 func (d *captureDelivery) capture(event *decidev2.CaptureEvent) {
 	if event == nil {
 		return
@@ -86,7 +105,8 @@ func (d *captureDelivery) capture(event *decidev2.CaptureEvent) {
 		return
 	}
 	d.outstanding++
-	d.queue = append(d.queue, event)
+	d.nextSeq++
+	d.queue = append(d.queue, queuedCapture{event: event, seq: d.nextSeq})
 	d.ensureWorkerLocked()
 	d.cond.Signal()
 	d.mu.Unlock()
@@ -98,8 +118,9 @@ func (d *captureDelivery) flush(ctx context.Context) {
 		d.mu.Unlock()
 		return
 	}
-	queuedAtEntry := len(d.queue)
-	inFlightAtEntry := max(d.outstanding-queuedAtEntry, 0)
+	// Events with seq <= barrier already belonged to this flush. Anything
+	// captured after this point is left in the queue if the deadline expires.
+	barrier := d.nextSeq
 	d.flushNow = true
 	d.ensureWorkerLocked()
 	d.cond.Broadcast()
@@ -107,7 +128,7 @@ func (d *captureDelivery) flush(ctx context.Context) {
 	deadline, hasDeadline := ctx.Deadline()
 	for d.outstanding > 0 {
 		if ctx.Err() != nil {
-			d.abandonLocked(queuedAtEntry, inFlightAtEntry)
+			d.abandonLocked(barrier)
 			d.flushNow = false
 			d.mu.Unlock()
 			return
@@ -115,7 +136,7 @@ func (d *captureDelivery) flush(ctx context.Context) {
 		if hasDeadline {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
-				d.abandonLocked(queuedAtEntry, inFlightAtEntry)
+				d.abandonLocked(barrier)
 				d.flushNow = false
 				d.mu.Unlock()
 				return
@@ -130,7 +151,7 @@ func (d *captureDelivery) flush(ctx context.Context) {
 			d.cond.Wait()
 			timer.Stop()
 			if timedOut && d.outstanding > 0 {
-				d.abandonLocked(queuedAtEntry, inFlightAtEntry)
+				d.abandonLocked(barrier)
 				d.flushNow = false
 				d.mu.Unlock()
 				return
@@ -143,23 +164,23 @@ func (d *captureDelivery) flush(ctx context.Context) {
 	d.mu.Unlock()
 }
 
-func (d *captureDelivery) abandonLocked(queuedAtEntry, inFlightAtEntry int) {
+func (d *captureDelivery) abandonLocked(barrier uint64) {
+	kept := d.queue[:0]
 	dropped := 0
-	if queuedAtEntry > len(d.queue) {
-		queuedAtEntry = len(d.queue)
-	}
-	if queuedAtEntry > 0 {
-		d.queue = d.queue[queuedAtEntry:]
-		dropped = queuedAtEntry
-		d.outstanding -= dropped
-		if d.outstanding < 0 {
-			d.outstanding = 0
+	for _, item := range d.queue {
+		if item.seq <= barrier {
+			dropped++
+			continue
 		}
+		kept = append(kept, item)
 	}
-	stillInFlight := max(d.outstanding-len(d.queue), 0)
-	abandoned := dropped + min(inFlightAtEntry, stillInFlight)
-	if abandoned > 0 {
-		d.diagnose(captureFlushExpiredCode, abandoned)
+	d.queue = kept
+	d.outstanding -= dropped
+	if d.outstanding < 0 {
+		d.outstanding = 0
+	}
+	if dropped > 0 {
+		d.diagnose(captureFlushExpiredCode, dropped)
 	}
 	d.cond.Broadcast()
 }
@@ -182,7 +203,7 @@ func (d *captureDelivery) ensureWorkerLocked() {
 	go d.run()
 }
 
-func (d *captureDelivery) drainAvailable(limit int) []*decidev2.CaptureEvent {
+func (d *captureDelivery) drainAvailable(limit int) []queuedCapture {
 	if limit <= 0 || len(d.queue) == 0 {
 		return nil
 	}
@@ -218,10 +239,10 @@ func (d *captureDelivery) collect() []*decidev2.CaptureEvent {
 
 	first := d.queue[0]
 	d.queue = d.queue[1:]
-	batch := []*decidev2.CaptureEvent{first}
+	batch := []queuedCapture{first}
 	if d.batchDelay <= 0 || d.flushNow {
 		batch = append(batch, d.drainAvailable(d.batchSize-len(batch))...)
-		return batch
+		return eventsFromQueued(batch)
 	}
 
 	deadline := time.Now().Add(d.batchDelay)
@@ -254,7 +275,7 @@ func (d *captureDelivery) collect() []*decidev2.CaptureEvent {
 			break
 		}
 	}
-	return batch
+	return eventsFromQueued(batch)
 }
 
 func (d *captureDelivery) run() {

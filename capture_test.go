@@ -191,9 +191,9 @@ func TestCaptureDeliveryQueuesAndFlushes(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
 	d := newCaptureDelivery(captureDeliveryOptions{
-		queueSize:  10,
-		batchSize:  50,
-		batchDelay: 0,
+		queueSize:    10,
+		batchSize:    50,
+		noBatchDelay: true,
 		send: func(events []*decidev2.CaptureEvent) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -221,10 +221,10 @@ func TestCaptureDeliveryDropsNewestWhenFull(t *testing.T) {
 	var sent []string
 	diag := &recordingDiagnose{}
 	d := newCaptureDelivery(captureDeliveryOptions{
-		queueSize:  2,
-		batchSize:  1,
-		batchDelay: 0,
-		diagnose:   diag.report,
+		queueSize:    2,
+		batchSize:    1,
+		noBatchDelay: true,
+		diagnose:     diag.report,
 		send: func(events []*decidev2.CaptureEvent) error {
 			select {
 			case started <- struct{}{}:
@@ -297,14 +297,90 @@ func TestCaptureDeliveryFlushExpiryDropsQueued(t *testing.T) {
 	}
 }
 
+func TestCaptureDeliveryFlushExpiryKeepsLaterEvents(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var sent []string
+	diag := &recordingDiagnose{}
+	d := newCaptureDelivery(captureDeliveryOptions{
+		queueSize:  10,
+		batchSize:  1,
+		batchDelay: time.Hour,
+		diagnose:   diag.report,
+		send: func(events []*decidev2.CaptureEvent) error {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			mu.Lock()
+			defer mu.Unlock()
+			for _, event := range events {
+				sent = append(sent, event.GetAction())
+			}
+			return nil
+		},
+	})
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "in-flight"}, nopCaptureDiagnose))
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send did not start")
+	}
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "before"}, nopCaptureDiagnose))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	flushDone := make(chan struct{})
+	go func() {
+		defer close(flushDone)
+		d.flush(ctx)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		d.mu.Lock()
+		ready := d.flushNow
+		d.mu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("flush did not start waiting")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	d.capture(normalizeCaptureEvent(CaptureEvent{Action: "after"}, nopCaptureDiagnose))
+	cancel()
+	select {
+	case <-flushDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush did not return")
+	}
+
+	if got := diag.snapshot(); len(got) != 1 || got[0] != captureFlushExpiredCode {
+		t.Fatalf("diagnostics = %v, want one AJ3003 for the pre-flush queued event", got)
+	}
+
+	close(release)
+	d.flush(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 2 || sent[0] != "in-flight" || sent[1] != "after" {
+		t.Fatalf("sent = %v, want [in-flight after] (before dropped, after kept)", sent)
+	}
+}
+
 func TestCaptureDeliverySendFailureIsNotRetried(t *testing.T) {
 	diag := &recordingDiagnose{}
 	var calls int
 	d := newCaptureDelivery(captureDeliveryOptions{
-		queueSize:  10,
-		batchSize:  50,
-		batchDelay: 0,
-		diagnose:   diag.report,
+		queueSize:    10,
+		batchSize:    50,
+		noBatchDelay: true,
+		diagnose:     diag.report,
 		send: func([]*decidev2.CaptureEvent) error {
 			calls++
 			return errors.New("upstream down")
@@ -441,6 +517,20 @@ func TestCaptureNilClientIsNoop(t *testing.T) {
 	var client *GuardClient
 	client.Capture(CaptureEvent{Action: "refund.issued"})
 	client.Flush(context.Background())
+}
+
+func TestFlushAndCloseNilContext(t *testing.T) {
+	handler := &testGuardHandler{}
+	client, _ := newGuardTestClient(t, handler)
+	client.captureBatchDelay = time.Hour
+	client.Capture(CaptureEvent{Action: "refund.issued"})
+	client.Flush(nil) //nolint:staticcheck // nil ctx is the contract under test
+	if events := handler.capturedEvents(); len(events) != 1 {
+		t.Fatalf("Flush(nil) events = %d", len(events))
+	}
+	if err := client.Close(nil); err != nil { //nolint:staticcheck // nil ctx is the contract under test
+		t.Fatal(err)
+	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
