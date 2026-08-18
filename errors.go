@@ -13,6 +13,10 @@ var (
 	// ErrNilClient is returned when a method is called on a nil Client or
 	// GuardClient.
 	ErrNilClient = errors.New("client is nil")
+	// ErrNoRegisteredClient is returned by the package-level Guard when no
+	// client has been registered with RegisterArcjet. The decision returned
+	// alongside it is a usable fail-open ALLOW.
+	ErrNoRegisteredClient = errors.New("no registered arcjet client (call RegisterArcjet)")
 	// ErrNilRequest is returned when Client.Protect is called with a nil
 	// *http.Request.
 	ErrNilRequest = errors.New("request is nil")

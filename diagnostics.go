@@ -17,12 +17,12 @@ import (
 // AJ1000-AJ1999 is the server-side registry and travels on the wire. AJ3000+ is
 // SDK-local, reported only here, and allocated append-only across every Arcjet
 // SDK: a code means the same thing in all of them, so a new meaning takes a new
-// number. Numbers already spent elsewhere — do not reuse them for something
-// else in Go: AJ3004 (a second client tried to register), AJ3005 (retired; it
-// briefly meant "no client is registered" in JavaScript and was withdrawn
-// before release), AJ3006 and AJ3007 (registration diagnostics in arcjet-js and
-// arcjet-py respectively). Go has no client registration yet, so it emits none
-// of those.
+// number. Numbers spent elsewhere that Go does not emit — do not reuse them for
+// something else: AJ3005 (retired; it briefly meant "no client is registered" in
+// JavaScript and was withdrawn before release), AJ3006 (a client from a
+// different SDK build holds the registration slot, which cannot happen in Go —
+// one package instance per process), and AJ3007 (arcjet-py's sync/async client
+// mismatch, which Go has no equivalent of).
 const (
 	// captureInputInvalidCode is reported when a capture call's input could
 	// not be normalized and the event was dropped (AJ3000).
@@ -40,6 +40,9 @@ const (
 	// was dropped during normalization. Shared with arcjet-js and arcjet-py
 	// (AJ1001) so a support answer about that code holds for every SDK.
 	captureOptionDroppedCode = "AJ1001"
+	// clientAlreadyRegisteredCode is reported when a second, different client
+	// tried to register and the incumbent was kept (AJ3004).
+	clientAlreadyRegisteredCode = "AJ3004"
 )
 
 // diagnosticMessages is the static text reported for each code.
@@ -55,6 +58,8 @@ var diagnosticMessages = map[string]string{
 	captureFlushExpiredCode:  "Capture flush deadline expired; remaining events were dropped",
 	captureOptionDroppedCode: "A capture field was invalid and was dropped",
 	MetadataEncodeFailedCode: "Metadata keys could not be encoded and were dropped",
+	// Registration. Concerns the client, not an individual event.
+	clientAlreadyRegisteredCode: "An Arcjet client is already registered; the existing one was kept",
 }
 
 // defaultDiagnosticMessage is reported for a code with no entry above. Reaching

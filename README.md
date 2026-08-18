@@ -1448,6 +1448,64 @@ events affected. Codes mean the same thing in every Arcjet SDK. Diagnostics are
 static text plus counts — they never contain metadata values, capture actions,
 credentials, headers, or request bodies.
 
+### Optional client registration
+
+`Guard`, `Capture`, and `Flush` also exist as package-level functions, for code
+that cannot reach a `*GuardClient` — a queue worker, a background job, a domain
+function deep in application code that was handed nothing. Passing the client
+explicitly always works and is the recommended path; this is the shortcut.
+
+Register once at startup. `NewGuardClient` itself touches no global state, so
+nothing here takes effect until you opt in:
+
+```go
+client, err := arcjet.NewGuardClient(arcjet.GuardConfig{Key: os.Getenv("ARCJET_KEY")})
+if err != nil {
+	return err
+}
+arcjet.RegisterArcjet(client)
+defer arcjet.UnregisterArcjet()
+```
+
+```go
+// deep in application code — nothing was passed down here
+func refund(ctx context.Context, id string) error {
+	if err := issueRefund(ctx, id); err != nil {
+		return err
+	}
+	arcjet.Capture(arcjet.CaptureEvent{
+		Action:   "refund.issued",
+		Metadata: arcjet.Metadata{"invoice": id},
+	})
+	return nil
+}
+```
+
+A registered client rather than a value on `context.Context` is deliberate: a
+client read out of a context would still have to be threaded down to these call
+sites, which is the problem registration exists to avoid. `context.Context`
+stays what it is everywhere else in this package — cancellation and deadlines.
+
+Registration is guarded. A second, *different* client is refused, the first is
+kept, and the attempt is reported as `AJ3004` on the incumbent's logger, so a
+library or a stray second `NewGuardClient` cannot quietly redirect your
+telemetry to another site key. Registering the client that is already registered
+is a silent no-op, so a package initialized twice stays quiet. A nil client is
+refused.
+
+With nothing registered:
+
+| Call | Behavior |
+| ---- | -------- |
+| `arcjet.Guard(ctx, req)` | Returns a fail-open `ALLOW` whose `HasFailedOpen()` is true, plus `ErrNoRegisteredClient`. Inspect either. |
+| `arcjet.Capture(event)` | Dropped silently — there is no client, so no logger to report to. |
+| `arcjet.Flush(ctx)` | Returns immediately; there is no queue. |
+
+`UnregisterArcjet` takes no argument and clears whatever is there, so a teardown
+does not have to keep hold of the client. The cost is that anything calling it
+clears the application's client and every package-level call after it fails
+open. Libraries should not call it — they take a client explicitly.
+
 ### Metadata
 
 `Guard`, `Protect`, and every guard rule accept `Metadata`: an
