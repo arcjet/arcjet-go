@@ -20,25 +20,6 @@ import (
 const CaptureSourceSDK = "sdk"
 
 const (
-	// captureInputInvalidCode is reported when a capture call's input could
-	// not be normalized and the event was dropped (AJ3000).
-	captureInputInvalidCode = "AJ3000"
-	// captureQueueFullCode is reported when the send queue was full and the
-	// newest event was dropped (AJ3001).
-	captureQueueFullCode = "AJ3001"
-	// captureSendFailedCode is reported when a batch send failed and its
-	// events were dropped without retry (AJ3002).
-	captureSendFailedCode = "AJ3002"
-	// captureFlushExpiredCode is reported when a Flush deadline expired and
-	// the remaining events were dropped (AJ3003).
-	captureFlushExpiredCode = "AJ3003"
-	// captureOptionDroppedCode is the warning code for a capture field that
-	// was dropped during normalization. Shared with arcjet-js and arcjet-py
-	// (AJ1001) so a support answer about that code holds for every SDK.
-	captureOptionDroppedCode = "AJ1001"
-)
-
-const (
 	captureSendTimeout      = time.Second
 	defaultCaptureFlush     = time.Second
 	defaultCaptureQueue     = 1000
@@ -113,12 +94,19 @@ func (c *GuardClient) Capture(event CaptureEvent) {
 // a request is still in flight and later succeed. AJ3003 counts only the
 // queued events actually discarded.
 //
+// Flush also releases any diagnostic counts the default coalescing sink is
+// holding back, so a burst that ends without a later drop is still reported.
+//
 // Flush is optional, repeatable, and does not close the client. A nil
 // client or a client that has never captured is a no-op.
 func (c *GuardClient) Flush(ctx context.Context) { //nolint:contextcheck // nil ctx has no parent; apply the default deadline
 	if c == nil {
 		return
 	}
+	// Deferred so held counts are released even when nothing was ever queued:
+	// an event dropped during normalization never reached delivery. Running
+	// after delivery.flush also means an expired flush's own AJ3003 is included.
+	defer c.diagnostics.drain()
 	c.deliveryMu.Lock()
 	delivery := c.delivery
 	c.deliveryMu.Unlock()
@@ -229,9 +217,3 @@ func captureOccurredAtUnixMs(occurredAt time.Time) (uint64, *Warning) {
 	}
 	return safeUint64FromInt64(millis), nil
 }
-
-func nopCaptureDiagnose(string, int) {}
-
-// captureDiagnose reports one local diagnostic. Never used to change a
-// decision. Tests inject a recorder; production clients leave it nil.
-type captureDiagnose func(code string, count int)
