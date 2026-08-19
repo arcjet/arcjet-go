@@ -3,6 +3,7 @@ package arcjet
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -89,6 +90,44 @@ func TestLocalFilterMatchesFilterLocalFields(t *testing.T) {
 	}
 	if !decision.liveDeny() {
 		t.Fatalf("expected filter local fields to deny, got %#v", decision)
+	}
+}
+
+// TestLocalEvaluatorBotCategoryConstants checks that each bot category constant
+// names a category the analyzer actually knows. A typo or a category the wasm
+// has never heard of would silently match nothing, so drive a representative
+// user agent through the two categories added alongside the 4f9fb96 corpus sync.
+func TestLocalEvaluatorBotCategoryConstants(t *testing.T) {
+	for _, tc := range []struct {
+		category  string
+		userAgent string
+	}{
+		{BotCategoryApple, "Applebot/0.1"},
+		{BotCategoryWebhook, "Stripe/1.0"},
+	} {
+		t.Run(tc.category, func(t *testing.T) {
+			opts := BotOptions{Mode: ModeLive, Deny: []string{tc.category}}
+			evaluator, err := newLocalEvaluator(context.Background(), []Rule{DetectBot(opts)}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer evaluator.close(context.Background())
+
+			decision, err := evaluator.detectBot(context.Background(), opts, ProtectDetails{
+				IP:      "127.0.0.1",
+				Headers: map[string]string{"user-agent": tc.userAgent},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision == nil {
+				t.Fatalf("expected %s to deny %q", tc.category, tc.userAgent)
+			}
+			denied := decision.decision.GetReason().GetBotV2().GetDenied()
+			if !slices.Contains(denied, tc.category) {
+				t.Fatalf("expected %s in denied, got %v", tc.category, denied)
+			}
+		})
 	}
 }
 
