@@ -11,6 +11,7 @@ const (
 	BotCategoryAdvertising  = "CATEGORY:ADVERTISING"
 	BotCategoryAI           = "CATEGORY:AI"
 	BotCategoryAmazon       = "CATEGORY:AMAZON"
+	BotCategoryApple        = "CATEGORY:APPLE"
 	BotCategoryArchive      = "CATEGORY:ARCHIVE"
 	BotCategoryBotnet       = "CATEGORY:BOTNET"
 	BotCategoryFeedFetcher  = "CATEGORY:FEEDFETCHER"
@@ -27,6 +28,7 @@ const (
 	BotCategoryTool         = "CATEGORY:TOOL"
 	BotCategoryUnknown      = "CATEGORY:UNKNOWN"
 	BotCategoryVercel       = "CATEGORY:VERCEL"
+	BotCategoryWebhook      = "CATEGORY:WEBHOOK"
 	BotCategoryYahoo        = "CATEGORY:YAHOO"
 )
 

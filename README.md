@@ -349,12 +349,13 @@ arcjet.DetectBot(arcjet.BotOptions{
 
 Exported constants cover all built-in categories: `arcjet.BotCategoryAcademic`,
 `BotCategoryAdvertising`, `BotCategoryAI`, `BotCategoryAmazon`,
-`BotCategoryArchive`, `BotCategoryBotnet`, `BotCategoryFeedFetcher`,
-`BotCategoryGoogle`, `BotCategoryMeta`, `BotCategoryMicrosoft`,
-`BotCategoryMonitor`, `BotCategoryOptimizer`, `BotCategoryPreview`,
-`BotCategoryProgrammatic`, `BotCategorySearchEngine`, `BotCategorySlack`,
-`BotCategorySocial`, `BotCategoryTool`, `BotCategoryUnknown`,
-`BotCategoryVercel`, `BotCategoryYahoo`. Plain strings still work (e.g.
+`BotCategoryApple`, `BotCategoryArchive`, `BotCategoryBotnet`,
+`BotCategoryFeedFetcher`, `BotCategoryGoogle`, `BotCategoryMeta`,
+`BotCategoryMicrosoft`, `BotCategoryMonitor`, `BotCategoryOptimizer`,
+`BotCategoryPreview`, `BotCategoryProgrammatic`, `BotCategorySearchEngine`,
+`BotCategorySlack`, `BotCategorySocial`, `BotCategoryTool`,
+`BotCategoryUnknown`, `BotCategoryVercel`, `BotCategoryWebhook`,
+`BotCategoryYahoo`. Plain strings still work (e.g.
 `"CATEGORY:AI"` or `"OPENAI_CRAWLER_SEARCH"` for [specific bots by
 name](https://arcjet.com/bot-list)) — the constants exist for autocomplete and
 to catch typos at compile time.
