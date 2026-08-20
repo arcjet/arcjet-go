@@ -89,6 +89,9 @@ func TestDecisionAndErrorHelpers(t *testing.T) {
 	if !(Decision{Conclusion: ConclusionAllow}).IsAllowed() {
 		t.Fatal("allow helper failed")
 	}
+	if !(Decision{Conclusion: ConclusionError}).IsAllowed() {
+		t.Fatal("error conclusion should fail open (IsAllowed)")
+	}
 	if !(Decision{Conclusion: ConclusionChallenge}).IsChallenged() {
 		t.Fatal("challenge helper failed")
 	}
