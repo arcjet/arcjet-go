@@ -422,6 +422,12 @@ func (b guardRuleBase) submission(rule map[string]any) guardRuleSubmissionWire {
 	return sub
 }
 
+const (
+	defaultTokenBucketName   = "default-token-bucket"
+	defaultFixedWindowName   = "default-fixed-window"
+	defaultSlidingWindowName = "default-sliding-window"
+)
+
 // GuardTokenBucketOptions configures a Guard token bucket rule.
 type GuardTokenBucketOptions struct {
 	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
@@ -433,7 +439,8 @@ type GuardTokenBucketOptions struct {
 	Interval time.Duration
 	// Capacity is the maximum bucket size.
 	Capacity int
-	// Bucket groups counters for this rule.
+	// Bucket groups counters for this rule. Defaults to "default-token-bucket"
+	// when empty, matching the JavaScript and Python Guard SDKs.
 	Bucket string
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -462,7 +469,7 @@ func GuardTokenBucket(opts GuardTokenBucketOptions) (*GuardTokenBucketRule, erro
 	}
 	bucket := opts.Bucket
 	if bucket == "" {
-		bucket = "default"
+		bucket = defaultTokenBucketName
 	}
 	if err := validateGuardLabel(bucket); err != nil {
 		return nil, fmt.Errorf("arcjet: guard token bucket: bucket name must be a label-like slug: %w", ErrInvalidLabel)
@@ -541,7 +548,8 @@ type GuardFixedWindowOptions struct {
 	Window time.Duration
 	// MaxRequests is the maximum number of requests per window.
 	MaxRequests int
-	// Bucket groups counters for this rule.
+	// Bucket groups counters for this rule. Defaults to "default-fixed-window"
+	// when empty, matching the JavaScript and Python Guard SDKs.
 	Bucket string
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -569,7 +577,7 @@ func GuardFixedWindow(opts GuardFixedWindowOptions) (*GuardFixedWindowRule, erro
 	}
 	bucket := opts.Bucket
 	if bucket == "" {
-		bucket = "default"
+		bucket = defaultFixedWindowName
 	}
 	if err := validateGuardLabel(bucket); err != nil {
 		return nil, fmt.Errorf("arcjet: guard fixed window bucket must be a label-like slug: %w", ErrInvalidLabel)
@@ -639,7 +647,8 @@ type GuardSlidingWindowOptions struct {
 	Interval time.Duration
 	// MaxRequests is the maximum number of requests per interval.
 	MaxRequests int
-	// Bucket groups counters for this rule.
+	// Bucket groups counters for this rule. Defaults to "default-sliding-window"
+	// when empty, matching the JavaScript and Python Guard SDKs.
 	Bucket string
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -667,7 +676,7 @@ func GuardSlidingWindow(opts GuardSlidingWindowOptions) (*GuardSlidingWindowRule
 	}
 	bucket := opts.Bucket
 	if bucket == "" {
-		bucket = "default"
+		bucket = defaultSlidingWindowName
 	}
 	if err := validateGuardLabel(bucket); err != nil {
 		return nil, fmt.Errorf("arcjet: guard sliding window bucket must be a label-like slug: %w", ErrInvalidLabel)
