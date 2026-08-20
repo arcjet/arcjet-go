@@ -882,6 +882,11 @@ func queryWithQuestion(q string) string {
 // protectErrorDecision synthesizes a fail-open ERROR decision for a
 // transport failure. Conclusion is ERROR so IsErrored() is true; IsAllowed()
 // treats ERROR as allowed, matching ArcjetErrorDecision in arcjet-js.
+//
+// Results contains one synthesized ERROR entry, not one per configured rule:
+// no rules ran, so there are no rule IDs to attach. Callers correlating
+// per-rule outcomes should treat a transport-failure decision as having no
+// per-rule results.
 func protectErrorDecision(err error) Decision {
 	msg := "decide request failed"
 	if err != nil {
