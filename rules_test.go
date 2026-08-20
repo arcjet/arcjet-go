@@ -89,6 +89,9 @@ func TestDecisionAndErrorHelpers(t *testing.T) {
 	if !(Decision{Conclusion: ConclusionAllow}).IsAllowed() {
 		t.Fatal("allow helper failed")
 	}
+	if !(Decision{Conclusion: ConclusionError}).IsAllowed() {
+		t.Fatal("error conclusion should fail open (IsAllowed)")
+	}
 	if !(Decision{Conclusion: ConclusionChallenge}).IsChallenged() {
 		t.Fatal("challenge helper failed")
 	}
@@ -209,6 +212,15 @@ func TestNormalizeAndValidateMode(t *testing.T) {
 	}
 	if got := guardMode(""); got != "GUARD_RULE_MODE_DRY_RUN" {
 		t.Errorf("guardMode(default) = %q", got)
+	}
+	if err := validateGuardMode(""); err == nil || !errors.Is(err, ErrInvalidMode) {
+		t.Errorf("validateGuardMode(\"\") = %v, want ErrInvalidMode", err)
+	}
+	if err := validateGuardMode(ModeLive); err != nil {
+		t.Errorf("validateGuardMode(LIVE) = %v", err)
+	}
+	if err := validateGuardMode(ModeDryRun); err != nil {
+		t.Errorf("validateGuardMode(DRY_RUN) = %v", err)
 	}
 }
 
