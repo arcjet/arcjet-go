@@ -137,19 +137,20 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 		platform = p
 	}
-	builtRules, builtRuleIndices, err := buildRequestRules(cfg.Rules)
+	rules := sortRulesByPriority(cfg.Rules)
+	builtRules, builtRuleIndices, err := buildRequestRules(rules)
 	if err != nil {
 		return nil, err
 	}
-	local, err := newLocalEvaluator(context.Background(), cfg.Rules, cfg.SensitiveInfoDetect)
+	local, err := newLocalEvaluator(context.Background(), rules, cfg.SensitiveInfoDetect)
 	if err != nil {
 		return nil, err
 	}
 	return &Client{
 		key:              key,
-		rules:            append([]Rule(nil), cfg.Rules...),
-		ruleIDs:          collectRuleIDs(cfg.Rules),
-		fpChars:          collectFingerprintChars(cfg.Rules, cfg.Characteristics),
+		rules:            rules,
+		ruleIDs:          collectRuleIDs(rules),
+		fpChars:          collectFingerprintChars(rules, cfg.Characteristics),
 		builtRules:       builtRules,
 		builtRuleIndices: builtRuleIndices,
 		characteristics:  append([]string(nil), cfg.Characteristics...),
@@ -210,22 +211,20 @@ func (c *Client) WithRule(rule Rule) (*Client, error) {
 	if rule == nil {
 		return nil, fmt.Errorf("arcjet: %w", ErrNilRule)
 	}
-	wireRule, err := buildRequestRule(rule)
+	// Re-sort so the new rule lands in JS priority order and every
+	// positional slice (ruleIDs, fpChars, builtRuleIndices) stays aligned.
+	// Validation happens in buildRequestRules; a bad new rule fails there.
+	rules := sortRulesByPriority(append(append([]Rule(nil), c.rules...), rule))
+	builtRules, builtRuleIndices, err := buildRequestRules(rules)
 	if err != nil {
 		return nil, err
 	}
 	next := *c
-	next.rules = append(append([]Rule(nil), c.rules...), rule)
-	next.ruleIDs = append(append([]string(nil), c.ruleIDs...), rule.ruleID())
-	next.fpChars = append(append([][]string(nil), c.fpChars...), fingerprintCharsFor(rule, c.characteristics))
-	next.builtRules = append([]*decidev1.Rule(nil), c.builtRules...)
-	next.builtRuleIndices = append([]int(nil), c.builtRuleIndices...)
-	if wireRule != nil {
-		// The new rule lands at index len(c.rules) in next.rules; record
-		// that so its Decide-response result maps back to the right slot.
-		next.builtRules = append(next.builtRules, wireRule)
-		next.builtRuleIndices = append(next.builtRuleIndices, len(c.rules))
-	}
+	next.rules = rules
+	next.ruleIDs = collectRuleIDs(rules)
+	next.fpChars = collectFingerprintChars(rules, c.characteristics)
+	next.builtRules = builtRules
+	next.builtRuleIndices = builtRuleIndices
 	next.characteristics = append([]string(nil), c.characteristics...)
 	// Cache invalidation is per-rule via ruleID — adding a rule does not
 	// touch existing rules' cache slots, so we keep the shared *ruleCache
