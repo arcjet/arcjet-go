@@ -34,7 +34,7 @@ func TestRequestRuleBuilders(t *testing.T) {
 		fixed, sliding *decidev1.RateLimitRule
 		bot            *decidev1.BotV2Rule
 		email          *decidev1.EmailRule
-		prompt         *decidev1.PromptInjectionRule
+		prompt         *decidev1.PromptInjectionDetectionRule
 		filter         *decidev1.FilterRule
 	)
 	for _, r := range protoRules {

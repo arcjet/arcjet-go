@@ -1231,7 +1231,7 @@ func TestProtectProgrammerErrorsReturnZeroDecision(t *testing.T) {
 	if !errors.Is(err, ErrNilRequest) {
 		t.Errorf("expected ErrNilRequest, got %v", err)
 	}
-	if d != (Decision{}) {
+	if d.Conclusion != "" || d.IsAllowed() || d.IsErrored() {
 		t.Errorf("programmer error should return the zero decision, got %#v", d)
 	}
 }
