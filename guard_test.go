@@ -1320,3 +1320,44 @@ func TestGuardProgrammerErrorsReturnZeroDecision(t *testing.T) {
 		t.Errorf("expected zero results on programmer error, got %d", len(d.Results))
 	}
 }
+
+func TestGuardRateLimitDefaultBuckets(t *testing.T) {
+	tb, err := GuardTokenBucket(GuardTokenBucketOptions{
+		Mode: ModeLive, RefillRate: 1, Interval: time.Minute, Capacity: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw, err := GuardFixedWindow(GuardFixedWindowOptions{Mode: ModeLive, Window: time.Minute, MaxRequests: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, err := GuardSlidingWindow(GuardSlidingWindowOptions{Mode: ModeLive, Interval: time.Minute, MaxRequests: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		sub  GuardRuleInput
+		key  string
+		want string
+	}{
+		{"token-bucket", tb.Key("user", 1), "tokenBucket", defaultTokenBucketName},
+		{"fixed-window", fw.Key("user", 1), "fixedWindow", defaultFixedWindowName},
+		{"sliding-window", sw.Key("user", 1), "slidingWindow", defaultSlidingWindowName},
+	}
+	for _, tc := range cases {
+		sub, err := tc.sub.guardSubmission(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		rule, ok := sub.Rule[tc.key].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: missing %s in %#v", tc.name, tc.key, sub.Rule)
+		}
+		if got := rule["configBucket"]; got != tc.want {
+			t.Errorf("%s: configBucket = %v, want %q", tc.name, got, tc.want)
+		}
+	}
+}
