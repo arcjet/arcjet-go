@@ -1322,27 +1322,58 @@ func TestGuardProgrammerErrorsReturnZeroDecision(t *testing.T) {
 }
 
 func TestGuardRulesRejectEmptyMode(t *testing.T) {
+	customFn := func(context.Context, map[string]string) (GuardCustomResult, error) {
+		return GuardCustomResult{}, nil
+	}
 	cases := []struct {
-		name string
-		err  error
+		name  string
+		empty error
+		valid error
 	}{
-		{"token-bucket", errOf(GuardTokenBucket(GuardTokenBucketOptions{RefillRate: 1, Interval: time.Minute, Capacity: 10}))},
-		{"fixed-window", errOf(GuardFixedWindow(GuardFixedWindowOptions{Window: time.Minute, MaxRequests: 10}))},
-		{"sliding-window", errOf(GuardSlidingWindow(GuardSlidingWindowOptions{Interval: time.Minute, MaxRequests: 10}))},
-		{"prompt-injection", errOf(GuardPromptInjection(GuardPromptInjectionOptions{}))},
-		{"moderate-content", errOf(GuardModerateContent(GuardModerateContentOptions{}))},
-		{"sensitive-info", errOf(GuardSensitiveInfo(GuardSensitiveInfoOptions{}))},
-		{"custom", errOf(GuardCustom(GuardCustomOptions{Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
-			return GuardCustomResult{}, nil
-		}}))},
+		{
+			"token-bucket",
+			errOf(GuardTokenBucket(GuardTokenBucketOptions{RefillRate: 1, Interval: time.Minute, Capacity: 10})),
+			errOf(GuardTokenBucket(GuardTokenBucketOptions{Mode: ModeLive, RefillRate: 1, Interval: time.Minute, Capacity: 10})),
+		},
+		{
+			"fixed-window",
+			errOf(GuardFixedWindow(GuardFixedWindowOptions{Window: time.Minute, MaxRequests: 10})),
+			errOf(GuardFixedWindow(GuardFixedWindowOptions{Mode: ModeLive, Window: time.Minute, MaxRequests: 10})),
+		},
+		{
+			"sliding-window",
+			errOf(GuardSlidingWindow(GuardSlidingWindowOptions{Interval: time.Minute, MaxRequests: 10})),
+			errOf(GuardSlidingWindow(GuardSlidingWindowOptions{Mode: ModeLive, Interval: time.Minute, MaxRequests: 10})),
+		},
+		{
+			"prompt-injection",
+			errOf(GuardPromptInjection(GuardPromptInjectionOptions{})),
+			errOf(GuardPromptInjection(GuardPromptInjectionOptions{Mode: ModeLive})),
+		},
+		{
+			"moderate-content",
+			errOf(GuardModerateContent(GuardModerateContentOptions{})),
+			errOf(GuardModerateContent(GuardModerateContentOptions{Mode: ModeLive})),
+		},
+		{
+			"sensitive-info",
+			errOf(GuardSensitiveInfo(GuardSensitiveInfoOptions{})),
+			errOf(GuardSensitiveInfo(GuardSensitiveInfoOptions{Mode: ModeLive})),
+		},
+		{
+			"custom",
+			errOf(GuardCustom(GuardCustomOptions{Func: customFn})),
+			errOf(GuardCustom(GuardCustomOptions{Mode: ModeLive, Func: customFn})),
+		},
 	}
 	for _, tc := range cases {
-		if tc.err == nil {
+		if tc.empty == nil {
 			t.Errorf("%s: empty Mode should be rejected", tc.name)
-			continue
+		} else if !errors.Is(tc.empty, ErrInvalidMode) {
+			t.Errorf("%s: empty Mode: errors.Is(_, ErrInvalidMode) = false; err=%v", tc.name, tc.empty)
 		}
-		if !errors.Is(tc.err, ErrInvalidMode) {
-			t.Errorf("%s: errors.Is(_, ErrInvalidMode) = false; err=%v", tc.name, tc.err)
+		if tc.valid != nil {
+			t.Errorf("%s: ModeLive should succeed, got %v", tc.name, tc.valid)
 		}
 	}
 }
