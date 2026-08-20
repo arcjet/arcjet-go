@@ -36,6 +36,17 @@ func validateMode(mode Mode) error {
 	}
 }
 
+// validateGuardMode rejects an empty Mode. Guard constructors return
+// (*Rule, error), so a missing Mode is a loud constructor error rather than
+// the HTTP-rule DRY_RUN default. JS and Python Guard default to LIVE; flipping
+// Go's empty-Mode default would silently start enforcing, so we require it.
+func validateGuardMode(mode Mode) error {
+	if mode == "" {
+		return fmt.Errorf("arcjet: %w: required", ErrInvalidMode)
+	}
+	return validateMode(mode)
+}
+
 func requestMode(mode Mode) string {
 	if normalizeMode(mode) == ModeLive {
 		return "MODE_LIVE"
@@ -265,9 +276,14 @@ type Decision struct {
 	Warnings []Warning
 }
 
-// IsAllowed reports whether Arcjet allowed the request.
+// IsAllowed reports whether the request should proceed.
+//
+// ERROR conclusions are treated as allowed so Protect fails open: if Arcjet
+// cannot reach a decision, traffic continues. This matches
+// ArcjetErrorDecision.isAllowed() in the JavaScript SDK. Use [Decision.IsErrored]
+// to distinguish a real allow from a fail-open error.
 func (d Decision) IsAllowed() bool {
-	return d.Conclusion == ConclusionAllow
+	return d.Conclusion == ConclusionAllow || d.Conclusion == ConclusionError
 }
 
 // IsDenied reports whether Arcjet denied the request.
