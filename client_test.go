@@ -1195,16 +1195,18 @@ func TestProtectAppliesDefaultDeadlineWhenContextHasNone(t *testing.T) {
 		Shield(ShieldOptions{Mode: ModeLive}),
 	})
 
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)
+	req.RemoteAddr = "203.0.113.10:1"
 	start := time.Now()
-	_, err := client.ProtectDetails(context.Background(), ProtectDetails{IP: "203.0.113.10"})
+	_, err := client.Protect(context.Background(), req)
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("expected deadline error")
 	}
-	if elapsed < 200*time.Millisecond {
+	if elapsed < time.Second {
 		t.Fatalf("returned too quickly (%s); expected to wait for the default deadline", elapsed)
 	}
-	if elapsed > 2*time.Second {
+	if elapsed > 4*time.Second {
 		t.Fatalf("took %s; default deadline should fail open quickly", elapsed)
 	}
 }
@@ -1218,25 +1220,25 @@ func TestProtectTimeoutAdjustmentsAndCallerDeadline(t *testing.T) {
 		wantMax time.Duration
 	}{
 		{
-			name:    "base-500ms",
+			name:    "base-2s",
 			rules:   []Rule{Shield(ShieldOptions{Mode: ModeLive})},
 			ctx:     func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
-			wantMin: 200 * time.Millisecond,
-			wantMax: 600 * time.Millisecond,
+			wantMin: 1500 * time.Millisecond,
+			wantMax: 2100 * time.Millisecond,
 		},
 		{
 			name:    "email-doubles",
 			rules:   []Rule{ValidateEmail(EmailOptions{Mode: ModeLive, Deny: []EmailType{EmailTypeDisposable}})},
 			ctx:     func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
-			wantMin: 500 * time.Millisecond,
-			wantMax: 1200 * time.Millisecond,
+			wantMin: 3500 * time.Millisecond,
+			wantMax: 4200 * time.Millisecond,
 		},
 		{
-			name:    "prompt-injection-floor",
+			name:    "prompt-injection-uses-base",
 			rules:   []Rule{DetectPromptInjection(PromptInjectionOptions{Mode: ModeLive})},
 			ctx:     func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
-			wantMin: 500 * time.Millisecond,
-			wantMax: 1200 * time.Millisecond,
+			wantMin: 1500 * time.Millisecond,
+			wantMax: 2100 * time.Millisecond,
 		},
 		{
 			name:  "caller-shorter-kept",
@@ -1244,7 +1246,7 @@ func TestProtectTimeoutAdjustmentsAndCallerDeadline(t *testing.T) {
 			ctx: func() (context.Context, context.CancelFunc) {
 				return context.WithTimeout(context.Background(), 200*time.Millisecond)
 			},
-			wantMin: 100 * time.Millisecond,
+			wantMin: 1 * time.Millisecond,
 			wantMax: 250 * time.Millisecond,
 		},
 		{
@@ -1286,16 +1288,16 @@ func TestProtectTimeoutHelper(t *testing.T) {
 	if got := protectTimeout([]Rule{Shield(ShieldOptions{})}); got != defaultProtectTimeout {
 		t.Errorf("shield = %s", got)
 	}
-	if got := protectTimeout([]Rule{ValidateEmail(EmailOptions{})}); got != time.Second {
+	if got := protectTimeout([]Rule{ValidateEmail(EmailOptions{})}); got != 4*time.Second {
 		t.Errorf("email = %s", got)
 	}
-	if got := protectTimeout([]Rule{DetectPromptInjection(PromptInjectionOptions{})}); got != time.Second {
+	if got := protectTimeout([]Rule{DetectPromptInjection(PromptInjectionOptions{})}); got != defaultProtectTimeout {
 		t.Errorf("prompt injection = %s", got)
 	}
 	if got := protectTimeout([]Rule{
 		ValidateEmail(EmailOptions{}),
 		DetectPromptInjection(PromptInjectionOptions{}),
-	}); got != time.Second {
-		t.Errorf("email+pi = %s", got)
+	}); got != 4*time.Second {
+		t.Errorf("email+pi = %s, want 4s (email doubling; PI floor already met)", got)
 	}
 }

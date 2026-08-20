@@ -25,7 +25,6 @@
 // Arcjet is designed to fail open: if the service is unavailable, Protect and
 // Guard return an error and the caller should continue serving.
 //
-// Protect applies a 500ms deadline when the incoming context has none (1000ms
-// when an email or prompt-injection rule is configured). A caller-supplied
-// deadline is never shortened.
+// Protect applies a 2s deadline when the incoming context has none (4s when
+// an email rule is configured). A caller-supplied deadline is never shortened.
 package arcjet

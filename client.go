@@ -26,10 +26,10 @@ import (
 const reportTimeout = 5 * time.Second
 
 // defaultProtectTimeout is applied when the caller's context has no deadline,
-// matching the JavaScript SDK's production default. An email rule doubles it;
-// a prompt-injection rule floors it at 1s. A caller-supplied deadline is
-// never shortened.
-const defaultProtectTimeout = 500 * time.Millisecond
+// matching the JavaScript and Python SDKs (2s). An email rule doubles it;
+// a prompt-injection rule floors it at 1s (already satisfied by the 2s base).
+// A caller-supplied deadline is never shortened.
+const defaultProtectTimeout = 2 * time.Second
 
 const (
 	defaultDecideURL    = "https://decide.arcjet.com"
@@ -422,6 +422,8 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	if c == nil {
 		return Decision{}, fmt.Errorf("arcjet: %w", ErrNilClient)
 	}
+	// Protect delegates here, so Protect(context.Background(), r) gets the
+	// same fallback deadline as ProtectDetails.
 	ctx, cancel := withDefaultDeadline(ctx, protectTimeout(c.rules))
 	defer cancel()
 	options := ProtectOptions{}
@@ -895,9 +897,10 @@ func withDefaultDeadline(ctx context.Context, timeout time.Duration) (context.Co
 }
 
 // protectTimeout returns the SDK default Protect deadline, matching the
-// JavaScript SDK's production base (500ms) with the same adjustments: ×2
-// when an email rule is present, floored at 1s when a prompt-injection
-// rule is present.
+// JavaScript and Python SDK base (2s) with the JS adjustments: ×2 when an
+// email rule is present, floored at 1s when a prompt-injection rule is
+// present. With a 2s base the PI floor is already met; email+PI is 4s
+// (email doubling), not 2s.
 func protectTimeout(rules []Rule) time.Duration {
 	timeout := defaultProtectTimeout
 	hasEmail := false
