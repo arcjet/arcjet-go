@@ -461,12 +461,9 @@ func TestSensitiveInfoContextWindowSizePassedToDetect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range seen {
-		if n == 3 {
-			return
-		}
+	if !slices.Contains(seen, 3) {
+		t.Fatalf("expected a 3-token detect window, got lengths %v", seen)
 	}
-	t.Fatalf("expected a 3-token detect window, got lengths %v", seen)
 }
 
 func TestLocalDryRunDecisionDoesNotShortCircuit(t *testing.T) {
