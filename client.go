@@ -911,6 +911,7 @@ func protectTimeout(rules []Rule) time.Duration {
 			hasEmail = true
 		case localKindPromptInjection:
 			hasPromptInjection = true
+		default:
 		}
 	}
 	if hasEmail {
