@@ -265,9 +265,14 @@ type Decision struct {
 	Warnings []Warning
 }
 
-// IsAllowed reports whether Arcjet allowed the request.
+// IsAllowed reports whether the request should proceed.
+//
+// ERROR conclusions are treated as allowed so Protect fails open: if Arcjet
+// cannot reach a decision, traffic continues. This matches
+// ArcjetErrorDecision.isAllowed() in the JavaScript SDK. Use [Decision.IsErrored]
+// to distinguish a real allow from a fail-open error.
 func (d Decision) IsAllowed() bool {
-	return d.Conclusion == ConclusionAllow
+	return d.Conclusion == ConclusionAllow || d.Conclusion == ConclusionError
 }
 
 // IsDenied reports whether Arcjet denied the request.
