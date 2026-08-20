@@ -30,6 +30,7 @@ const (
 	localKindBot
 	localKindFilter
 	localKindSensitiveInfo
+	localKindPromptInjection
 )
 
 func (d *localDecision) liveDeny() bool {

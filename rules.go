@@ -392,7 +392,8 @@ func DetectPromptInjection(opts PromptInjectionOptions) Rule {
 				"mode": requestMode(opts.Mode),
 			}}, nil
 		},
-		id: hashKey("prompt_injection", "1", string(opts.Mode)),
+		id:   hashKey("prompt_injection", "1", string(opts.Mode)),
+		kind: localKindPromptInjection,
 	}
 }
 

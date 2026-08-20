@@ -27,6 +27,10 @@ type testDecideHandler struct {
 	decideCalls  int
 	reportCalls  int
 	decision     *decidev1.Decision
+	// hangUntilDone blocks Decide until ctx is cancelled.
+	hangUntilDone bool
+	sawDeadline   bool
+	deadlineLeft  time.Duration
 }
 
 type handlerTransport struct {
@@ -41,10 +45,21 @@ func (t handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (h *testDecideHandler) Decide(ctx context.Context, req *connect.Request[decidev1.DecideRequest]) (*connect.Response[decidev1.DecideResponse], error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	if dl, ok := ctx.Deadline(); ok {
+		h.sawDeadline = true
+		h.deadlineLeft = time.Until(dl)
+	}
+	hang := h.hangUntilDone
 	h.decideCalls++
 	h.seen = req.Msg
 	h.header = req.Header()
+	h.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.decision != nil {
 		return connect.NewResponse(&decidev1.DecideResponse{Decision: h.decision}), nil
 	}
@@ -1154,5 +1169,133 @@ func TestDetailsFromRequestPopulatesAllFields(t *testing.T) {
 	}
 	if d.Headers["user-agent"] != "go-test" {
 		t.Errorf("headers lowercased = %#v", d.Headers)
+	}
+}
+
+func newProtectTestClient(t *testing.T, handler *testDecideHandler, rules []Rule) *Client {
+	t.Helper()
+	path, h := decidev1alpha1connect.NewDecideServiceHandler(handler)
+	mux := http.NewServeMux()
+	mux.Handle(path, h)
+	client, err := NewClient(Config{
+		Key:        "ajkey_test",
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+		Rules:      rules,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func TestProtectAppliesDefaultDeadlineWhenContextHasNone(t *testing.T) {
+	handler := &testDecideHandler{hangUntilDone: true}
+	client := newProtectTestClient(t, handler, []Rule{
+		Shield(ShieldOptions{Mode: ModeLive}),
+	})
+
+	start := time.Now()
+	_, err := client.ProtectDetails(context.Background(), ProtectDetails{IP: "203.0.113.10"})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected deadline error")
+	}
+	if elapsed < 200*time.Millisecond {
+		t.Fatalf("returned too quickly (%s); expected to wait for the default deadline", elapsed)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("took %s; default deadline should fail open quickly", elapsed)
+	}
+}
+
+func TestProtectTimeoutAdjustmentsAndCallerDeadline(t *testing.T) {
+	cases := []struct {
+		name    string
+		rules   []Rule
+		ctx     func() (context.Context, context.CancelFunc)
+		wantMin time.Duration
+		wantMax time.Duration
+	}{
+		{
+			name:    "base-500ms",
+			rules:   []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+			ctx:     func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
+			wantMin: 200 * time.Millisecond,
+			wantMax: 600 * time.Millisecond,
+		},
+		{
+			name:    "email-doubles",
+			rules:   []Rule{ValidateEmail(EmailOptions{Mode: ModeLive, Deny: []EmailType{EmailTypeDisposable}})},
+			ctx:     func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
+			wantMin: 500 * time.Millisecond,
+			wantMax: 1200 * time.Millisecond,
+		},
+		{
+			name:    "prompt-injection-floor",
+			rules:   []Rule{DetectPromptInjection(PromptInjectionOptions{Mode: ModeLive})},
+			ctx:     func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
+			wantMin: 500 * time.Millisecond,
+			wantMax: 1200 * time.Millisecond,
+		},
+		{
+			name:  "caller-shorter-kept",
+			rules: []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 200*time.Millisecond)
+			},
+			wantMin: 100 * time.Millisecond,
+			wantMax: 250 * time.Millisecond,
+		},
+		{
+			name:  "caller-longer-kept",
+			rules: []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 5*time.Second)
+			},
+			wantMin: 4500 * time.Millisecond,
+			wantMax: 5100 * time.Millisecond,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &testDecideHandler{}
+			client := newProtectTestClient(t, handler, tc.rules)
+			ctx, cancel := tc.ctx()
+			defer cancel()
+			if _, err := client.ProtectDetails(ctx, ProtectDetails{IP: "203.0.113.10"}); err != nil {
+				t.Fatal(err)
+			}
+			handler.mu.Lock()
+			saw, left := handler.sawDeadline, handler.deadlineLeft
+			handler.mu.Unlock()
+			if !saw {
+				t.Fatal("Decide ran without a deadline")
+			}
+			if left < tc.wantMin || left > tc.wantMax {
+				t.Errorf("deadline remaining = %s, want %s–%s", left, tc.wantMin, tc.wantMax)
+			}
+		})
+	}
+}
+
+func TestProtectTimeoutHelper(t *testing.T) {
+	if got := protectTimeout(nil); got != defaultProtectTimeout {
+		t.Errorf("empty = %s", got)
+	}
+	if got := protectTimeout([]Rule{Shield(ShieldOptions{})}); got != defaultProtectTimeout {
+		t.Errorf("shield = %s", got)
+	}
+	if got := protectTimeout([]Rule{ValidateEmail(EmailOptions{})}); got != time.Second {
+		t.Errorf("email = %s", got)
+	}
+	if got := protectTimeout([]Rule{DetectPromptInjection(PromptInjectionOptions{})}); got != time.Second {
+		t.Errorf("prompt injection = %s", got)
+	}
+	if got := protectTimeout([]Rule{
+		ValidateEmail(EmailOptions{}),
+		DetectPromptInjection(PromptInjectionOptions{}),
+	}); got != time.Second {
+		t.Errorf("email+pi = %s", got)
 	}
 }

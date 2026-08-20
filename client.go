@@ -25,6 +25,12 @@ import (
 // cached decision so a slow Arcjet endpoint cannot pile up goroutines.
 const reportTimeout = 5 * time.Second
 
+// defaultProtectTimeout is applied when the caller's context has no deadline,
+// matching the JavaScript SDK's production default. An email rule doubles it;
+// a prompt-injection rule floors it at 1s. A caller-supplied deadline is
+// never shortened.
+const defaultProtectTimeout = 500 * time.Millisecond
+
 const (
 	defaultDecideURL    = "https://decide.arcjet.com"
 	defaultFlyDecideURL = "https://fly.decide.arcjet.com"
@@ -416,6 +422,8 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	if c == nil {
 		return Decision{}, fmt.Errorf("arcjet: %w", ErrNilClient)
 	}
+	ctx, cancel := withDefaultDeadline(ctx, protectTimeout(c.rules))
+	defer cancel()
 	options := ProtectOptions{}
 	for _, opt := range opts {
 		opt(&options)
@@ -874,6 +882,44 @@ func queryWithQuestion(q string) string {
 		return q
 	}
 	return "?" + q
+}
+
+// withDefaultDeadline returns ctx unchanged when it already has a deadline.
+// Otherwise it derives a child with timeout. The cancel func is always safe
+// to defer (a no-op when the original context is reused).
+func withDefaultDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// protectTimeout returns the SDK default Protect deadline, matching the
+// JavaScript SDK's production base (500ms) with the same adjustments: ×2
+// when an email rule is present, floored at 1s when a prompt-injection
+// rule is present.
+func protectTimeout(rules []Rule) time.Duration {
+	timeout := defaultProtectTimeout
+	hasEmail := false
+	hasPromptInjection := false
+	for _, r := range rules {
+		if r == nil {
+			continue
+		}
+		switch r.localKind() {
+		case localKindEmail:
+			hasEmail = true
+		case localKindPromptInjection:
+			hasPromptInjection = true
+		}
+	}
+	if hasEmail {
+		timeout *= 2
+	}
+	if hasPromptInjection && timeout < time.Second {
+		timeout = time.Second
+	}
+	return timeout
 }
 
 func defaultBaseURL(configured string) string {
