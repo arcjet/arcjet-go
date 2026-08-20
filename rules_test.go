@@ -210,6 +210,15 @@ func TestNormalizeAndValidateMode(t *testing.T) {
 	if got := guardMode(""); got != "GUARD_RULE_MODE_DRY_RUN" {
 		t.Errorf("guardMode(default) = %q", got)
 	}
+	if err := validateGuardMode(""); err == nil || !errors.Is(err, ErrInvalidMode) {
+		t.Errorf("validateGuardMode(\"\") = %v, want ErrInvalidMode", err)
+	}
+	if err := validateGuardMode(ModeLive); err != nil {
+		t.Errorf("validateGuardMode(LIVE) = %v", err)
+	}
+	if err := validateGuardMode(ModeDryRun); err != nil {
+		t.Errorf("validateGuardMode(DRY_RUN) = %v", err)
+	}
 }
 
 func TestSecondsRoundingBoundaries(t *testing.T) {

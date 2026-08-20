@@ -36,6 +36,17 @@ func validateMode(mode Mode) error {
 	}
 }
 
+// validateGuardMode rejects an empty Mode. Guard constructors return
+// (*Rule, error), so a missing Mode is a loud constructor error rather than
+// the HTTP-rule DRY_RUN default. JS and Python Guard default to LIVE; flipping
+// Go's empty-Mode default would silently start enforcing, so we require it.
+func validateGuardMode(mode Mode) error {
+	if mode == "" {
+		return fmt.Errorf("arcjet: %w: required", ErrInvalidMode)
+	}
+	return validateMode(mode)
+}
+
 func requestMode(mode Mode) string {
 	if normalizeMode(mode) == ModeLive {
 		return "MODE_LIVE"
