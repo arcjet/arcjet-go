@@ -323,6 +323,11 @@ type SensitiveInfoOptions struct {
 	// detection runs entirely through the backend. Required to allow or deny
 	// any entity type the bundled analyzer does not detect on its own.
 	Backend SensitiveInfoBackend
+	// ContextWindowSize is the number of adjacent tokens passed to a custom
+	// [SensitiveInfoDetect] callback at a time. Defaults to 1 when zero or
+	// negative, matching [github.com/arcjet/arcjet-go/redact.Options] and the
+	// JavaScript / Python SDKs.
+	ContextWindowSize int
 }
 
 // SensitiveInfo creates a sensitive information detection rule. The text
@@ -358,6 +363,7 @@ func SensitiveInfo(opts SensitiveInfoOptions) Rule {
 			string(opts.Mode),
 			joinSortedRuleParts(opts.Allow),
 			joinSortedRuleParts(opts.Deny),
+			strconv.Itoa(contextWindowSize(opts.ContextWindowSize)),
 		),
 	}
 }
@@ -492,6 +498,15 @@ func validateFilterOptions(opts FilterOptions) error {
 		return fmt.Errorf("arcjet: filter rule: %w", ErrAllowDenyConflict)
 	}
 	return nil
+}
+
+// contextWindowSize returns n, or 1 when n is zero or negative — the same
+// default as redact.Options and the JavaScript / Python SDKs.
+func contextWindowSize(n int) int {
+	if n <= 0 {
+		return 1
+	}
+	return n
 }
 
 func seconds(d time.Duration) uint32 {

@@ -976,7 +976,7 @@ func (r *GuardSensitiveInfoRule) Text(text string) GuardRuleInput {
 		case len(deny) > 0:
 			payload["configEntitiesDeny"] = map[string]any{"entities": stringSlice(deny)}
 		}
-		outcome, err := eval.scanSensitiveInfo(ctx, text, allow, deny, backend)
+		outcome, err := eval.scanSensitiveInfo(ctx, text, allow, deny, backend, 0)
 		if err != nil {
 			payload["resultError"] = map[string]any{"message": err.Error(), "code": "AJ1200"}
 			// Fail open: the scan error is reported to Arcjet via resultError in
