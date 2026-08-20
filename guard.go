@@ -958,7 +958,8 @@ func (r *GuardSensitiveInfoRule) ErrorResult(d GuardDecision) *ArcjetError {
 // `arcjet_analyze_js_req` component used by arcjet-js and arcjet-py); the
 // text never leaves the SDK. The submission carries a SHA-256 hash of the
 // text alongside the locally-computed result so the server can correlate
-// inputs without seeing the raw value.
+// inputs without seeing the raw value. The scan uses the default context
+// window of 1; GuardSensitiveInfoRule does not expose ContextWindowSize.
 func (r *GuardSensitiveInfoRule) Text(text string) GuardRuleInput {
 	allow := append([]EntityType(nil), r.allow...)
 	deny := append([]EntityType(nil), r.deny...)
