@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
 )
 
 func TestRequestRuleBuilders(t *testing.T) {
@@ -26,23 +28,68 @@ func TestRequestRuleBuilders(t *testing.T) {
 	if len(protoRules) != len(rules) {
 		t.Fatalf("rule count = %d", len(protoRules))
 	}
-	if protoRules[0].GetRateLimit().GetWindowInSeconds() != 60 {
-		t.Fatalf("fixed window = %#v", protoRules[0])
+	// NewClient sorts by JS priority, so look up each family rather than
+	// asserting declaration order.
+	var (
+		fixed, sliding *decidev1.RateLimitRule
+		bot            *decidev1.BotV2Rule
+		email          *decidev1.EmailRule
+		prompt         *decidev1.PromptInjectionDetectionRule
+		filter         *decidev1.FilterRule
+	)
+	for _, r := range protoRules {
+		switch {
+		case r.GetRateLimit() != nil && r.GetRateLimit().GetWindowInSeconds() > 0:
+			fixed = r.GetRateLimit()
+		case r.GetRateLimit() != nil && r.GetRateLimit().GetInterval() > 0:
+			sliding = r.GetRateLimit()
+		case r.GetBotV2() != nil:
+			bot = r.GetBotV2()
+		case r.GetEmail() != nil:
+			email = r.GetEmail()
+		case r.GetPromptInjectionDetection() != nil:
+			prompt = r.GetPromptInjectionDetection()
+		case r.GetFilter() != nil:
+			filter = r.GetFilter()
+		}
 	}
-	if protoRules[1].GetRateLimit().GetInterval() != 60 {
-		t.Fatalf("sliding interval = %#v", protoRules[1])
+	if fixed == nil || fixed.GetWindowInSeconds() != 60 {
+		t.Fatalf("fixed window = %#v", fixed)
 	}
-	if protoRules[2].GetBotV2().GetDeny()[0] != "CURL" {
-		t.Fatalf("bot deny = %#v", protoRules[2])
+	if sliding == nil || sliding.GetInterval() != 60 {
+		t.Fatalf("sliding interval = %#v", sliding)
 	}
-	if protoRules[3].GetEmail().GetDeny()[0].String() != "EMAIL_TYPE_DISPOSABLE" {
-		t.Fatalf("email deny = %#v", protoRules[3])
+	if bot == nil || bot.GetDeny()[0] != "CURL" {
+		t.Fatalf("bot deny = %#v", bot)
 	}
-	if protoRules[4].GetPromptInjectionDetection() == nil {
+	if email == nil || email.GetDeny()[0].String() != "EMAIL_TYPE_DISPOSABLE" {
+		t.Fatalf("email deny = %#v", email)
+	}
+	if prompt == nil {
 		t.Fatal("missing prompt injection rule")
 	}
-	if protoRules[5].GetFilter().GetDeny()[0] == "" {
+	if filter == nil || filter.GetDeny()[0] == "" {
 		t.Fatal("missing filter deny")
+	}
+}
+
+func TestSortRulesByPriorityIsStable(t *testing.T) {
+	first := TokenBucket(TokenBucketOptions{Mode: ModeLive, RefillRate: 1, Interval: time.Minute, Capacity: 1})
+	second := FixedWindow(FixedWindowOptions{Mode: ModeLive, Window: time.Minute, MaxRequests: 1})
+	sorted := sortRulesByPriority([]Rule{
+		DetectBot(BotOptions{Mode: ModeLive}),
+		first,
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive}),
+		second,
+	})
+	if sorted[0].evalPriority() != evalPrioritySensitiveInfo {
+		t.Errorf("first = %d, want sensitive-info", sorted[0].evalPriority())
+	}
+	if sorted[1].ruleID() != first.ruleID() || sorted[2].ruleID() != second.ruleID() {
+		t.Error("same-priority rate limits should keep declaration order")
+	}
+	if sorted[3].evalPriority() != evalPriorityBot {
+		t.Errorf("last = %d, want bot", sorted[3].evalPriority())
 	}
 }
 
