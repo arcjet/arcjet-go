@@ -1192,6 +1192,28 @@ func TestProtectTransportFailureReturnsErrorDecision(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a transport error alongside the fail-open decision")
 	}
+	assertProtectTransportFailureDecision(t, d)
+}
+
+func TestProtectTransportFailureViaProtectEntryPoint(t *testing.T) {
+	handler := &testDecideHandler{
+		errToReturn: connect.NewError(connect.CodeUnavailable, errors.New("upstream down")),
+	}
+	client := newProtectTestClient(t, handler, []Rule{
+		Shield(ShieldOptions{Mode: ModeLive}),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)
+	req.RemoteAddr = "203.0.113.10:1234"
+	d, err := client.Protect(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected a transport error alongside the fail-open decision")
+	}
+	assertProtectTransportFailureDecision(t, d)
+}
+
+func assertProtectTransportFailureDecision(t *testing.T, d Decision) {
+	t.Helper()
 	if !d.IsAllowed() {
 		t.Errorf("expected fail-open allow, got conclusion %q", d.Conclusion)
 	}
@@ -1206,6 +1228,9 @@ func TestProtectTransportFailureReturnsErrorDecision(t *testing.T) {
 	}
 	if d.IsDenied() {
 		t.Error("transport failure must not deny")
+	}
+	if len(d.Results) != 1 {
+		t.Errorf("want one synthesized result, got %d", len(d.Results))
 	}
 }
 
