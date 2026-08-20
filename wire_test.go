@@ -140,6 +140,9 @@ func TestDecisionFromProtoNilFailsToError(t *testing.T) {
 	if !d.IsErrored() {
 		t.Error("nil proto should produce an error decision")
 	}
+	if !d.IsAllowed() {
+		t.Error("ERROR conclusion should fail open")
+	}
 }
 
 func TestDecisionFromProtoThreatIntelligence(t *testing.T) {

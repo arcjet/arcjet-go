@@ -372,7 +372,7 @@ type guardRuleBase struct {
 }
 
 func newGuardRuleBase(mode Mode, label string, metadata Metadata) (guardRuleBase, error) {
-	if err := validateMode(mode); err != nil {
+	if err := validateGuardMode(mode); err != nil {
 		return guardRuleBase{}, err
 	}
 	if label != "" {
@@ -422,7 +422,8 @@ const (
 
 // GuardTokenBucketOptions configures a Guard token bucket rule.
 type GuardTokenBucketOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// RefillRate is the number of tokens added per interval.
 	RefillRate int
@@ -532,7 +533,8 @@ func (r *GuardTokenBucketRule) ErrorResult(d GuardDecision) *ArcjetError {
 
 // GuardFixedWindowOptions configures a Guard fixed window rule.
 type GuardFixedWindowOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Window is the fixed window duration.
 	Window time.Duration
@@ -630,7 +632,8 @@ func (r *GuardFixedWindowRule) ErrorResult(d GuardDecision) *ArcjetError {
 
 // GuardSlidingWindowOptions configures a Guard sliding window rule.
 type GuardSlidingWindowOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Interval is the sliding window interval.
 	Interval time.Duration
@@ -728,7 +731,8 @@ func (r *GuardSlidingWindowRule) ErrorResult(d GuardDecision) *ArcjetError {
 
 // GuardPromptInjectionOptions configures a Guard prompt injection rule.
 type GuardPromptInjectionOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -796,7 +800,8 @@ func (r *GuardPromptInjectionRule) ErrorResult(d GuardDecision) *ArcjetError {
 
 // GuardModerateContentOptions configures a Guard content moderation rule.
 type GuardModerateContentOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -884,7 +889,8 @@ func ExperimentalGuardModerateContent(opts ExperimentalGuardModerateContentOptio
 
 // GuardSensitiveInfoOptions configures local Guard sensitive information detection.
 type GuardSensitiveInfoOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Allow lists entity types allowed in scanned text.
 	Allow []EntityType
@@ -1025,7 +1031,8 @@ type GuardCustomFunc func(context.Context, map[string]string) (GuardCustomResult
 
 // GuardCustomOptions configures a custom local Guard rule.
 type GuardCustomOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Config is the rule configuration recorded with each invocation.
 	Config map[string]string

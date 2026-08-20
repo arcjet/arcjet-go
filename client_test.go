@@ -27,6 +27,9 @@ type testDecideHandler struct {
 	decideCalls  int
 	reportCalls  int
 	decision     *decidev1.Decision
+	// errToReturn, when non-nil, makes Decide return a transport error
+	// instead of a response — used to exercise fail-open-on-transport.
+	errToReturn error
 }
 
 type handlerTransport struct {
@@ -45,6 +48,9 @@ func (h *testDecideHandler) Decide(ctx context.Context, req *connect.Request[dec
 	h.decideCalls++
 	h.seen = req.Msg
 	h.header = req.Header()
+	if h.errToReturn != nil {
+		return nil, h.errToReturn
+	}
 	if h.decision != nil {
 		return connect.NewResponse(&decidev1.DecideResponse{Decision: h.decision}), nil
 	}
@@ -1154,5 +1160,62 @@ func TestDetailsFromRequestPopulatesAllFields(t *testing.T) {
 	}
 	if d.Headers["user-agent"] != "go-test" {
 		t.Errorf("headers lowercased = %#v", d.Headers)
+	}
+}
+
+func newProtectTestClient(t *testing.T, handler *testDecideHandler, rules []Rule) *Client {
+	t.Helper()
+	path, h := decidev1alpha1connect.NewDecideServiceHandler(handler)
+	mux := http.NewServeMux()
+	mux.Handle(path, h)
+	client, err := NewClient(Config{
+		Key:        "ajkey_test",
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+		Rules:      rules,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func TestProtectTransportFailureReturnsErrorDecision(t *testing.T) {
+	handler := &testDecideHandler{
+		errToReturn: connect.NewError(connect.CodeUnavailable, errors.New("upstream down")),
+	}
+	client := newProtectTestClient(t, handler, []Rule{
+		Shield(ShieldOptions{Mode: ModeLive}),
+	})
+
+	d, err := client.ProtectDetails(context.Background(), ProtectDetails{IP: "203.0.113.10"})
+	if err == nil {
+		t.Fatal("expected a transport error alongside the fail-open decision")
+	}
+	if !d.IsAllowed() {
+		t.Errorf("expected fail-open allow, got conclusion %q", d.Conclusion)
+	}
+	if !d.IsErrored() {
+		t.Error("expected IsErrored on a transport-failure decision")
+	}
+	if d.Conclusion != ConclusionError {
+		t.Errorf("conclusion = %q, want ERROR", d.Conclusion)
+	}
+	if d.Reason.Type != ReasonError || d.Reason.Message == "" {
+		t.Errorf("reason = %#v", d.Reason)
+	}
+	if d.IsDenied() {
+		t.Error("transport failure must not deny")
+	}
+}
+
+func TestProtectProgrammerErrorsReturnZeroDecision(t *testing.T) {
+	client := newProtectTestClient(t, &testDecideHandler{}, nil)
+	d, err := client.Protect(context.Background(), nil)
+	if !errors.Is(err, ErrNilRequest) {
+		t.Errorf("expected ErrNilRequest, got %v", err)
+	}
+	if d.Conclusion != "" || d.IsAllowed() || d.IsErrored() {
+		t.Errorf("programmer error should return the zero decision, got %#v", d)
 	}
 }
