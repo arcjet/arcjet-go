@@ -507,7 +507,11 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 
 	resp, err := c.decideClient.Decide(ctx, req)
 	if err != nil {
-		return Decision{}, err
+		// Fail open: return a usable ERROR decision alongside the transport
+		// error so IsAllowed()/IsErrored() are meaningful even if the caller
+		// ignores err. Programmer errors (nil client, nil request) still
+		// return the zero Decision.
+		return withProtectWarnings(protectErrorDecision(err), warnings), err
 	}
 	c.cacheDecideResults(resp.Msg.GetDecision(), fingerprints)
 	return withProtectWarnings(decisionFromProto(resp.Msg.GetDecision()), warnings), nil
@@ -924,6 +928,26 @@ func protectTimeout(rules []Rule) time.Duration {
 		timeout = time.Second
 	}
 	return timeout
+}
+
+// protectErrorDecision synthesizes a fail-open ERROR decision for a
+// transport failure. Conclusion is ERROR so IsErrored() is true; IsAllowed()
+// treats ERROR as allowed, matching ArcjetErrorDecision in arcjet-js.
+func protectErrorDecision(err error) Decision {
+	msg := "decide request failed"
+	if err != nil {
+		msg = err.Error()
+	}
+	reason := Reason{Type: ReasonError, Message: msg}
+	return Decision{
+		Conclusion: ConclusionError,
+		Reason:     reason,
+		Results: []RuleResult{{
+			State:      RuleStateRun,
+			Conclusion: ConclusionError,
+			Reason:     reason,
+		}},
+	}
 }
 
 func defaultBaseURL(configured string) string {

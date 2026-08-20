@@ -1320,3 +1320,31 @@ func TestGuardProgrammerErrorsReturnZeroDecision(t *testing.T) {
 		t.Errorf("expected zero results on programmer error, got %d", len(d.Results))
 	}
 }
+
+func TestGuardRulesRejectEmptyMode(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"token-bucket", errOf(GuardTokenBucket(GuardTokenBucketOptions{RefillRate: 1, Interval: time.Minute, Capacity: 10}))},
+		{"fixed-window", errOf(GuardFixedWindow(GuardFixedWindowOptions{Window: time.Minute, MaxRequests: 10}))},
+		{"sliding-window", errOf(GuardSlidingWindow(GuardSlidingWindowOptions{Interval: time.Minute, MaxRequests: 10}))},
+		{"prompt-injection", errOf(GuardPromptInjection(GuardPromptInjectionOptions{}))},
+		{"moderate-content", errOf(GuardModerateContent(GuardModerateContentOptions{}))},
+		{"sensitive-info", errOf(GuardSensitiveInfo(GuardSensitiveInfoOptions{}))},
+		{"custom", errOf(GuardCustom(GuardCustomOptions{Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
+			return GuardCustomResult{}, nil
+		}}))},
+	}
+	for _, tc := range cases {
+		if tc.err == nil {
+			t.Errorf("%s: empty Mode should be rejected", tc.name)
+			continue
+		}
+		if !errors.Is(tc.err, ErrInvalidMode) {
+			t.Errorf("%s: errors.Is(_, ErrInvalidMode) = false; err=%v", tc.name, tc.err)
+		}
+	}
+}
+
+func errOf[T any](_ T, err error) error { return err }

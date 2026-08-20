@@ -31,6 +31,9 @@ type testDecideHandler struct {
 	hangUntilDone bool
 	sawDeadline   bool
 	deadlineLeft  time.Duration
+	// errToReturn, when non-nil, makes Decide return a transport error
+	// instead of a response — used to exercise fail-open-on-transport.
+	errToReturn error
 }
 
 type handlerTransport struct {
@@ -50,6 +53,7 @@ func (h *testDecideHandler) Decide(ctx context.Context, req *connect.Request[dec
 		h.deadlineLeft = time.Until(dl)
 	}
 	hang := h.hangUntilDone
+	errToReturn := h.errToReturn
 	h.decideCalls++
 	h.seen = req.Msg
 	h.header = req.Header()
@@ -57,6 +61,9 @@ func (h *testDecideHandler) Decide(ctx context.Context, req *connect.Request[dec
 	if hang {
 		<-ctx.Done()
 		return nil, ctx.Err()
+	}
+	if errToReturn != nil {
+		return nil, errToReturn
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1187,6 +1194,46 @@ func newProtectTestClient(t *testing.T, handler *testDecideHandler, rules []Rule
 		t.Fatal(err)
 	}
 	return client
+}
+
+func TestProtectTransportFailureReturnsErrorDecision(t *testing.T) {
+	handler := &testDecideHandler{
+		errToReturn: connect.NewError(connect.CodeUnavailable, errors.New("upstream down")),
+	}
+	client := newProtectTestClient(t, handler, []Rule{
+		Shield(ShieldOptions{Mode: ModeLive}),
+	})
+
+	d, err := client.ProtectDetails(context.Background(), ProtectDetails{IP: "203.0.113.10"})
+	if err == nil {
+		t.Fatal("expected a transport error alongside the fail-open decision")
+	}
+	if !d.IsAllowed() {
+		t.Errorf("expected fail-open allow, got conclusion %q", d.Conclusion)
+	}
+	if !d.IsErrored() {
+		t.Error("expected IsErrored on a transport-failure decision")
+	}
+	if d.Conclusion != ConclusionError {
+		t.Errorf("conclusion = %q, want ERROR", d.Conclusion)
+	}
+	if d.Reason.Type != ReasonError || d.Reason.Message == "" {
+		t.Errorf("reason = %#v", d.Reason)
+	}
+	if d.IsDenied() {
+		t.Error("transport failure must not deny")
+	}
+}
+
+func TestProtectProgrammerErrorsReturnZeroDecision(t *testing.T) {
+	client := newProtectTestClient(t, &testDecideHandler{}, nil)
+	d, err := client.Protect(context.Background(), nil)
+	if !errors.Is(err, ErrNilRequest) {
+		t.Errorf("expected ErrNilRequest, got %v", err)
+	}
+	if d.Conclusion != "" || d.IsAllowed() || d.IsErrored() {
+		t.Errorf("programmer error should return the zero decision, got %#v", d)
+	}
 }
 
 func TestProtectAppliesDefaultDeadlineWhenContextHasNone(t *testing.T) {

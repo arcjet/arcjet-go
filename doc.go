@@ -23,7 +23,10 @@
 // changes a Guard or Protect decision. Call Flush during graceful shutdown.
 //
 // Arcjet is designed to fail open: if the service is unavailable, Protect and
-// Guard return an error and the caller should continue serving.
+// Guard return an error together with a usable decision, and the caller should
+// continue serving. Protect synthesizes an ERROR-conclusion Decision (IsAllowed
+// and IsErrored are both true); Guard synthesizes an ALLOW carrying a
+// TRANSPORT_ERROR result.
 //
 // Protect applies a 2s deadline when the incoming context has none (4s when
 // an email rule is configured). A caller-supplied deadline is never shortened.
