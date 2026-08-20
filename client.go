@@ -211,11 +211,9 @@ func (c *Client) WithRule(rule Rule) (*Client, error) {
 	if rule == nil {
 		return nil, fmt.Errorf("arcjet: %w", ErrNilRule)
 	}
-	if _, err := buildRequestRule(rule); err != nil {
-		return nil, err
-	}
 	// Re-sort so the new rule lands in JS priority order and every
 	// positional slice (ruleIDs, fpChars, builtRuleIndices) stays aligned.
+	// Validation happens in buildRequestRules; a bad new rule fails there.
 	rules := sortRulesByPriority(append(append([]Rule(nil), c.rules...), rule))
 	builtRules, builtRuleIndices, err := buildRequestRules(rules)
 	if err != nil {

@@ -93,6 +93,38 @@ func TestSortRulesByPriorityIsStable(t *testing.T) {
 	}
 }
 
+func TestExportedHTTPRuleConstructorsSetPriority(t *testing.T) {
+	// Every exported HTTP rule constructor must set a known JS-table
+	// priority. A zero value falls back to evalPriorityUnknown and would
+	// sort last — easy to miss when adding a new constructor.
+	cases := []struct {
+		name string
+		rule Rule
+		want int
+	}{
+		{"TokenBucket", TokenBucket(TokenBucketOptions{Mode: ModeLive, RefillRate: 1, Interval: time.Minute, Capacity: 1}), evalPriorityRateLimit},
+		{"FixedWindow", FixedWindow(FixedWindowOptions{Mode: ModeLive, Window: time.Minute, MaxRequests: 1}), evalPriorityRateLimit},
+		{"SlidingWindow", SlidingWindow(SlidingWindowOptions{Mode: ModeLive, Interval: time.Minute, MaxRequests: 1}), evalPriorityRateLimit},
+		{"Shield", Shield(ShieldOptions{Mode: ModeLive}), evalPriorityShield},
+		{"DetectBot", DetectBot(BotOptions{Mode: ModeLive}), evalPriorityBot},
+		{"ValidateEmail", ValidateEmail(EmailOptions{Mode: ModeLive}), evalPriorityEmail},
+		{"SensitiveInfo", SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive}), evalPrioritySensitiveInfo},
+		{"DetectPromptInjection", DetectPromptInjection(PromptInjectionOptions{Mode: ModeLive}), evalPriorityPromptInjection},
+		{"Filter", Filter(FilterOptions{Mode: ModeLive, Deny: []string{`ip.src.country == "KP"`}}), evalPriorityFilter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.rule.evalPriority()
+			if got == evalPriorityUnknown {
+				t.Fatalf("%s returned evalPriorityUnknown; set priority on the constructor", tc.name)
+			}
+			if got != tc.want {
+				t.Errorf("priority = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProtectSignupComposesRules(t *testing.T) {
 	rules := ProtectSignup(ProtectSignupOptions{
 		RateLimit: SlidingWindowOptions{Mode: ModeLive, Interval: time.Minute, MaxRequests: 5},
