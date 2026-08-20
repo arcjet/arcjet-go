@@ -414,6 +414,12 @@ func (b guardRuleBase) submission(rule map[string]any) guardRuleSubmissionWire {
 	return sub
 }
 
+const (
+	defaultTokenBucketName   = "default-token-bucket"
+	defaultFixedWindowName   = "default-fixed-window"
+	defaultSlidingWindowName = "default-sliding-window"
+)
+
 // GuardTokenBucketOptions configures a Guard token bucket rule.
 type GuardTokenBucketOptions struct {
 	// Mode controls whether the rule enforces denials or only reports them.
@@ -1116,12 +1122,6 @@ type guardRuleInputFunc func(ctx context.Context, eval *localEvaluator) (guardRu
 func (f guardRuleInputFunc) guardSubmission(ctx context.Context, eval *localEvaluator) (guardRuleSubmissionWire, error) {
 	return f(ctx, eval)
 }
-
-const (
-	defaultTokenBucketName   = "default-token-bucket"
-	defaultFixedWindowName   = "default-fixed-window"
-	defaultSlidingWindowName = "default-sliding-window"
-)
 
 func hashKey(parts ...string) string {
 	// Common case: a single key. sha256.Sum256 returns a value-typed
