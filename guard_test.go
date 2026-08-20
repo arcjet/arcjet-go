@@ -1321,6 +1321,35 @@ func TestGuardProgrammerErrorsReturnZeroDecision(t *testing.T) {
 	}
 }
 
+func TestNewGuardClientReadsARCJETKEY(t *testing.T) {
+	t.Setenv("ARCJET_KEY", "ajkey_from_env")
+	path, h := decidev2connect.NewDecideServiceHandler(&testGuardHandler{})
+	mux := http.NewServeMux()
+	mux.Handle(path, h)
+	client, err := NewGuardClient(GuardConfig{
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.key != "ajkey_from_env" {
+		t.Errorf("key = %q, want ajkey_from_env", client.key)
+	}
+
+	explicit, err := NewGuardClient(GuardConfig{
+		Key:        "ajkey_explicit",
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.key != "ajkey_explicit" {
+		t.Errorf("explicit key = %q, want ajkey_explicit", explicit.key)
+	}
+}
+
 func TestGuardRulesRejectEmptyMode(t *testing.T) {
 	cases := []struct {
 		name string

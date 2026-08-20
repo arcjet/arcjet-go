@@ -23,7 +23,10 @@ import (
 
 // GuardConfig configures a GuardClient.
 type GuardConfig struct {
-	// Key is the Arcjet site key. If empty, ARCJET_KEY is used.
+	// Key is the Arcjet site key. If empty, ARCJET_KEY is used. This matches
+	// [NewClient] and is the intended Go policy: process configuration belongs
+	// in the environment. The JavaScript Guard SDK never reads environment
+	// variables; the Python Guard SDK requires an explicit key.
 	Key string
 	// HTTPClient is the client used for Arcjet RPCs. If nil, http.DefaultClient
 	// is used, which honors the standard HTTP_PROXY, HTTPS_PROXY, and NO_PROXY
@@ -66,7 +69,12 @@ type GuardClient struct {
 // NewGuardClient creates a reusable Guard client.
 //
 // If GuardConfig.Key is empty, NewGuardClient reads ARCJET_KEY from the
-// environment.
+// environment. This matches [NewClient] and is intentional: Go conventionally
+// reads process configuration from the environment. The JavaScript Guard SDK
+// never reads environment variables, and the Python Guard SDK requires an
+// explicit key. There is no ARCJET_ENV / development-mode switch; set
+// [Config.Platform] and [WithIPSrc] on the request-protection client to control
+// request identity.
 func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 	key := cfg.Key
 	if key == "" {
