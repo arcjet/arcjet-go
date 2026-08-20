@@ -27,4 +27,7 @@
 // continue serving. Protect synthesizes an ERROR-conclusion Decision (IsAllowed
 // and IsErrored are both true); Guard synthesizes an ALLOW carrying a
 // TRANSPORT_ERROR result.
+//
+// Protect applies a 2s deadline when the incoming context has none (4s when
+// an email rule is configured). A caller-supplied deadline is never shortened.
 package arcjet
