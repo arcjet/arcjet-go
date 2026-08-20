@@ -400,7 +400,7 @@ func TestSensitiveInfoDetectCallbackAbsentSkipsCustomDetect(t *testing.T) {
 	if evaluator.hasCustomDetect() {
 		t.Fatal("expected no custom detect when callback unset")
 	}
-	cfg := sensitiveInfoConfig(nil, []EntityType{SensitiveInfoEmail}, evaluator.hasCustomDetect())
+	cfg := sensitiveInfoConfig(nil, []EntityType{SensitiveInfoEmail}, evaluator.hasCustomDetect(), 0)
 	if !cfg.SkipCustomDetect {
 		t.Fatal("SkipCustomDetect should be true with no callback")
 	}
@@ -417,10 +417,56 @@ func TestSensitiveInfoDetectCallbackPresentRunsCustomDetect(t *testing.T) {
 	if !evaluator.hasCustomDetect() {
 		t.Fatal("expected custom detect to be reported when callback set")
 	}
-	cfg := sensitiveInfoConfig(nil, nil, evaluator.hasCustomDetect())
+	cfg := sensitiveInfoConfig(nil, nil, evaluator.hasCustomDetect(), 0)
 	if cfg.SkipCustomDetect {
 		t.Fatal("SkipCustomDetect should be false when callback is configured")
 	}
+}
+
+func TestSensitiveInfoConfigContextWindowSize(t *testing.T) {
+	cfg := sensitiveInfoConfig(nil, nil, false, 3)
+	if cfg.ContextWindowSize == nil || *cfg.ContextWindowSize != 3 {
+		t.Fatalf("window = %v, want 3", cfg.ContextWindowSize)
+	}
+	cfg = sensitiveInfoConfig(nil, nil, false, 0)
+	if cfg.ContextWindowSize == nil || *cfg.ContextWindowSize != 1 {
+		t.Fatalf("default window = %v, want 1", cfg.ContextWindowSize)
+	}
+	cfg = sensitiveInfoConfig(nil, nil, false, -1)
+	if cfg.ContextWindowSize == nil || *cfg.ContextWindowSize != 1 {
+		t.Fatalf("negative window = %v, want 1", cfg.ContextWindowSize)
+	}
+}
+
+func TestSensitiveInfoContextWindowSizePassedToDetect(t *testing.T) {
+	var seen []int
+	detect := func(_ context.Context, tokens []string) []EntityType {
+		seen = append(seen, len(tokens))
+		return make([]EntityType, len(tokens))
+	}
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, ContextWindowSize: 3}),
+	}, detect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+
+	_, err = evaluator.detectSensitiveInfo(
+		context.Background(),
+		SensitiveInfoOptions{Mode: ModeLive, ContextWindowSize: 3, Deny: []EntityType{"API_KEY"}},
+		ProtectDetails{},
+		ProtectOptions{SensitiveInfoValue: "alpha beta gamma delta epsilon"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range seen {
+		if n == 3 {
+			return
+		}
+	}
+	t.Fatalf("expected a 3-token detect window, got lengths %v", seen)
 }
 
 func TestLocalDryRunDecisionDoesNotShortCircuit(t *testing.T) {

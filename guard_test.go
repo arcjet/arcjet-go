@@ -827,6 +827,104 @@ func TestGuardBuilderValidation(t *testing.T) {
 	}
 }
 
+func TestGuardRulesRejectEmptyMode(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"token-bucket", errOf(GuardTokenBucket(GuardTokenBucketOptions{RefillRate: 1, Interval: time.Minute, Capacity: 10}))},
+		{"fixed-window", errOf(GuardFixedWindow(GuardFixedWindowOptions{Window: time.Minute, MaxRequests: 10}))},
+		{"sliding-window", errOf(GuardSlidingWindow(GuardSlidingWindowOptions{Interval: time.Minute, MaxRequests: 10}))},
+		{"prompt-injection", errOf(GuardPromptInjection(GuardPromptInjectionOptions{}))},
+		{"moderate-content", errOf(GuardModerateContent(GuardModerateContentOptions{}))},
+		{"sensitive-info", errOf(GuardSensitiveInfo(GuardSensitiveInfoOptions{}))},
+		{"custom", errOf(GuardCustom(GuardCustomOptions{Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
+			return GuardCustomResult{}, nil
+		}}))},
+	}
+	for _, tc := range cases {
+		if tc.err == nil {
+			t.Errorf("%s: empty Mode should be rejected", tc.name)
+			continue
+		}
+		if !errors.Is(tc.err, ErrInvalidMode) {
+			t.Errorf("%s: errors.Is(_, ErrInvalidMode) = false; err=%v", tc.name, tc.err)
+		}
+	}
+}
+
+func errOf[T any](_ T, err error) error { return err }
+
+func TestGuardRateLimitDefaultBuckets(t *testing.T) {
+	tb, err := GuardTokenBucket(GuardTokenBucketOptions{
+		Mode: ModeLive, RefillRate: 1, Interval: time.Minute, Capacity: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw, err := GuardFixedWindow(GuardFixedWindowOptions{Mode: ModeLive, Window: time.Minute, MaxRequests: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, err := GuardSlidingWindow(GuardSlidingWindowOptions{Mode: ModeLive, Interval: time.Minute, MaxRequests: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		sub  GuardRuleInput
+		key  string
+		want string
+	}{
+		{"token-bucket", tb.Key("user", 1), "tokenBucket", defaultTokenBucketName},
+		{"fixed-window", fw.Key("user", 1), "fixedWindow", defaultFixedWindowName},
+		{"sliding-window", sw.Key("user", 1), "slidingWindow", defaultSlidingWindowName},
+	}
+	for _, tc := range cases {
+		sub, err := tc.sub.guardSubmission(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		rule, ok := sub.Rule[tc.key].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: missing %s in %#v", tc.name, tc.key, sub.Rule)
+		}
+		if got := rule["configBucket"]; got != tc.want {
+			t.Errorf("%s: configBucket = %v, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestNewGuardClientReadsARCJETKEY(t *testing.T) {
+	t.Setenv("ARCJET_KEY", "ajkey_from_env")
+	path, h := decidev2connect.NewDecideServiceHandler(&testGuardHandler{})
+	mux := http.NewServeMux()
+	mux.Handle(path, h)
+	client, err := NewGuardClient(GuardConfig{
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.key != "ajkey_from_env" {
+		t.Errorf("key = %q, want ajkey_from_env", client.key)
+	}
+
+	explicit, err := NewGuardClient(GuardConfig{
+		Key:        "ajkey_explicit",
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.key != "ajkey_explicit" {
+		t.Errorf("explicit key = %q, want ajkey_explicit", explicit.key)
+	}
+}
+
 func TestGuardLabelValidation(t *testing.T) {
 	client, closeServer := newGuardTestClient(t, &testGuardHandler{})
 	defer closeServer()

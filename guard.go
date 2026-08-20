@@ -23,7 +23,10 @@ import (
 
 // GuardConfig configures a GuardClient.
 type GuardConfig struct {
-	// Key is the Arcjet site key. If empty, ARCJET_KEY is used.
+	// Key is the Arcjet site key. If empty, ARCJET_KEY is used. This matches
+	// [NewClient] and is the intended Go policy: process configuration belongs
+	// in the environment. The JavaScript Guard SDK never reads environment
+	// variables; the Python Guard SDK requires an explicit key.
 	Key string
 	// HTTPClient is the client used for Arcjet RPCs. If nil, http.DefaultClient
 	// is used, which honors the standard HTTP_PROXY, HTTPS_PROXY, and NO_PROXY
@@ -66,7 +69,12 @@ type GuardClient struct {
 // NewGuardClient creates a reusable Guard client.
 //
 // If GuardConfig.Key is empty, NewGuardClient reads ARCJET_KEY from the
-// environment.
+// environment. This matches [NewClient] and is intentional: Go conventionally
+// reads process configuration from the environment. The JavaScript Guard SDK
+// never reads environment variables, and the Python Guard SDK requires an
+// explicit key. There is no ARCJET_ENV / development-mode switch; set
+// [Config.Platform] and [WithIPSrc] on the request-protection client to control
+// request identity.
 func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 	key := cfg.Key
 	if key == "" {
@@ -372,7 +380,7 @@ type guardRuleBase struct {
 }
 
 func newGuardRuleBase(mode Mode, label string, metadata Metadata) (guardRuleBase, error) {
-	if err := validateMode(mode); err != nil {
+	if err := validateGuardMode(mode); err != nil {
 		return guardRuleBase{}, err
 	}
 	if label != "" {
@@ -416,7 +424,8 @@ func (b guardRuleBase) submission(rule map[string]any) guardRuleSubmissionWire {
 
 // GuardTokenBucketOptions configures a Guard token bucket rule.
 type GuardTokenBucketOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// RefillRate is the number of tokens added per interval.
 	RefillRate int
@@ -424,7 +433,8 @@ type GuardTokenBucketOptions struct {
 	Interval time.Duration
 	// Capacity is the maximum bucket size.
 	Capacity int
-	// Bucket groups counters for this rule.
+	// Bucket groups counters for this rule. Defaults to "default-token-bucket"
+	// when empty, matching the JavaScript and Python Guard SDKs.
 	Bucket string
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -453,7 +463,7 @@ func GuardTokenBucket(opts GuardTokenBucketOptions) (*GuardTokenBucketRule, erro
 	}
 	bucket := opts.Bucket
 	if bucket == "" {
-		bucket = "default"
+		bucket = defaultTokenBucketName
 	}
 	if err := validateGuardLabel(bucket); err != nil {
 		return nil, fmt.Errorf("arcjet: guard token bucket: bucket name must be a label-like slug: %w", ErrInvalidLabel)
@@ -525,13 +535,15 @@ func (r *GuardTokenBucketRule) ErrorResult(d GuardDecision) *ArcjetError {
 
 // GuardFixedWindowOptions configures a Guard fixed window rule.
 type GuardFixedWindowOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Window is the fixed window duration.
 	Window time.Duration
 	// MaxRequests is the maximum number of requests per window.
 	MaxRequests int
-	// Bucket groups counters for this rule.
+	// Bucket groups counters for this rule. Defaults to "default-fixed-window"
+	// when empty, matching the JavaScript and Python Guard SDKs.
 	Bucket string
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -559,7 +571,7 @@ func GuardFixedWindow(opts GuardFixedWindowOptions) (*GuardFixedWindowRule, erro
 	}
 	bucket := opts.Bucket
 	if bucket == "" {
-		bucket = "default"
+		bucket = defaultFixedWindowName
 	}
 	if err := validateGuardLabel(bucket); err != nil {
 		return nil, fmt.Errorf("arcjet: guard fixed window bucket must be a label-like slug: %w", ErrInvalidLabel)
@@ -622,13 +634,15 @@ func (r *GuardFixedWindowRule) ErrorResult(d GuardDecision) *ArcjetError {
 
 // GuardSlidingWindowOptions configures a Guard sliding window rule.
 type GuardSlidingWindowOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Interval is the sliding window interval.
 	Interval time.Duration
 	// MaxRequests is the maximum number of requests per interval.
 	MaxRequests int
-	// Bucket groups counters for this rule.
+	// Bucket groups counters for this rule. Defaults to "default-sliding-window"
+	// when empty, matching the JavaScript and Python Guard SDKs.
 	Bucket string
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -656,7 +670,7 @@ func GuardSlidingWindow(opts GuardSlidingWindowOptions) (*GuardSlidingWindowRule
 	}
 	bucket := opts.Bucket
 	if bucket == "" {
-		bucket = "default"
+		bucket = defaultSlidingWindowName
 	}
 	if err := validateGuardLabel(bucket); err != nil {
 		return nil, fmt.Errorf("arcjet: guard sliding window bucket must be a label-like slug: %w", ErrInvalidLabel)
@@ -719,7 +733,8 @@ func (r *GuardSlidingWindowRule) ErrorResult(d GuardDecision) *ArcjetError {
 
 // GuardPromptInjectionOptions configures a Guard prompt injection rule.
 type GuardPromptInjectionOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -787,7 +802,8 @@ func (r *GuardPromptInjectionRule) ErrorResult(d GuardDecision) *ArcjetError {
 
 // GuardModerateContentOptions configures a Guard content moderation rule.
 type GuardModerateContentOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -875,7 +891,8 @@ func ExperimentalGuardModerateContent(opts ExperimentalGuardModerateContentOptio
 
 // GuardSensitiveInfoOptions configures local Guard sensitive information detection.
 type GuardSensitiveInfoOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Allow lists entity types allowed in scanned text.
 	Allow []EntityType
@@ -976,7 +993,7 @@ func (r *GuardSensitiveInfoRule) Text(text string) GuardRuleInput {
 		case len(deny) > 0:
 			payload["configEntitiesDeny"] = map[string]any{"entities": stringSlice(deny)}
 		}
-		outcome, err := eval.scanSensitiveInfo(ctx, text, allow, deny, backend)
+		outcome, err := eval.scanSensitiveInfo(ctx, text, allow, deny, backend, 0)
 		if err != nil {
 			payload["resultError"] = map[string]any{"message": err.Error(), "code": "AJ1200"}
 			// Fail open: the scan error is reported to Arcjet via resultError in
@@ -1016,7 +1033,8 @@ type GuardCustomFunc func(context.Context, map[string]string) (GuardCustomResult
 
 // GuardCustomOptions configures a custom local Guard rule.
 type GuardCustomOptions struct {
-	// Mode controls whether the rule enforces denials or only reports them.
+	// Mode is required (LIVE or DRY_RUN). Unlike HTTP rules, an empty Mode is
+	// rejected rather than defaulting to DRY_RUN.
 	Mode Mode
 	// Config is the rule configuration recorded with each invocation.
 	Config map[string]string
@@ -1113,6 +1131,12 @@ type guardRuleInputFunc func(ctx context.Context, eval *localEvaluator) (guardRu
 func (f guardRuleInputFunc) guardSubmission(ctx context.Context, eval *localEvaluator) (guardRuleSubmissionWire, error) {
 	return f(ctx, eval)
 }
+
+const (
+	defaultTokenBucketName   = "default-token-bucket"
+	defaultFixedWindowName   = "default-fixed-window"
+	defaultSlidingWindowName = "default-sliding-window"
+)
 
 func hashKey(parts ...string) string {
 	// Common case: a single key. sha256.Sum256 returns a value-typed

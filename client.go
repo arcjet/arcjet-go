@@ -25,6 +25,12 @@ import (
 // cached decision so a slow Arcjet endpoint cannot pile up goroutines.
 const reportTimeout = 5 * time.Second
 
+// defaultProtectTimeout is applied when the caller's context has no deadline,
+// matching the JavaScript SDK's production default. An email rule doubles it;
+// a prompt-injection rule floors it at 1s. A caller-supplied deadline is
+// never shortened.
+const defaultProtectTimeout = 500 * time.Millisecond
+
 const (
 	defaultDecideURL    = "https://decide.arcjet.com"
 	defaultFlyDecideURL = "https://fly.decide.arcjet.com"
@@ -137,19 +143,20 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 		platform = p
 	}
-	builtRules, builtRuleIndices, err := buildRequestRules(cfg.Rules)
+	rules := sortRulesByPriority(cfg.Rules)
+	builtRules, builtRuleIndices, err := buildRequestRules(rules)
 	if err != nil {
 		return nil, err
 	}
-	local, err := newLocalEvaluator(context.Background(), cfg.Rules, cfg.SensitiveInfoDetect)
+	local, err := newLocalEvaluator(context.Background(), rules, cfg.SensitiveInfoDetect)
 	if err != nil {
 		return nil, err
 	}
 	return &Client{
 		key:              key,
-		rules:            append([]Rule(nil), cfg.Rules...),
-		ruleIDs:          collectRuleIDs(cfg.Rules),
-		fpChars:          collectFingerprintChars(cfg.Rules, cfg.Characteristics),
+		rules:            rules,
+		ruleIDs:          collectRuleIDs(rules),
+		fpChars:          collectFingerprintChars(rules, cfg.Characteristics),
 		builtRules:       builtRules,
 		builtRuleIndices: builtRuleIndices,
 		characteristics:  append([]string(nil), cfg.Characteristics...),
@@ -210,22 +217,22 @@ func (c *Client) WithRule(rule Rule) (*Client, error) {
 	if rule == nil {
 		return nil, fmt.Errorf("arcjet: %w", ErrNilRule)
 	}
-	wireRule, err := buildRequestRule(rule)
+	if _, err := buildRequestRule(rule); err != nil {
+		return nil, err
+	}
+	// Re-sort so the new rule lands in JS priority order and every
+	// positional slice (ruleIDs, fpChars, builtRuleIndices) stays aligned.
+	rules := sortRulesByPriority(append(append([]Rule(nil), c.rules...), rule))
+	builtRules, builtRuleIndices, err := buildRequestRules(rules)
 	if err != nil {
 		return nil, err
 	}
 	next := *c
-	next.rules = append(append([]Rule(nil), c.rules...), rule)
-	next.ruleIDs = append(append([]string(nil), c.ruleIDs...), rule.ruleID())
-	next.fpChars = append(append([][]string(nil), c.fpChars...), fingerprintCharsFor(rule, c.characteristics))
-	next.builtRules = append([]*decidev1.Rule(nil), c.builtRules...)
-	next.builtRuleIndices = append([]int(nil), c.builtRuleIndices...)
-	if wireRule != nil {
-		// The new rule lands at index len(c.rules) in next.rules; record
-		// that so its Decide-response result maps back to the right slot.
-		next.builtRules = append(next.builtRules, wireRule)
-		next.builtRuleIndices = append(next.builtRuleIndices, len(c.rules))
-	}
+	next.rules = rules
+	next.ruleIDs = collectRuleIDs(rules)
+	next.fpChars = collectFingerprintChars(rules, c.characteristics)
+	next.builtRules = builtRules
+	next.builtRuleIndices = builtRuleIndices
 	next.characteristics = append([]string(nil), c.characteristics...)
 	// Cache invalidation is per-rule via ruleID — adding a rule does not
 	// touch existing rules' cache slots, so we keep the shared *ruleCache
@@ -416,6 +423,8 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	if c == nil {
 		return Decision{}, fmt.Errorf("arcjet: %w", ErrNilClient)
 	}
+	ctx, cancel := withDefaultDeadline(ctx, protectTimeout(c.rules))
+	defer cancel()
 	options := ProtectOptions{}
 	for _, opt := range opts {
 		opt(&options)
@@ -497,7 +506,11 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 
 	resp, err := c.decideClient.Decide(ctx, req)
 	if err != nil {
-		return Decision{}, err
+		// Fail open: return a usable ERROR decision alongside the transport
+		// error so IsAllowed()/IsErrored() are meaningful even if the caller
+		// ignores err. Programmer errors (nil client, nil request) still
+		// return the zero Decision.
+		return withProtectWarnings(protectErrorDecision(err), warnings), err
 	}
 	c.cacheDecideResults(resp.Msg.GetDecision(), fingerprints)
 	return withProtectWarnings(decisionFromProto(resp.Msg.GetDecision()), warnings), nil
@@ -874,6 +887,61 @@ func queryWithQuestion(q string) string {
 		return q
 	}
 	return "?" + q
+}
+
+// protectErrorDecision synthesizes a fail-open ERROR decision for a
+// transport failure. Conclusion is ERROR so IsErrored() is true; IsAllowed()
+// treats ERROR as allowed, matching ArcjetErrorDecision in arcjet-js.
+func protectErrorDecision(err error) Decision {
+	msg := "decide request failed"
+	if err != nil {
+		msg = err.Error()
+	}
+	reason := Reason{Type: ReasonError, Message: msg}
+	return Decision{
+		Conclusion: ConclusionError,
+		Reason:     reason,
+		Results: []RuleResult{{
+			State:      RuleStateRun,
+			Conclusion: ConclusionError,
+			Reason:     reason,
+		}},
+	}
+}
+
+// withDefaultDeadline returns ctx unchanged when it already has a deadline.
+// Otherwise it derives a child with timeout. The cancel func is always safe
+// to defer (a no-op when the original context is reused).
+func withDefaultDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// protectTimeout returns the SDK default Protect deadline, matching the
+// JavaScript SDK's production base (500ms) with the same adjustments: ×2
+// when an email rule is present, floored at 1s when a prompt-injection
+// rule is present.
+func protectTimeout(rules []Rule) time.Duration {
+	timeout := defaultProtectTimeout
+	hasEmail := false
+	hasPromptInjection := false
+	for _, r := range rules {
+		switch ruleEvalPriority(r) {
+		case evalPriorityEmail:
+			hasEmail = true
+		case evalPriorityPromptInjection:
+			hasPromptInjection = true
+		}
+	}
+	if hasEmail {
+		timeout *= 2
+	}
+	if hasPromptInjection && timeout < time.Second {
+		timeout = time.Second
+	}
+	return timeout
 }
 
 func defaultBaseURL(configured string) string {

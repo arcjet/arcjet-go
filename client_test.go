@@ -27,6 +27,13 @@ type testDecideHandler struct {
 	decideCalls  int
 	reportCalls  int
 	decision     *decidev1.Decision
+	// errToReturn, when non-nil, makes Decide return a transport error
+	// instead of a response — used to exercise fail-open-on-transport.
+	errToReturn error
+	// hangUntilDone blocks Decide until ctx is cancelled.
+	hangUntilDone bool
+	sawDeadline   bool
+	deadlineLeft  time.Duration
 }
 
 type handlerTransport struct {
@@ -41,10 +48,25 @@ func (t handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (h *testDecideHandler) Decide(ctx context.Context, req *connect.Request[decidev1.DecideRequest]) (*connect.Response[decidev1.DecideResponse], error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	if dl, ok := ctx.Deadline(); ok {
+		h.sawDeadline = true
+		h.deadlineLeft = time.Until(dl)
+	}
+	errToReturn := h.errToReturn
+	hang := h.hangUntilDone
 	h.decideCalls++
 	h.seen = req.Msg
 	h.header = req.Header()
+	h.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if errToReturn != nil {
+		return nil, errToReturn
+	}
 	if h.decision != nil {
 		return connect.NewResponse(&decidev1.DecideResponse{Decision: h.decision}), nil
 	}
@@ -1154,5 +1176,279 @@ func TestDetailsFromRequestPopulatesAllFields(t *testing.T) {
 	}
 	if d.Headers["user-agent"] != "go-test" {
 		t.Errorf("headers lowercased = %#v", d.Headers)
+	}
+}
+
+func newProtectTestClient(t *testing.T, handler *testDecideHandler, rules []Rule) *Client {
+	t.Helper()
+	path, h := decidev1alpha1connect.NewDecideServiceHandler(handler)
+	mux := http.NewServeMux()
+	mux.Handle(path, h)
+	client, err := NewClient(Config{
+		Key:        "ajkey_test",
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+		Rules:      rules,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func TestProtectTransportFailureReturnsErrorDecision(t *testing.T) {
+	handler := &testDecideHandler{
+		errToReturn: connect.NewError(connect.CodeUnavailable, errors.New("upstream down")),
+	}
+	client := newProtectTestClient(t, handler, []Rule{
+		Shield(ShieldOptions{Mode: ModeLive}),
+	})
+
+	d, err := client.ProtectDetails(context.Background(), ProtectDetails{IP: "203.0.113.10"})
+	if err == nil {
+		t.Fatal("expected a transport error alongside the fail-open decision")
+	}
+	if !d.IsAllowed() {
+		t.Errorf("expected fail-open allow, got conclusion %q", d.Conclusion)
+	}
+	if !d.IsErrored() {
+		t.Error("expected IsErrored on a transport-failure decision")
+	}
+	if d.Conclusion != ConclusionError {
+		t.Errorf("conclusion = %q, want ERROR", d.Conclusion)
+	}
+	if d.Reason.Type != ReasonError || d.Reason.Message == "" {
+		t.Errorf("reason = %#v", d.Reason)
+	}
+	if d.IsDenied() {
+		t.Error("transport failure must not deny")
+	}
+}
+
+func TestProtectProgrammerErrorsReturnZeroDecision(t *testing.T) {
+	client := newProtectTestClient(t, &testDecideHandler{}, nil)
+	d, err := client.Protect(context.Background(), nil)
+	if !errors.Is(err, ErrNilRequest) {
+		t.Errorf("expected ErrNilRequest, got %v", err)
+	}
+	if d != (Decision{}) {
+		t.Errorf("programmer error should return the zero decision, got %#v", d)
+	}
+}
+
+func TestProtectAppliesDefaultDeadlineWhenContextHasNone(t *testing.T) {
+	handler := &testDecideHandler{hangUntilDone: true}
+	client := newProtectTestClient(t, handler, []Rule{
+		Shield(ShieldOptions{Mode: ModeLive}),
+	})
+
+	start := time.Now()
+	d, err := client.ProtectDetails(context.Background(), ProtectDetails{IP: "203.0.113.10"})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected deadline error")
+	}
+	if elapsed < 200*time.Millisecond {
+		t.Fatalf("returned too quickly (%s); expected to wait for the default deadline", elapsed)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("took %s; default deadline should fail open quickly", elapsed)
+	}
+	if !d.IsAllowed() || !d.IsErrored() {
+		t.Fatalf("expected fail-open error decision, got %#v", d)
+	}
+}
+
+func TestProtectTimeoutAdjustmentsAndCallerDeadline(t *testing.T) {
+	cases := []struct {
+		name    string
+		rules   []Rule
+		ctx     func() (context.Context, context.CancelFunc)
+		wantMin time.Duration
+		wantMax time.Duration
+	}{
+		{
+			name:    "base-500ms",
+			rules:   []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+			ctx:     func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
+			wantMin: 200 * time.Millisecond,
+			wantMax: 600 * time.Millisecond,
+		},
+		{
+			name:    "email-doubles",
+			rules:   []Rule{ValidateEmail(EmailOptions{Mode: ModeLive, Deny: []EmailType{EmailTypeDisposable}})},
+			ctx:     func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
+			wantMin: 500 * time.Millisecond,
+			wantMax: 1200 * time.Millisecond,
+		},
+		{
+			name:    "prompt-injection-floor",
+			rules:   []Rule{DetectPromptInjection(PromptInjectionOptions{Mode: ModeLive})},
+			ctx:     func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
+			wantMin: 500 * time.Millisecond,
+			wantMax: 1200 * time.Millisecond,
+		},
+		{
+			name:  "caller-shorter-kept",
+			rules: []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 200*time.Millisecond)
+			},
+			wantMin: 100 * time.Millisecond,
+			wantMax: 250 * time.Millisecond,
+		},
+		{
+			name:  "caller-longer-kept",
+			rules: []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 5*time.Second)
+			},
+			wantMin: 4500 * time.Millisecond,
+			wantMax: 5100 * time.Millisecond,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &testDecideHandler{}
+			client := newProtectTestClient(t, handler, tc.rules)
+			ctx, cancel := tc.ctx()
+			defer cancel()
+			if _, err := client.ProtectDetails(ctx, ProtectDetails{IP: "203.0.113.10"}); err != nil {
+				t.Fatal(err)
+			}
+			handler.mu.Lock()
+			saw, left := handler.sawDeadline, handler.deadlineLeft
+			handler.mu.Unlock()
+			if !saw {
+				t.Fatal("Decide ran without a deadline")
+			}
+			if left < tc.wantMin || left > tc.wantMax {
+				t.Errorf("deadline remaining = %s, want %s–%s", left, tc.wantMin, tc.wantMax)
+			}
+		})
+	}
+}
+
+func TestProtectTimeoutHelper(t *testing.T) {
+	if got := protectTimeout(nil); got != defaultProtectTimeout {
+		t.Errorf("empty = %s", got)
+	}
+	if got := protectTimeout([]Rule{Shield(ShieldOptions{})}); got != defaultProtectTimeout {
+		t.Errorf("shield = %s", got)
+	}
+	if got := protectTimeout([]Rule{ValidateEmail(EmailOptions{})}); got != time.Second {
+		t.Errorf("email = %s", got)
+	}
+	if got := protectTimeout([]Rule{DetectPromptInjection(PromptInjectionOptions{})}); got != time.Second {
+		t.Errorf("prompt injection = %s", got)
+	}
+	if got := protectTimeout([]Rule{
+		ValidateEmail(EmailOptions{}),
+		DetectPromptInjection(PromptInjectionOptions{}),
+	}); got != time.Second {
+		t.Errorf("email+pi = %s", got)
+	}
+}
+
+func TestNewClientSortsRulesByPriority(t *testing.T) {
+	client, err := NewClient(Config{
+		Key: "ajkey_test",
+		Rules: []Rule{
+			DetectBot(BotOptions{Mode: ModeLive, Deny: []string{"CURL"}}),
+			ValidateEmail(EmailOptions{Mode: ModeLive}),
+			SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+			Filter(FilterOptions{Mode: ModeLive, Deny: []string{`http.host == "example.com"`}}),
+			Shield(ShieldOptions{Mode: ModeLive}),
+			TokenBucket(TokenBucketOptions{Mode: ModeLive, RefillRate: 1, Interval: time.Minute, Capacity: 10}),
+			DetectPromptInjection(PromptInjectionOptions{Mode: ModeLive}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{
+		evalPrioritySensitiveInfo,
+		evalPriorityFilter,
+		evalPriorityShield,
+		evalPriorityRateLimit,
+		evalPriorityBot,
+		evalPriorityEmail,
+		evalPriorityPromptInjection,
+	}
+	if len(client.rules) != len(want) {
+		t.Fatalf("rule count = %d", len(client.rules))
+	}
+	for i, rule := range client.rules {
+		if got := rule.evalPriority(); got != want[i] {
+			t.Errorf("rules[%d] priority = %d, want %d", i, got, want[i])
+		}
+		if client.ruleIDs[i] != rule.ruleID() {
+			t.Errorf("ruleIDs[%d] drifted from rules[%d]", i, i)
+		}
+	}
+	if len(client.builtRules) != len(client.builtRuleIndices) {
+		t.Fatalf("builtRules/builtRuleIndices length mismatch: %d vs %d", len(client.builtRules), len(client.builtRuleIndices))
+	}
+	for j, idx := range client.builtRuleIndices {
+		if idx < 0 || idx >= len(client.rules) {
+			t.Fatalf("builtRuleIndices[%d] = %d out of range", j, idx)
+		}
+	}
+}
+
+func TestWithRuleInsertsInPriorityOrder(t *testing.T) {
+	client, err := NewClient(Config{
+		Key:   "ajkey_test",
+		Rules: []Rule{DetectBot(BotOptions{Mode: ModeLive, Deny: []string{"CURL"}})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := client.WithRule(SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := next.rules[0].evalPriority(), evalPrioritySensitiveInfo; got != want {
+		t.Errorf("first rule priority = %d, want %d", got, want)
+	}
+	if got, want := next.rules[1].evalPriority(), evalPriorityBot; got != want {
+		t.Errorf("second rule priority = %d, want %d", got, want)
+	}
+	if client.rules[0].evalPriority() != evalPriorityBot {
+		t.Error("WithRule mutated the parent client's rule order")
+	}
+}
+
+func TestEvaluateLocalUsesPriorityNotDeclarationOrder(t *testing.T) {
+	handler := &testDecideHandler{reportCh: make(chan struct{}, 1)}
+	// Filter is declared first and would deny this host. SensitiveInfo is
+	// declared second and would deny the email. Priority must run
+	// SensitiveInfo first so the reported reason is the privacy deny.
+	client := newProtectTestClient(t, handler, []Rule{
+		Filter(FilterOptions{Mode: ModeLive, Deny: []string{`http.host == "example.com"`}}),
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+	})
+
+	decision, err := client.ProtectDetails(
+		context.Background(),
+		ProtectDetails{Host: "example.com"},
+		WithSensitiveInfoValue("Reach me at alice@example.com."),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.IsDenied() {
+		t.Fatalf("expected deny, got %#v", decision)
+	}
+	if decision.Reason.Type != ReasonSensitiveInfo {
+		t.Fatalf("expected sensitive-info reason (priority), got %q", decision.Reason.Type)
+	}
+	handler.waitReport(t)
+	snap := handler.snapshot()
+	if snap.decideCalls != 0 {
+		t.Fatalf("expected local short-circuit, decide=%d", snap.decideCalls)
+	}
+	if got := snap.reportSeen.GetDecision().GetReason().GetSensitiveInfo(); got == nil {
+		t.Fatal("expected Report to carry the sensitive-info reason")
 	}
 }
