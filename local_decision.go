@@ -248,7 +248,7 @@ func (e *localEvaluator) detectSensitiveInfo(ctx context.Context, opts Sensitive
 	if protectOpts.SensitiveInfoValue == "" {
 		return nil, nil
 	}
-	outcome, err := e.scanSensitiveInfo(ctx, protectOpts.SensitiveInfoValue, opts.Allow, opts.Deny, opts.Backend)
+	outcome, err := e.scanSensitiveInfo(ctx, protectOpts.SensitiveInfoValue, opts.Allow, opts.Deny, opts.Backend, opts.ContextWindowSize)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +282,7 @@ type sensitiveInfoOutcome struct {
 	ElapsedMs uint64
 }
 
-func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, allow, deny []EntityType, backend SensitiveInfoBackend) (sensitiveInfoOutcome, error) {
+func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, allow, deny []EntityType, backend SensitiveInfoBackend, windowSize int) (sensitiveInfoOutcome, error) {
 	if backend != nil {
 		return scanSensitiveInfoBackend(ctx, text, allow, deny, backend, e.detect)
 	}
@@ -294,7 +294,7 @@ func (e *localEvaluator) scanSensitiveInfo(ctx context.Context, text string, all
 	defer release()
 
 	start := time.Now()
-	result := inst.DetectSensitiveInfo(ctx, text, sensitiveInfoConfig(allow, deny, e.hasCustomDetect()))
+	result := inst.DetectSensitiveInfo(ctx, text, sensitiveInfoConfig(allow, deny, e.hasCustomDetect(), windowSize))
 	return sensitiveInfoOutcome{
 		Allowed:   detectedEntitiesFromWire(result.Allowed),
 		Denied:    detectedEntitiesFromWire(result.Denied),
@@ -452,7 +452,7 @@ func emailConfig(opts EmailOptions) jsreq.EmailValidationConfig {
 	}
 }
 
-func sensitiveInfoConfig(allow, deny []EntityType, customDetect bool) jsreq.SensitiveInfoConfig {
+func sensitiveInfoConfig(allow, deny []EntityType, customDetect bool, windowSize int) jsreq.SensitiveInfoConfig {
 	// Allow and Deny are mutually exclusive (validated upstream). An empty
 	// deny list — the default — means "deny nothing", so the deny variant
 	// is the right shape whenever Allow is unset.
@@ -462,9 +462,11 @@ func sensitiveInfoConfig(allow, deny []EntityType, customDetect bool) jsreq.Sens
 	if len(allow) > 0 {
 		entities = jsreq.SensitiveInfoEntitiesAllow{Value: sensitiveInfoEntitiesWire(allow)}
 	}
+	size := safeUint32(contextWindowSize(windowSize))
 	return jsreq.SensitiveInfoConfig{
-		Entities:         entities,
-		SkipCustomDetect: !customDetect,
+		Entities:          entities,
+		ContextWindowSize: &size,
+		SkipCustomDetect:  !customDetect,
 	}
 }
 

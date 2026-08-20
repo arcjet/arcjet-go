@@ -27,7 +27,25 @@ type Rule interface {
 	// characteristics (so a limit keyed on userId caches per user), while
 	// every other rule uses the single global fingerprint.
 	ruleCharacteristics() []string
+	// evalPriority is the local-evaluation order, matching arcjet-js's
+	// sortRule table. Lower runs first; the first live DENY short-circuits.
+	evalPriority() int
 }
+
+// evalPriority values match arcjet-js's sortRule table. Sensitive-info-first
+// is a privacy property: it denies before another rule's path forwards a
+// payload. The first live DENY short-circuits, so this order decides which
+// rule's reason, TTL, and Report payload the caller sees.
+const (
+	evalPrioritySensitiveInfo   = 1
+	evalPriorityFilter          = 2
+	evalPriorityShield          = 3
+	evalPriorityRateLimit       = 4
+	evalPriorityBot             = 5
+	evalPriorityEmail           = 6
+	evalPriorityPromptInjection = 7
+	evalPriorityUnknown         = 99
+)
 
 type ruleFunc struct {
 	build           func() (map[string]any, error)
@@ -35,6 +53,7 @@ type ruleFunc struct {
 	kind            localKind
 	id              string
 	characteristics []string
+	priority        int
 }
 
 func (f ruleFunc) requestRule() (map[string]any, error) {
@@ -58,6 +77,30 @@ func (f ruleFunc) ruleID() string {
 
 func (f ruleFunc) ruleCharacteristics() []string {
 	return f.characteristics
+}
+
+func (f ruleFunc) evalPriority() int {
+	if f.priority == 0 {
+		return evalPriorityUnknown
+	}
+	return f.priority
+}
+
+// sortRulesByPriority returns a stable copy of rules ordered by the JS
+// evaluation table. Same-priority rules keep their declaration order.
+func sortRulesByPriority(rules []Rule) []Rule {
+	out := append([]Rule(nil), rules...)
+	slices.SortStableFunc(out, func(a, b Rule) int {
+		return ruleEvalPriority(a) - ruleEvalPriority(b)
+	})
+	return out
+}
+
+func ruleEvalPriority(r Rule) int {
+	if r == nil {
+		return evalPriorityUnknown
+	}
+	return r.evalPriority()
 }
 
 // TokenBucketOptions configures a token bucket rate limit rule.
@@ -105,6 +148,7 @@ func TokenBucket(opts TokenBucketOptions) Rule {
 			strconv.Itoa(opts.Capacity),
 		),
 		characteristics: opts.Characteristics,
+		priority:        evalPriorityRateLimit,
 	}
 }
 
@@ -146,6 +190,7 @@ func FixedWindow(opts FixedWindowOptions) Rule {
 			strconv.Itoa(opts.MaxRequests),
 		),
 		characteristics: opts.Characteristics,
+		priority:        evalPriorityRateLimit,
 	}
 }
 
@@ -187,6 +232,7 @@ func SlidingWindow(opts SlidingWindowOptions) Rule {
 			strconv.Itoa(opts.MaxRequests),
 		),
 		characteristics: opts.Characteristics,
+		priority:        evalPriorityRateLimit,
 	}
 }
 
@@ -215,6 +261,7 @@ func Shield(opts ShieldOptions) Rule {
 			string(opts.Mode),
 			joinSortedRuleParts(opts.Characteristics),
 		),
+		priority: evalPriorityShield,
 	}
 }
 
@@ -257,6 +304,7 @@ func DetectBot(opts BotOptions) Rule {
 			joinSortedRuleParts(opts.Allow),
 			joinSortedRuleParts(opts.Deny),
 		),
+		priority: evalPriorityBot,
 	}
 }
 
@@ -304,6 +352,7 @@ func ValidateEmail(opts EmailOptions) Rule {
 			boolPtrPart(opts.RequireTopLevelDomain),
 			boolPtrPart(opts.AllowDomainLiteral),
 		),
+		priority: evalPriorityEmail,
 	}
 }
 
@@ -323,6 +372,11 @@ type SensitiveInfoOptions struct {
 	// detection runs entirely through the backend. Required to allow or deny
 	// any entity type the bundled analyzer does not detect on its own.
 	Backend SensitiveInfoBackend
+	// ContextWindowSize is the number of adjacent tokens passed to a custom
+	// [SensitiveInfoDetect] callback at a time. Defaults to 1 when zero or
+	// negative, matching [github.com/arcjet/arcjet-go/redact.Options] and the
+	// JavaScript / Python SDKs.
+	ContextWindowSize int
 }
 
 // SensitiveInfo creates a sensitive information detection rule. The text
@@ -358,7 +412,9 @@ func SensitiveInfo(opts SensitiveInfoOptions) Rule {
 			string(opts.Mode),
 			joinSortedRuleParts(opts.Allow),
 			joinSortedRuleParts(opts.Deny),
+			strconv.Itoa(contextWindowSize(opts.ContextWindowSize)),
 		),
+		priority: evalPrioritySensitiveInfo,
 	}
 }
 
@@ -392,8 +448,9 @@ func DetectPromptInjection(opts PromptInjectionOptions) Rule {
 				"mode": requestMode(opts.Mode),
 			}}, nil
 		},
-		id:   hashKey("prompt_injection", "1", string(opts.Mode)),
-		kind: localKindPromptInjection,
+		id:       hashKey("prompt_injection", "1", string(opts.Mode)),
+		kind:     localKindPromptInjection,
+		priority: evalPriorityPromptInjection,
 	}
 }
 
@@ -438,6 +495,7 @@ func Filter(opts FilterOptions) Rule {
 			joinSortedRuleParts(opts.Allow),
 			joinSortedRuleParts(opts.Deny),
 		),
+		priority: evalPriorityFilter,
 	}
 }
 
@@ -493,6 +551,15 @@ func validateFilterOptions(opts FilterOptions) error {
 		return fmt.Errorf("arcjet: filter rule: %w", ErrAllowDenyConflict)
 	}
 	return nil
+}
+
+// contextWindowSize returns n, or 1 when n is zero or negative — the same
+// default as redact.Options and the JavaScript / Python SDKs.
+func contextWindowSize(n int) int {
+	if n <= 0 {
+		return 1
+	}
+	return n
 }
 
 func seconds(d time.Duration) uint32 {

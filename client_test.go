@@ -1196,6 +1196,109 @@ func newProtectTestClient(t *testing.T, handler *testDecideHandler, rules []Rule
 	return client
 }
 
+func TestNewClientSortsRulesByPriority(t *testing.T) {
+	client, err := NewClient(Config{
+		Key: "ajkey_test",
+		Rules: []Rule{
+			DetectBot(BotOptions{Mode: ModeLive, Deny: []string{"CURL"}}),
+			ValidateEmail(EmailOptions{Mode: ModeLive}),
+			SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+			Filter(FilterOptions{Mode: ModeLive, Deny: []string{`http.host == "example.com"`}}),
+			Shield(ShieldOptions{Mode: ModeLive}),
+			TokenBucket(TokenBucketOptions{Mode: ModeLive, RefillRate: 1, Interval: time.Minute, Capacity: 10}),
+			DetectPromptInjection(PromptInjectionOptions{Mode: ModeLive}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{
+		evalPrioritySensitiveInfo,
+		evalPriorityFilter,
+		evalPriorityShield,
+		evalPriorityRateLimit,
+		evalPriorityBot,
+		evalPriorityEmail,
+		evalPriorityPromptInjection,
+	}
+	if len(client.rules) != len(want) {
+		t.Fatalf("rule count = %d", len(client.rules))
+	}
+	for i, rule := range client.rules {
+		if got := rule.evalPriority(); got != want[i] {
+			t.Errorf("rules[%d] priority = %d, want %d", i, got, want[i])
+		}
+		if client.ruleIDs[i] != rule.ruleID() {
+			t.Errorf("ruleIDs[%d] drifted from rules[%d]", i, i)
+		}
+	}
+	if len(client.builtRules) != len(client.builtRuleIndices) {
+		t.Fatalf("builtRules/builtRuleIndices length mismatch: %d vs %d", len(client.builtRules), len(client.builtRuleIndices))
+	}
+	for j, idx := range client.builtRuleIndices {
+		if idx < 0 || idx >= len(client.rules) {
+			t.Fatalf("builtRuleIndices[%d] = %d out of range", j, idx)
+		}
+	}
+}
+
+func TestWithRuleInsertsInPriorityOrder(t *testing.T) {
+	client, err := NewClient(Config{
+		Key:   "ajkey_test",
+		Rules: []Rule{DetectBot(BotOptions{Mode: ModeLive, Deny: []string{"CURL"}})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := client.WithRule(SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := next.rules[0].evalPriority(), evalPrioritySensitiveInfo; got != want {
+		t.Errorf("first rule priority = %d, want %d", got, want)
+	}
+	if got, want := next.rules[1].evalPriority(), evalPriorityBot; got != want {
+		t.Errorf("second rule priority = %d, want %d", got, want)
+	}
+	if client.rules[0].evalPriority() != evalPriorityBot {
+		t.Error("WithRule mutated the parent client's rule order")
+	}
+}
+
+func TestEvaluateLocalUsesPriorityNotDeclarationOrder(t *testing.T) {
+	handler := &testDecideHandler{reportCh: make(chan struct{}, 1)}
+	// Filter is declared first and would deny this host. SensitiveInfo is
+	// declared second and would deny the email. Priority must run
+	// SensitiveInfo first so the reported reason is the privacy deny.
+	client := newProtectTestClient(t, handler, []Rule{
+		Filter(FilterOptions{Mode: ModeLive, Deny: []string{`http.host == "example.com"`}}),
+		SensitiveInfo(SensitiveInfoOptions{Mode: ModeLive, Deny: []EntityType{SensitiveInfoEmail}}),
+	})
+
+	decision, err := client.ProtectDetails(
+		context.Background(),
+		ProtectDetails{Host: "example.com"},
+		WithSensitiveInfoValue("Reach me at alice@example.com."),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.IsDenied() {
+		t.Fatalf("expected deny, got %#v", decision)
+	}
+	if decision.Reason.Type != ReasonSensitiveInfo {
+		t.Fatalf("expected sensitive-info reason (priority), got %q", decision.Reason.Type)
+	}
+	handler.waitReport(t)
+	snap := handler.snapshot()
+	if snap.decideCalls != 0 {
+		t.Fatalf("expected local short-circuit, decide=%d", snap.decideCalls)
+	}
+	if got := snap.reportSeen.GetDecision().GetReason().GetSensitiveInfo(); got == nil {
+		t.Fatal("expected Report to carry the sensitive-info reason")
+	}
+}
+
 func TestProtectTransportFailureReturnsErrorDecision(t *testing.T) {
 	handler := &testDecideHandler{
 		errToReturn: connect.NewError(connect.CodeUnavailable, errors.New("upstream down")),
@@ -1208,6 +1311,28 @@ func TestProtectTransportFailureReturnsErrorDecision(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a transport error alongside the fail-open decision")
 	}
+	assertProtectTransportFailureDecision(t, d)
+}
+
+func TestProtectTransportFailureViaProtectEntryPoint(t *testing.T) {
+	handler := &testDecideHandler{
+		errToReturn: connect.NewError(connect.CodeUnavailable, errors.New("upstream down")),
+	}
+	client := newProtectTestClient(t, handler, []Rule{
+		Shield(ShieldOptions{Mode: ModeLive}),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)
+	req.RemoteAddr = "203.0.113.10:1234"
+	d, err := client.Protect(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected a transport error alongside the fail-open decision")
+	}
+	assertProtectTransportFailureDecision(t, d)
+}
+
+func assertProtectTransportFailureDecision(t *testing.T, d Decision) {
+	t.Helper()
 	if !d.IsAllowed() {
 		t.Errorf("expected fail-open allow, got conclusion %q", d.Conclusion)
 	}
@@ -1222,6 +1347,9 @@ func TestProtectTransportFailureReturnsErrorDecision(t *testing.T) {
 	}
 	if d.IsDenied() {
 		t.Error("transport failure must not deny")
+	}
+	if len(d.Results) != 1 {
+		t.Errorf("want one synthesized result, got %d", len(d.Results))
 	}
 }
 

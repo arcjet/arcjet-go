@@ -1,8 +1,7 @@
 // Package redact detects and redacts sensitive information — emails, phone
 // numbers, IP addresses, credit card numbers, and custom entities — in
-// arbitrary text. It runs the same WebAssembly component as the @arcjet/redact
-// (JavaScript) and arcjet.redact (Python) packages, so all three SDKs redact
-// identically.
+// arbitrary text. It runs the same WebAssembly component as @arcjet/redact in
+// the JavaScript SDK, so both SDKs redact identically.
 //
 // Redaction happens entirely in-process: the text is never sent to the Arcjet
 // service. This makes redact suitable for scrubbing prompts and responses
