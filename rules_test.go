@@ -224,6 +224,18 @@ func TestNormalizeAndValidateMode(t *testing.T) {
 	}
 }
 
+func TestContextWindowSizeDefault(t *testing.T) {
+	if got := contextWindowSize(0); got != 1 {
+		t.Errorf("zero = %d", got)
+	}
+	if got := contextWindowSize(-3); got != 1 {
+		t.Errorf("negative = %d", got)
+	}
+	if got := contextWindowSize(4); got != 4 {
+		t.Errorf("positive = %d", got)
+	}
+}
+
 func TestSecondsRoundingBoundaries(t *testing.T) {
 	if got := seconds(0); got != 1 {
 		t.Errorf("zero = %d", got)

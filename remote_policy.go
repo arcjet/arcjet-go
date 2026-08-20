@@ -357,7 +357,7 @@ func (r *remotePolicyRuntime) localResult(ctx context.Context, policy *decidev2.
 		ValueSha256:    localPolicyDigest(text),
 		Type:           decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO,
 	}
-	outcome, err := r.local.scanSensitiveInfo(ctx, text, allow, deny, r.backend)
+	outcome, err := r.local.scanSensitiveInfo(ctx, text, allow, deny, r.backend, 0)
 	if err != nil {
 		result.Result = &decidev2.GuardLocalPolicyResult_Error{Error: &decidev2.ResultError{Code: "LOCAL_POLICY_ERROR", Message: "local policy evaluation failed"}}
 		return result
