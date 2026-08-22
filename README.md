@@ -1415,6 +1415,40 @@ travels with the event as `local_warnings`. A capture that is dropped before
 it is sent (empty action, full queue) can only be observed locally — there is
 no decision to carry a warning.
 
+#### Capture diagnostics
+
+Those local-only problems are reported through a logger. Leave
+`GuardConfig.Logger` unset and they go to `slog.Default()` at warn level, with
+repeats of the same code coalesced to at most one line per minute — the counts
+in between accumulate and are released by the next line for that code or by
+`Flush`. That keeps a drop storm on a request path from becoming a logging
+incident.
+
+```go
+guard, err := arcjet.NewGuardClient(arcjet.GuardConfig{
+	Key:    os.Getenv("ARCJET_KEY"),
+	Logger: slog.Default().With("component", "arcjet"),
+})
+```
+
+Supply a logger and you receive **every** diagnostic, uncoalesced, because you
+are then the one deciding what to filter or count — which is what makes it
+possible to keep a metric of dropped events.
+
+| Code     | Meaning                                                       |
+| -------- | ------------------------------------------------------------- |
+| `AJ3000` | Capture input was invalid; the event was dropped              |
+| `AJ3001` | Capture queue is full; newest events were dropped             |
+| `AJ3002` | Capture batch send failed; events were dropped without retry  |
+| `AJ3003` | Capture flush deadline expired; remaining events were dropped |
+| `AJ1001` | A capture field was invalid and was dropped                   |
+| `AJ1017` | Metadata keys could not be encoded and were dropped           |
+
+Each line carries `event=capture_diagnostic`, the `code`, and a `count` of
+events affected. Codes mean the same thing in every Arcjet SDK. Diagnostics are
+static text plus counts — they never contain metadata values, capture actions,
+credentials, headers, or request bodies.
+
 ### Metadata
 
 `Guard`, `Protect`, and every guard rule accept `Metadata`: an

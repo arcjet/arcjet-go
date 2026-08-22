@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"os"
@@ -45,6 +46,27 @@ type GuardConfig struct {
 	// SensitiveInfoBackend evaluates sensitive-info rules projected by remote
 	// policies. If nil, the bundled WebAssembly analyzer is used.
 	SensitiveInfoBackend SensitiveInfoBackend
+	// Logger receives local SDK diagnostics — capture events dropped because
+	// the input was invalid, the queue was full, a batch send failed, or a
+	// Flush deadline expired. These cannot travel on the wire: capture is
+	// fire-and-forget, so a dropped event has no response to carry a warning
+	// back on.
+	//
+	// If nil, diagnostics go to [slog.Default] at warn level and repeats of
+	// the same code are coalesced to at most one line per minute, with the
+	// counts in between accumulated and released by the next line for that
+	// code or by [GuardClient.Flush]. That keeps a drop storm on a request
+	// path from becoming a logging incident.
+	//
+	// Supply a logger and you receive every diagnostic, uncoalesced, because
+	// you are then the one deciding what to filter or count — which is what
+	// makes it possible to keep a metric of dropped events. The coalesced
+	// default cannot be counted from.
+	//
+	// Diagnostics carry static text plus a code and an event count. They never
+	// contain metadata values, capture actions, credentials, headers, or
+	// request bodies.
+	Logger *slog.Logger
 }
 
 // GuardClient evaluates non-HTTP inputs such as tool calls, jobs, and queues.
@@ -58,9 +80,15 @@ type GuardClient struct {
 	local       *localEvaluator
 	policy      *remotePolicyRuntime
 
-	deliveryMu        sync.Mutex
-	delivery          *captureDelivery
-	diagnose          captureDiagnose
+	deliveryMu sync.Mutex
+	delivery   *captureDelivery
+	// diagnostics owns the sink and the coalescing state; diagnose is the
+	// call-only view of it handed to normalization and the delivery worker,
+	// which report drops and nothing more. Kept as its own field so a test can
+	// swap in a plain recorder without standing up a slog handler.
+	diagnostics *diagnostics
+	diagnose    captureDiagnose
+
 	captureQueueSize  int
 	captureBatchSize  int
 	captureBatchDelay time.Duration
@@ -101,6 +129,8 @@ func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 		// sensitive info) trigger wasm compilation.
 		local: newLazyLocalEvaluator(cfg.SensitiveInfoDetect),
 	}
+	client.diagnostics = newDiagnostics(cfg.Logger)
+	client.diagnose = client.diagnostics.report
 	client.policy = newRemotePolicyRuntime(client.guardClient, key, ua, client.local, cfg.SensitiveInfoBackend)
 	return client, nil
 }
