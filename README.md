@@ -6,9 +6,6 @@
 
 # Arcjet - Go SDK
 
-> [!IMPORTANT]
-> The Go SDK is pre-release and unstable.
-
 [Arcjet](https://arcjet.com) is the runtime security platform that ships in your AI code. Detect prompt injection, authorize agent tool calls, redact sensitive data, and block bots and abuse. Real-time security building blocks you call inside your app, before an action happens.
 
 This is the Go SDK for [Arcjet](https://arcjet.com) — use `arcjet.NewClient` for
@@ -563,8 +560,8 @@ module. It runs a quantized BERT named-entity-recognition model **embedded in
 the binary** — entirely in-process, so (like the built-in analyzer) the scanned
 text never leaves the SDK and nothing is fetched at runtime.
 
-Install it (it is a separate module so the ~15 MB of weights only affect apps
-that opt in):
+Add it to an existing Arcjet application (it is a separate module only so the
+~15 MB of weights do not affect applications that have not opted in):
 
 ```
 go get github.com/arcjet/arcjet-go/sensitiveinfo/rampart

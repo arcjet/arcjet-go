@@ -8,13 +8,18 @@ This guide covers the local development workflow.
 
 ## Layout
 
-Two Go modules live in this repo:
+Four Go modules live in this repo:
 
 - `./go.mod` — the published SDK. Keep its dep graph minimal; consumers see
   every entry in their own go.sum.
-- `./tools/go.mod` — a side module that pins development tools (currently just
-  `golangci-lint`) via Go's `tool` directive. Kept separate so linter
-  transitives don't leak into consumer projects.
+- `./sensitiveinfo/rampart/go.mod` — the optional on-device Rampart backend.
+  This is released in lockstep with the SDK, but remains a separate module so
+  its ~15 MB embedded model does not ship to applications that do not use it.
+- `./tools/go.mod` — a side module that pins development tools via Go's `tool`
+  directive. Kept separate so tool transitives don't leak into consumer
+  projects.
+- `./examples/nethttp/go.mod` — the runnable example server. Its local
+  `replace` directives make it exercise the working tree.
 
 ## Commands
 
@@ -29,7 +34,8 @@ All commands run from the repo root.
 | Lint | `go tool -modfile=tools/go.mod golangci-lint run ./...` |
 | Auto-fix lint issues | `go tool -modfile=tools/go.mod golangci-lint run --fix ./...` |
 | Format | `go tool -modfile=tools/go.mod golangci-lint fmt ./...` |
-| Tidy modules | `go mod tidy && go -C tools mod tidy` |
+| Check vulnerabilities | `just vuln` |
+| Tidy modules | `just tidy` |
 
 `-modfile=tools/go.mod` tells `go tool` to resolve `golangci-lint` from the
 tools module while keeping the working directory at the repo root, so `./...`
@@ -89,10 +95,66 @@ on the next run — there's no separate version file to keep in sync.
 to `main`, and in the merge queue:
 
 - **Lint** (arm64) — verifies `go.mod` / `tools/go.mod` are tidy, then runs
-  golangci-lint.
+  golangci-lint and `govulncheck` for the SDK and Rampart backend.
 - **Test** (arm64 + amd64 matrix) — `go build ./...` and `go test -race
   -shuffle=on ./...`.
 
-Both jobs use the Go version from `go.mod` via `setup-go`'s
-`go-version-file`. Action versions are pinned by commit SHA and the runner is
-locked down with `step-security/harden-runner` in egress-block mode.
+Both jobs use the latest security-patched Go 1.25 release while `go.mod` keeps
+the public compatibility floor at Go 1.25.0. Action versions are pinned by
+commit SHA and the runner is locked down with `step-security/harden-runner` in
+egress-block mode.
+
+## Releasing
+
+The SDK and optional Rampart backend are released from the same commit at the
+same version. Rampart is not a standalone SDK: its separate Go module only
+keeps the embedded model out of core SDK downloads. It therefore gets the
+module-qualified tag Go requires, but not a separate GitHub release.
+
+See the Go modules reference on
+[mapping versions to commits](https://go.dev/ref/mod#vcs-version) for why a
+module in a repository subdirectory needs that subdirectory in its tag.
+
+1. Create a release branch from an up-to-date `main`.
+2. Set `Version` in `types.go` to the release version without the leading `v`.
+3. Update the SDK requirement in `sensitiveinfo/rampart/go.mod` and both SDK
+   requirements in `examples/nethttp/go.mod` to `v<version>`. Keep the local
+   `replace` directives; downstream consumers ignore them.
+4. Run `just tidy`, then `just check` and
+   `go -C examples/nethttp test ./...`. `just check` includes lint, race tests,
+   and reachable-vulnerability checks for both published modules.
+5. Review the exported API changes since the previous release. Once v1 is
+   published, incompatible API changes require a new major module version.
+6. Merge the release PR to `main`, then create both annotated tags on the exact
+   merge commit. The suffix of both tags must match `Version` exactly, including
+   any prerelease suffix. For example, for version `1.2.3`:
+
+   ```sh
+   git tag -a v1.2.3 -m v1.2.3
+   git tag -a sensitiveinfo/rampart/v1.2.3 \
+     -m sensitiveinfo/rampart/v1.2.3
+   ```
+
+7. Push the root tag first, followed by the optional backend tag:
+
+   ```sh
+   git push origin v1.2.3
+   git push origin sensitiveinfo/rampart/v1.2.3
+   ```
+
+8. Verify the public module graph from a fresh temporary module. Do not add
+   local `replace` directives to this smoke test:
+
+   ```sh
+   SMOKE_DIR="$(mktemp -d)"
+   cd "$SMOKE_DIR"
+   go mod init example.com/arcjet-release-smoke
+   GOPROXY=https://proxy.golang.org go get \
+     github.com/arcjet/arcjet-go@v1.2.3 \
+     github.com/arcjet/arcjet-go/sensitiveinfo/rampart@v1.2.3
+   go mod download all
+   ```
+
+9. Create one GitHub release for the root tag. Mention that the optional Rampart
+   backend was released in lockstep; do not create a second GitHub release for
+   its module-qualified tag.
