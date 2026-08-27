@@ -33,6 +33,7 @@ jobs:
             proxy.golang.org:443
             sum.golang.org:443
             storage.googleapis.com:443
+            vuln.go.dev:443
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,7 +46,10 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # Keep the public compatibility floor in go.mod while testing with
+          # the latest security-patched release in that Go minor line.
+          go-version: 1.25.x
+          check-latest: true
           # Cache the main module, the tools module (golangci-lint has a heavy
           # dep graph — caching it saves ~30s per run), and the rampart module.
           cache-dependency-path: |
@@ -58,10 +62,17 @@ jobs:
           go mod tidy
           go -C tools mod tidy
           go -C sensitiveinfo/rampart mod tidy
-          files="go.mod go.sum tools/go.mod tools/go.sum sensitiveinfo/rampart/go.mod sensitiveinfo/rampart/go.sum"
-          if [[ -n "$(git status --porcelain -- $files)" ]]; then
+          files=(
+            go.mod
+            go.sum
+            tools/go.mod
+            tools/go.sum
+            sensitiveinfo/rampart/go.mod
+            sensitiveinfo/rampart/go.sum
+          )
+          if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
             echo "::error::go.mod / go.sum are not tidy. Run 'go mod tidy' in the root, tools/, and sensitiveinfo/rampart/ and commit the changes."
-            git --no-pager diff -- $files
+            git --no-pager diff -- "${files[@]}"
             exit 1
           fi
 
@@ -77,6 +88,11 @@ jobs:
         # inherits the repo-root .golangci.yml.
         working-directory: sensitiveinfo/rampart
         run: go tool -modfile="${{ github.workspace }}/tools/go.mod" golangci-lint run ./...
+
+      - name: Check vulnerabilities
+        run: |
+          go tool -modfile=tools/go.mod govulncheck ./...
+          go -C sensitiveinfo/rampart tool -modfile="${{ github.workspace }}/tools/go.mod" govulncheck ./...
 
   test:
     name: Test
@@ -108,7 +124,10 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # Keep the public compatibility floor in go.mod while testing with
+          # the latest security-patched release in that Go minor line.
+          go-version: 1.25.x
+          check-latest: true
           cache-dependency-path: |
             go.sum
             sensitiveinfo/rampart/go.sum

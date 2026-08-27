@@ -7,10 +7,12 @@ more entity types than the bundled analyzer — names, addresses, SSNs, tax and
 government IDs, and more — using a quantized BERT named-entity-recognition model
 that is **embedded in the binary** and runs entirely in-process.
 
-It is a separate Go module so the ~15 MB of model weights only ship with
-applications that opt in; `go get github.com/arcjet/arcjet-go` is unaffected.
+This is an Arcjet SDK backend, not a standalone SDK. It is a separate Go module
+only so the ~15 MB of model weights ship with applications that opt in;
+`go get github.com/arcjet/arcjet-go` is unaffected. Core and this backend are
+released together at the same version.
 
-## Install
+## Add to an Arcjet application
 
 ```
 go get github.com/arcjet/arcjet-go/sensitiveinfo/rampart

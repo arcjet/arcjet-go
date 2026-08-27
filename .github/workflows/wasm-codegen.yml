@@ -63,7 +63,10 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # Keep the public compatibility floor in go.mod while testing with
+          # the latest security-patched release in that Go minor line.
+          go-version: 1.25.x
+          check-latest: true
           cache-dependency-path: go.sum
 
       - name: Install pinned tooling (gravity)

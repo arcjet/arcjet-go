@@ -12,6 +12,7 @@
 # sensitiveinfo/rampart submodule (where a relative tools/go.mod would not
 # resolve). `./...` still resolves against whichever module is the cwd.
 golangci := "go tool -modfile=" + justfile_directory() + "/tools/go.mod golangci-lint"
+govulncheck := "go tool -modfile=" + justfile_directory() + "/tools/go.mod govulncheck"
 
 # List available tasks.
 default:
@@ -22,7 +23,7 @@ setup:
     mise install
 
 # Full pre-push gate (justfile fmt + tidy + lint + build + test).
-check: fmt-check tidy-check lint build test
+check: fmt-check tidy-check lint vuln build test
 
 # Auto-fix formatting: Go (goimports import grouping, etc.) and this justfile.
 format:
@@ -43,6 +44,11 @@ lint:
 lint-fix:
     {{ golangci }} run --fix ./...
     cd sensitiveinfo/rampart && {{ golangci }} run --fix ./...
+
+# Report reachable vulnerabilities in the SDK and optional rampart backend.
+vuln:
+    {{ govulncheck }} ./...
+    cd sensitiveinfo/rampart && {{ govulncheck }} ./...
 
 # Build all packages (matches the CI build step).
 build:

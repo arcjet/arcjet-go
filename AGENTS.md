@@ -9,8 +9,8 @@ platform. `arcjet.NewClient` provides request protection for `net/http`
 handlers; `arcjet.NewGuardClient` provides guard protection for non-HTTP code
 paths (AI agent tool calls, MCP servers, background jobs, queue workers).
 
-This is a **public, pre-release** module. Treat its exported API as a contract:
-prefer additive changes and call out any breaking change explicitly.
+This is a **public** module. Treat its exported API as a stable contract: prefer
+additive changes and call out any breaking change explicitly.
 
 ## Validation — run `just` before pushing
 
@@ -71,8 +71,8 @@ go test -race -run '^TestAdversarialConcurrentDetect$' ./...          # concurre
 go tool -modfile=../../tools/go.mod golangci-lint run ./...           # inherits the repo-root .golangci.yml
 ```
 
-`examples/nethttp/` is **not** in the gate; build it from its own directory
-(`go -C examples/nethttp build ./...`) if you change it.
+`examples/nethttp/` is **not** in the gate; compile it without leaving a binary
+in the worktree (`go -C examples/nethttp test ./...`) if you change it.
 
 The rampart module's `weights.bin` is a generated artifact (not the hand-written
 Go). It is repackaged from the upstream int4 ONNX by `internal/modelgen`; see the
