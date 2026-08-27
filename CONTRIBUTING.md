@@ -104,6 +104,10 @@ the public compatibility floor at Go 1.25.0. Action versions are pinned by
 commit SHA and the runner is locked down with `step-security/harden-runner` in
 egress-block mode.
 
+Changes under `.github/workflows/` also run
+[`.github/workflows/lint-workflows.yml`](.github/workflows/lint-workflows.yml),
+which gates on `actionlint` and medium-or-higher `zizmor` findings.
+
 ## Releasing
 
 The SDK and optional Rampart backend are released from the same commit at the
@@ -125,22 +129,17 @@ module in a repository subdirectory needs that subdirectory in its tag.
    and reachable-vulnerability checks for both published modules.
 5. Review the exported API changes since the previous release. Once v1 is
    published, incompatible API changes require a new major module version.
-6. Merge the release PR to `main`, then create both annotated tags on the exact
-   merge commit. The suffix of both tags must match `Version` exactly, including
-   any prerelease suffix. For example, for version `1.2.3`:
-
-   ```sh
-   git tag -a v1.2.3 -m v1.2.3
-   git tag -a sensitiveinfo/rampart/v1.2.3 \
-     -m sensitiveinfo/rampart/v1.2.3
-   ```
-
-7. Push the root tag first, followed by the optional backend tag:
-
-   ```sh
-   git push origin v1.2.3
-   git push origin sensitiveinfo/rampart/v1.2.3
-   ```
+6. Merge the release PR to `main`, then run the
+   [Release tags workflow](.github/workflows/release.yml) from `main`. The
+   workflow infers the version from `types.go`, verifies every lockstep version,
+   and creates both annotated module tags on the exact commit. Use its dry-run
+   mode for a rehearsal.
+7. Review the completed preflight summary, then approve the protected
+   `release-tags` environment. The gated job pushes both tags atomically using
+   the release GitHub App and requests both versions from the Go module proxy
+   so pkg.go.dev discovers them. See the
+   [release automation runbook](docs/RELEASING.md) for the one-time App,
+   environment, and tag-ruleset configuration.
 
 8. Verify the public module graph from a fresh temporary module. Do not add
    local `replace` directives to this smoke test:
