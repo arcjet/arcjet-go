@@ -3,7 +3,7 @@ module github.com/arcjet/arcjet-go/sensitiveinfo/rampart
 go 1.25.0
 
 require (
-	github.com/arcjet/arcjet-go v1.0.0
+	github.com/arcjet/arcjet-go v1.0.0-rc.1
 	golang.org/x/text v0.40.0
 )
 

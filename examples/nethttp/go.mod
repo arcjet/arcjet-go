@@ -6,13 +6,13 @@ go 1.25.0
 // Remove this line to build against a published version.
 replace github.com/arcjet/arcjet-go => ../..
 
-require github.com/arcjet/arcjet-go v1.0.0
+require github.com/arcjet/arcjet-go v1.0.0-rc.1
 
 require golang.org/x/text v0.40.0 // indirect
 
 require (
 	connectrpc.com/connect v1.20.0 // indirect
-	github.com/arcjet/arcjet-go/sensitiveinfo/rampart v1.0.0
+	github.com/arcjet/arcjet-go/sensitiveinfo/rampart v1.0.0-rc.1
 	github.com/gofrs/uuid/v5 v5.4.0 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	go.jetify.com/typeid v1.3.0 // indirect
