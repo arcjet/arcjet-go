@@ -351,6 +351,67 @@ func TestClientIPWalksXFFRightToLeftSkippingTrustedProxies(t *testing.T) {
 	}
 }
 
+func TestClientIPUsesUnverifiedPublicHeaderFallback(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		header     string
+		value      string
+		wantIP     string
+	}{
+		{
+			name:       "private peer and X-Forwarded-For",
+			remoteAddr: "10.0.0.5:443",
+			header:     "X-Forwarded-For",
+			value:      "not-an-ip, 8.8.8.8, 10.0.0.4",
+			wantIP:     "8.8.8.8",
+		},
+		{
+			name:   "missing peer and X-Real-IP",
+			header: "X-Real-IP",
+			value:  "2001:4860:4860::8888",
+			wantIP: "2001:4860:4860::8888",
+		},
+		{
+			name:   "Forwarded syntax with IPv6 and port",
+			header: "Forwarded",
+			value:  `for="[2001:4860:4860::8888]:443";proto=https`,
+			wantIP: "2001:4860:4860::8888",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+			req.RemoteAddr = tt.remoteAddr
+			req.Header.Set(tt.header, tt.value)
+			details := clientIPDetails(req, nil, platformNone)
+			if details.IP != tt.wantIP || details.Provenance != ClientIPProvenanceUnverifiedHeader || details.Verified || details.Header != strings.ToLower(tt.header) {
+				t.Fatalf("details = %#v", details)
+			}
+		})
+	}
+}
+
+func TestClientIPDoesNotLetHeaderOverridePublicPeer(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	req.RemoteAddr = "8.8.4.4:443"
+	req.Header.Set("X-Forwarded-For", "1.1.1.1")
+	details := clientIPDetails(req, nil, platformNone)
+	if details.IP != "8.8.4.4" || details.Provenance != ClientIPProvenanceDirect || !details.Verified || details.Header != "" {
+		t.Fatalf("details = %#v", details)
+	}
+}
+
+func TestClientIPIgnoresInvalidAndNonPublicHeaderCandidates(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	req.RemoteAddr = "10.0.0.5:443"
+	req.Header.Set("X-Forwarded-For", "not-an-ip, 192.168.1.4, 127.0.0.1")
+	details := clientIPDetails(req, nil, platformNone)
+	if details.IP != "10.0.0.5" || details.Provenance != ClientIPProvenanceDirect || !details.Verified {
+		t.Fatalf("details = %#v", details)
+	}
+}
+
 func TestNewClientRejectsInvalidProxy(t *testing.T) {
 	_, err := NewClient(Config{Key: "ajkey_test", Proxies: []string{"not an ip"}})
 	if !errors.Is(err, ErrInvalidProxy) {
@@ -1082,6 +1143,29 @@ func TestParseTrustedProxiesRejectsAndAcceptsMixed(t *testing.T) {
 	}
 }
 
+func TestHasTrustAllProxyOnlyMatchesZeroLengthCIDR(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "0.0.0.0/0", want: true},
+		{value: "::/0", want: true},
+		{value: "0.0.0.0", want: false},
+		{value: "::", want: false},
+		{value: "10.0.0.0/8", want: false},
+	} {
+		t.Run(tt.value, func(t *testing.T) {
+			proxies, err := parseTrustedProxies([]string{tt.value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hasTrustAllProxy(proxies); got != tt.want {
+				t.Fatalf("hasTrustAllProxy(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClientIPDetailsAndDebugFacet(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -1114,15 +1198,23 @@ func TestUnverifiedHeaderWarningIsOncePerClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	details := ClientIPDetails{
-		IP:         "198.51.100.44",
-		Provenance: ClientIPProvenanceUnverifiedHeader,
-		Header:     "x-forwarded-for",
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	req.RemoteAddr = "10.0.0.5:443"
+	req.Header.Set("X-Forwarded-For", "8.8.8.8")
+	details := client.ClientIPDetails(req)
+	if details.Provenance != ClientIPProvenanceUnverifiedHeader || details.Verified {
+		t.Fatalf("details = %#v", details)
+	}
+	if strings.Contains(logs.String(), "unverified forwarding header") {
+		t.Fatal("ClientIPDetails must not emit or consume the warning")
 	}
 	client.reportClientIP(details)
 	client.reportClientIP(details)
 	if got := strings.Count(logs.String(), "unverified forwarding header"); got != 1 {
 		t.Fatalf("warning count = %d, logs = %s", got, logs.String())
+	}
+	if got := strings.Count(logs.String(), `"client_ip_verified":false`); got != 2 {
+		t.Fatalf("debug facet count = %d, logs = %s", got, logs.String())
 	}
 }
 
@@ -1134,6 +1226,10 @@ func TestProtectRejectsInvalidIPSrc(t *testing.T) {
 	_, err = client.ProtectDetails(context.Background(), ProtectDetails{}, WithIPSrc("not-an-ip"))
 	if !errors.Is(err, ErrInvalidIP) {
 		t.Fatalf("err = %v, want ErrInvalidIP", err)
+	}
+	_, err = client.ProtectDetails(context.Background(), ProtectDetails{}, WithIPSrc("  "))
+	if !errors.Is(err, ErrInvalidIP) {
+		t.Fatalf("blank err = %v, want ErrInvalidIP", err)
 	}
 }
 
