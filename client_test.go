@@ -385,7 +385,8 @@ func TestClientIPUsesUnverifiedPublicHeaderFallback(t *testing.T) {
 			req.RemoteAddr = tt.remoteAddr
 			req.Header.Set(tt.header, tt.value)
 			details := clientIPDetails(req, nil, platformNone)
-			if details.IP != tt.wantIP || details.Provenance != ClientIPProvenanceUnverifiedHeader || details.Verified || details.Header != strings.ToLower(tt.header) {
+			wantHeader := strings.ToLower(tt.header)
+			if details.IP != tt.wantIP || details.Provenance != ClientIPProvenanceUnverifiedHeader || details.Verified || details.Header != wantHeader {
 				t.Fatalf("details = %#v", details)
 			}
 		})
