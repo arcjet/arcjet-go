@@ -13,19 +13,6 @@ This is the Go SDK for [Arcjet](https://arcjet.com) — use `arcjet.NewClient` f
 `*http.Request`) and `arcjet.NewGuardClient` for **guard protection** (AI agent
 tool calls, MCP servers, background jobs, queue workers).
 
-> [!WARNING]
-> Outside supported hosting platforms, Arcjet uses `Request.RemoteAddr` and
-> ignores `X-Forwarded-For` unless the direct peer matches an IP or CIDR in
-> `Config.Proxies`. It then walks the header from right to left, skipping
-> configured proxy hops.
->
-> In production, make the application reachable only through the configured
-> proxies and ensure they overwrite or safely append `X-Forwarded-For`.
-> Configure the actual direct proxy and every trusted hop in `Config.Proxies`.
-> On a supported hosting platform, use `Config.Platform` when automatic
-> platform detection is unavailable. If your application determines the client
-> IP itself, pass a validated value with `WithIPSrc`.
-
 ## Why Arcjet?
 
 Your app's AI features and agents take real actions, calling tools, reading data, hitting APIs. Arcjet runs inside that code and lets you enforce security on each action in real time, then audit what happened.
@@ -255,6 +242,19 @@ together — if **any** rule denies the request, `decision.IsDenied()` returns
 enforcing.
 
 ## Installation
+
+> [!WARNING]
+> Outside supported hosting platforms, Arcjet uses `Request.RemoteAddr` and
+> ignores `X-Forwarded-For` unless the direct peer matches an IP or CIDR in
+> `Config.Proxies`. It then walks the header from right to left, skipping
+> configured proxy hops.
+>
+> In production, make the application reachable only through the configured
+> proxies and ensure they overwrite or safely append `X-Forwarded-For`.
+> Configure the actual direct proxy and every trusted hop in `Config.Proxies`.
+> On a supported hosting platform, use `Config.Platform` when automatic
+> platform detection is unavailable. If your application determines the client
+> IP itself, pass a validated value with `WithIPSrc`.
 
 ```sh
 go get github.com/arcjet/arcjet-go
