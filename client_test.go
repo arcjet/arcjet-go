@@ -351,6 +351,51 @@ func TestClientIPWalksXFFRightToLeftSkippingTrustedProxies(t *testing.T) {
 	}
 }
 
+func TestClientIPLegacyStringAPIBackwardsCompatibleWithDetails(t *testing.T) {
+	proxies := []trustedProxy{{network: mustCIDR(t, "10.0.0.0/8")}}
+	tests := []struct {
+		name     string
+		request  *http.Request
+		proxies  []trustedProxy
+		platform hostingPlatform
+	}{
+		{
+			name:    "unverified forwarding header",
+			request: requestWithClientIP("10.0.0.5:443", "X-Forwarded-For", "8.8.8.8"),
+		},
+		{
+			name:    "trusted proxy chain",
+			request: requestWithClientIP("10.0.0.5:443", "X-Forwarded-For", "8.8.8.8, 10.0.0.5"),
+			proxies: proxies,
+		},
+		{
+			name:     "managed platform",
+			request:  requestWithClientIP("10.0.0.5:443", "Fly-Client-IP", "8.8.8.8"),
+			platform: platformFlyIo,
+		},
+		{
+			name:    "no usable address",
+			request: requestWithClientIP("", "", ""),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, want := clientIP(tt.request, tt.proxies, tt.platform), clientIPDetails(tt.request, tt.proxies, tt.platform).IP; got != want {
+				t.Fatalf("legacy clientIP() = %q, details IP = %q", got, want)
+			}
+		})
+	}
+}
+
+func requestWithClientIP(remoteAddr, header, value string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	req.RemoteAddr = remoteAddr
+	if header != "" {
+		req.Header.Set(header, value)
+	}
+	return req
+}
+
 func TestClientIPUsesUnverifiedPublicHeaderFallback(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1189,6 +1234,31 @@ func TestClientIPDetailsAndDebugFacet(t *testing.T) {
 	client.reportClientIP(details)
 	if got := logs.String(); !strings.Contains(got, `"client_ip_provenance":"trusted-proxy"`) {
 		t.Fatalf("debug log missing provenance facet: %s", got)
+	}
+}
+
+func TestProtectDetailsLegacyIPPayloadAndEmptyProvenance(t *testing.T) {
+	var logs bytes.Buffer
+	handler := &testDecideHandler{}
+	client := newProtectTestClient(t, handler, nil)
+	client.log = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	if _, err := client.ProtectDetails(context.Background(), ProtectDetails{IP: "198.51.100.44"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := handler.snapshot().seen.GetDetails().GetIp(); got != "198.51.100.44" {
+		t.Fatalf("legacy ProtectDetails IP = %q", got)
+	}
+	if got := logs.String(); !strings.Contains(got, `"client_ip_provenance":"request"`) || !strings.Contains(got, `"client_ip_verified":true`) {
+		t.Fatalf("request provenance log = %s", got)
+	}
+
+	logs.Reset()
+	if _, err := client.ProtectDetails(context.Background(), ProtectDetails{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := logs.String(); !strings.Contains(got, `"client_ip_provenance":"none"`) || !strings.Contains(got, `"client_ip_verified":false`) {
+		t.Fatalf("empty IP provenance log = %s", got)
 	}
 }
 

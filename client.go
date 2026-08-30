@@ -519,7 +519,11 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	}
 	ipDetails := details.clientIPDetails
 	if ipDetails == nil {
-		ipDetails = &ClientIPDetails{IP: details.IP, Provenance: ClientIPProvenanceRequest, Verified: true}
+		if details.IP == "" {
+			ipDetails = &ClientIPDetails{Provenance: ClientIPProvenanceNone}
+		} else {
+			ipDetails = &ClientIPDetails{IP: details.IP, Provenance: ClientIPProvenanceRequest, Verified: true}
+		}
 	}
 	if options.ipSrcSet {
 		ip := net.ParseIP(strings.TrimSpace(options.IPSrc))
