@@ -1,6 +1,7 @@
 package arcjet
 
 import (
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -97,41 +98,57 @@ func detectPlatform(getenv func(string) string) hostingPlatform {
 // right-to-left so spoofed left-most entries are ignored, skipping any
 // configured trusted proxies along the way.
 func platformIP(r *http.Request, platform hostingPlatform, proxies []trustedProxy) string {
+	return platformIPDetails(r, platform, proxies).IP
+}
+
+func platformIPDetails(r *http.Request, platform hostingPlatform, proxies []trustedProxy) ClientIPDetails {
+	details := func(value, header string) ClientIPDetails {
+		ip := net.ParseIP(strings.TrimSpace(value))
+		if ip == nil {
+			return ClientIPDetails{Provenance: ClientIPProvenanceNone}
+		}
+		return ClientIPDetails{
+			IP:         ip.String(),
+			Provenance: ClientIPProvenancePlatform,
+			Verified:   true,
+			Header:     header,
+		}
+	}
 	switch platform {
 	case platformNone:
-		return ""
+		return ClientIPDetails{Provenance: ClientIPProvenanceNone}
 	case platformFirebase:
-		if ip := strings.TrimSpace(r.Header.Get("X-Fah-Client-Ip")); ip != "" {
-			return ip
+		if found := details(r.Header.Get("X-Fah-Client-Ip"), "x-fah-client-ip"); found.IP != "" {
+			return found
 		}
-		return rightmostUntrustedXFF(r.Header.Get("X-Forwarded-For"), proxies)
+		return details(rightmostUntrustedXFF(r.Header.Get("X-Forwarded-For"), proxies), "x-forwarded-for")
 	case platformFlyIo:
-		return strings.TrimSpace(r.Header.Get("Fly-Client-Ip"))
+		return details(r.Header.Get("Fly-Client-Ip"), "fly-client-ip")
 	case platformVercel:
-		if ip := strings.TrimSpace(r.Header.Get("X-Real-Ip")); ip != "" {
-			return ip
+		if found := details(r.Header.Get("X-Real-Ip"), "x-real-ip"); found.IP != "" {
+			return found
 		}
 		if ip := rightmostUntrustedXFF(r.Header.Get("X-Vercel-Forwarded-For"), proxies); ip != "" {
-			return ip
+			return details(ip, "x-vercel-forwarded-for")
 		}
-		return rightmostUntrustedXFF(r.Header.Get("X-Forwarded-For"), proxies)
+		return details(rightmostUntrustedXFF(r.Header.Get("X-Forwarded-For"), proxies), "x-forwarded-for")
 	case platformRender:
-		return strings.TrimSpace(r.Header.Get("True-Client-Ip"))
+		return details(r.Header.Get("True-Client-Ip"), "true-client-ip")
 	case platformCloudflare:
 		// Cloudflare signs CF-Connecting-IP(v6) on every proxied request and
 		// strips client-supplied copies, so they can be trusted directly.
 		// IPv6 is preferred when present, matching @arcjet/ip.
 		// https://developers.cloudflare.com/fundamentals/reference/http-request-headers/#cf-connecting-ip
-		if ip := strings.TrimSpace(r.Header.Get("Cf-Connecting-Ipv6")); ip != "" {
-			return ip
+		if found := details(r.Header.Get("Cf-Connecting-Ipv6"), "cf-connecting-ipv6"); found.IP != "" {
+			return found
 		}
-		return strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip"))
+		return details(r.Header.Get("Cf-Connecting-Ip"), "cf-connecting-ip")
 	case platformRailway:
 		// Railway sets X-Real-IP to the original client IP.
 		// https://docs.railway.com/networking/public-networking/specs-and-limits#technical-specifications
-		return strings.TrimSpace(r.Header.Get("X-Real-Ip"))
+		return details(r.Header.Get("X-Real-Ip"), "x-real-ip")
 	}
-	return ""
+	return ClientIPDetails{Provenance: ClientIPProvenanceNone}
 }
 
 func rightmostUntrustedXFF(value string, proxies []trustedProxy) string {
@@ -143,10 +160,14 @@ func rightmostUntrustedXFF(value string, proxies []trustedProxy) string {
 		if ip == "" {
 			continue
 		}
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			continue
+		}
 		if isTrustedProxy(ip, proxies) {
 			continue
 		}
-		return ip
+		return parsed.String()
 	}
 	return ""
 }

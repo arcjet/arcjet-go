@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -56,6 +58,8 @@ type Config struct {
 	SDKVersion string
 	// Proxies are trusted proxy IPs or CIDRs used to trust X-Forwarded-For.
 	Proxies []string
+	// Log receives SDK diagnostics. If nil, slog.Default is used.
+	Log *slog.Logger
 	// Platform selects a managed hosting platform explicitly, overriding the
 	// environment auto-detection. Set it when running behind a platform whose
 	// environment variables aren't present — most importantly a Go service
@@ -106,6 +110,12 @@ type Client struct {
 	platform         hostingPlatform
 	local            *localEvaluator
 	cache            *ruleCache
+	log              *slog.Logger
+	ipWarning        *clientIPWarningState
+}
+
+type clientIPWarningState struct {
+	once sync.Once
 }
 
 // NewClient creates a reusable request protection client.
@@ -134,6 +144,13 @@ func NewClient(cfg Config) (*Client, error) {
 	proxies, err := parseTrustedProxies(cfg.Proxies)
 	if err != nil {
 		return nil, err
+	}
+	logger := cfg.Log
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if hasTrustAllProxy(proxies) {
+		logger.Warn("Arcjet proxy configuration trusts an entire IP address family; use the narrowest proxy CIDRs possible", "trust_all", true)
 	}
 	platform := detectPlatform(os.Getenv)
 	if cfg.Platform != "" {
@@ -167,6 +184,8 @@ func NewClient(cfg Config) (*Client, error) {
 		decideClient:     decidev1alpha1connect.NewDecideServiceClient(httpClient, baseURL),
 		local:            local,
 		cache:            newRuleCache(),
+		log:              logger,
+		ipWarning:        &clientIPWarningState{},
 	}, nil
 }
 
@@ -281,7 +300,29 @@ type ProtectDetails struct {
 	// alongside the recorded decision so a chain of actions can be
 	// reconstructed. Bounded server-side to 256 bytes of printable ASCII;
 	// invalid values are dropped, not truncated.
-	CorrelationId string
+	CorrelationId   string
+	clientIPDetails *ClientIPDetails
+}
+
+// ClientIPProvenance identifies where Arcjet obtained a client IP address.
+type ClientIPProvenance string
+
+const (
+	ClientIPProvenanceDirect           ClientIPProvenance = "direct"
+	ClientIPProvenancePlatform         ClientIPProvenance = "platform"
+	ClientIPProvenanceTrustedProxy     ClientIPProvenance = "trusted-proxy"
+	ClientIPProvenanceUnverifiedHeader ClientIPProvenance = "unverified-header"
+	ClientIPProvenanceManual           ClientIPProvenance = "manual"
+	ClientIPProvenanceRequest          ClientIPProvenance = "request"
+	ClientIPProvenanceNone             ClientIPProvenance = "none"
+)
+
+// ClientIPDetails explains how Arcjet selected the client IP for a request.
+type ClientIPDetails struct {
+	IP         string
+	Provenance ClientIPProvenance
+	Verified   bool
+	Header     string
 }
 
 // ProtectOptions contains per-request inputs used by specific rules.
@@ -300,7 +341,8 @@ type ProtectOptions struct {
 	// Email is the email address scanned by ValidateEmail.
 	Email string
 	// IPSrc overrides the request source IP.
-	IPSrc string
+	IPSrc    string
+	ipSrcSet bool
 	// FilterLocal contains local-only fields for Filter expressions.
 	FilterLocal map[string]string
 	// Extra contains additional string fields sent to Arcjet.
@@ -371,7 +413,10 @@ func WithEmail(email string) ProtectOption {
 
 // WithIPSrc overrides the request source IP sent to Arcjet.
 func WithIPSrc(ip string) ProtectOption {
-	return func(o *ProtectOptions) { o.IPSrc = ip }
+	return func(o *ProtectOptions) {
+		o.IPSrc = ip
+		o.ipSrcSet = true
+	}
 }
 
 // WithFilterLocal sets local-only values available to Filter expressions.
@@ -435,9 +480,19 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	if options.Email != "" {
 		details.Email = options.Email
 	}
-	if options.IPSrc != "" {
-		details.IP = options.IPSrc
+	ipDetails := details.clientIPDetails
+	if ipDetails == nil {
+		ipDetails = &ClientIPDetails{IP: details.IP, Provenance: ClientIPProvenanceRequest, Verified: true}
 	}
+	if options.ipSrcSet {
+		ip := net.ParseIP(strings.TrimSpace(options.IPSrc))
+		if ip == nil {
+			return Decision{}, fmt.Errorf("arcjet: %w: %q", ErrInvalidIP, options.IPSrc)
+		}
+		details.IP = ip.String()
+		ipDetails = &ClientIPDetails{IP: details.IP, Provenance: ClientIPProvenanceManual, Verified: true}
+	}
+	c.reportClientIP(*ipDetails)
 	if options.CorrelationId != "" {
 		details.CorrelationId = options.CorrelationId
 	}
@@ -750,16 +805,18 @@ func detailsFromRequest(r *http.Request, proxies []trustedProxy, platform hostin
 	if host == "" {
 		host = r.URL.Host
 	}
+	ipDetails := clientIPDetails(r, proxies, platform)
 	return ProtectDetails{
-		IP:       clientIP(r, proxies, platform),
-		Method:   r.Method,
-		Protocol: r.Proto,
-		Host:     host,
-		Path:     r.URL.Path,
-		Headers:  headers,
-		Cookies:  r.Header.Get("Cookie"),
-		Query:    r.URL.RawQuery,
-		Extra:    map[string]string{},
+		IP:              ipDetails.IP,
+		Method:          r.Method,
+		Protocol:        r.Proto,
+		Host:            host,
+		Path:            r.URL.Path,
+		Headers:         headers,
+		Cookies:         r.Header.Get("Cookie"),
+		Query:           r.URL.RawQuery,
+		Extra:           map[string]string{},
+		clientIPDetails: &ipDetails,
 	}
 }
 
@@ -776,7 +833,7 @@ func parseTrustedProxies(values []string) ([]trustedProxy, error) {
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
-			continue
+			return nil, fmt.Errorf("arcjet: %w: empty value", ErrInvalidProxy)
 		}
 		if ip, network, err := net.ParseCIDR(value); err == nil {
 			network.IP = ip
@@ -790,6 +847,19 @@ func parseTrustedProxies(values []string) ([]trustedProxy, error) {
 		proxies = append(proxies, trustedProxy{ip: ip})
 	}
 	return proxies, nil
+}
+
+func hasTrustAllProxy(proxies []trustedProxy) bool {
+	for _, proxy := range proxies {
+		if proxy.network == nil {
+			continue
+		}
+		ones, _ := proxy.network.Mask.Size()
+		if ones == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // clientIP returns the request's source IP.
@@ -808,19 +878,30 @@ func parseTrustedProxies(values []string) ([]trustedProxy, error) {
 //
 // If RemoteAddr is not a trusted proxy, X-Forwarded-For is ignored entirely.
 func clientIP(r *http.Request, proxies []trustedProxy, platform hostingPlatform) string {
+	return clientIPDetails(r, proxies, platform).IP
+}
+
+func clientIPDetails(r *http.Request, proxies []trustedProxy, platform hostingPlatform) ClientIPDetails {
 	if platform != platformNone {
-		if ip := platformIP(r, platform, proxies); ip != "" {
-			return ip
+		if details := platformIPDetails(r, platform, proxies); details.IP != "" {
+			return details
 		}
-		return remoteIP(r.RemoteAddr)
+		ip := remoteIP(r.RemoteAddr)
+		if ip == "" {
+			return ClientIPDetails{Provenance: ClientIPProvenanceNone}
+		}
+		return ClientIPDetails{IP: ip, Provenance: ClientIPProvenanceDirect, Verified: true}
 	}
 	remote := remoteIP(r.RemoteAddr)
 	if len(proxies) == 0 || !isTrustedProxy(remote, proxies) {
-		return remote
+		if remote == "" {
+			return ClientIPDetails{Provenance: ClientIPProvenanceNone}
+		}
+		return ClientIPDetails{IP: remote, Provenance: ClientIPProvenanceDirect, Verified: true}
 	}
 	xff := r.Header.Get("X-Forwarded-For")
 	if xff == "" {
-		return remote
+		return ClientIPDetails{IP: remote, Provenance: ClientIPProvenanceDirect, Verified: true}
 	}
 	parts := strings.Split(xff, ",")
 	for _, part := range slices.Backward(parts) {
@@ -828,12 +909,21 @@ func clientIP(r *http.Request, proxies []trustedProxy, platform hostingPlatform)
 		if ip == "" {
 			continue
 		}
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			continue
+		}
 		if isTrustedProxy(ip, proxies) {
 			continue
 		}
-		return ip
+		return ClientIPDetails{
+			IP:         parsed.String(),
+			Provenance: ClientIPProvenanceTrustedProxy,
+			Verified:   true,
+			Header:     "x-forwarded-for",
+		}
 	}
-	return remote
+	return ClientIPDetails{IP: remote, Provenance: ClientIPProvenanceDirect, Verified: true}
 }
 
 func isTrustedProxy(value string, proxies []trustedProxy) bool {
@@ -858,9 +948,42 @@ func remoteIP(addr string) string {
 	}
 	host, _, err := net.SplitHostPort(addr)
 	if err == nil {
-		return host
+		addr = host
 	}
-	return addr
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+// ClientIPDetails explains how this client would resolve an IP without protecting.
+func (c *Client) ClientIPDetails(r *http.Request) ClientIPDetails {
+	if c == nil || r == nil {
+		return ClientIPDetails{Provenance: ClientIPProvenanceNone}
+	}
+	return clientIPDetails(r, c.proxies, c.platform)
+}
+
+func (c *Client) reportClientIP(details ClientIPDetails) {
+	if c.log != nil {
+		c.log.Debug(
+			"Arcjet client IP resolved",
+			"client_ip_provenance", details.Provenance,
+			"client_ip_verified", details.Verified,
+			"client_ip_header", details.Header,
+		)
+	}
+	if details.Provenance != ClientIPProvenanceUnverifiedHeader || c.ipWarning == nil {
+		return
+	}
+	c.ipWarning.once.Do(func() {
+		c.log.Warn(
+			"Arcjet resolved the client IP from an unverified forwarding header; ensure a trusted proxy overwrites or safely appends forwarding headers, configure Proxies, or pass a validated WithIPSrc value",
+			"client_ip_provenance", details.Provenance,
+			"client_ip_header", details.Header,
+		)
+	})
 }
 
 func (d ProtectDetails) toProto() *decidev1.RequestDetails {

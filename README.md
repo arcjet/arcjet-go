@@ -247,14 +247,19 @@ enforcing.
 > Outside supported hosting platforms, Arcjet uses `Request.RemoteAddr` and
 > ignores `X-Forwarded-For` unless the direct peer matches an IP or CIDR in
 > `Config.Proxies`. It then walks the header from right to left, skipping
-> configured proxy hops.
+> configured proxy hops. Client-IP selection is logged at debug level with the
+> `client_ip_provenance` facet; any unverified-header fallback is also warned
+> once per client.
 >
 > In production, make the application reachable only through the configured
 > proxies and ensure they overwrite or safely append `X-Forwarded-For`.
 > Configure the actual direct proxy and every trusted hop in `Config.Proxies`.
 > On a supported hosting platform, use `Config.Platform` when automatic
 > platform detection is unavailable. If your application determines the client
-> IP itself, pass a validated value with `WithIPSrc`.
+> IP itself, pass it with `WithIPSrc`; malformed proxy entries and manual IPs
+> are rejected, while `0.0.0.0/0` and `::/0` produce a warning. Call
+> `client.ClientIPDetails(request)` to inspect `IP`, `Provenance`, `Verified`,
+> and `Header` without protecting the request.
 
 ```sh
 go get github.com/arcjet/arcjet-go
