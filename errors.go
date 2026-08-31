@@ -31,6 +31,8 @@ var (
 	ErrUnsupportedEntityType = errors.New("unsupported sensitive info entity type")
 	// ErrInvalidProxy is returned when a trusted proxy IP or CIDR is invalid.
 	ErrInvalidProxy = errors.New("invalid trusted proxy")
+	// ErrInvalidIP is returned when an explicit client IP is invalid.
+	ErrInvalidIP = errors.New("invalid client IP")
 	// ErrInvalidPlatform is returned when Config.Platform is not a recognized
 	// Platform value.
 	ErrInvalidPlatform = errors.New("invalid platform")

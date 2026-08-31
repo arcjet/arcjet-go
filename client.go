@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -54,8 +56,25 @@ type Config struct {
 	BaseURL string
 	// SDKVersion overrides the version reported to Arcjet.
 	SDKVersion string
-	// Proxies are trusted proxy IPs or CIDRs used to trust X-Forwarded-For.
+	// Proxies are the IP addresses or CIDRs of reverse proxies that are allowed
+	// to supply X-Forwarded-For. NewClient rejects blank or malformed entries.
+	// Configure every proxy hop and keep each range as narrow as possible; /0
+	// entries trust an entire address family and produce a warning.
+	//
+	// When no managed platform is detected and RemoteAddr does not contain a
+	// public IP, Arcjet may fall back to a public IP in a common forwarding
+	// header. That result is unverified and produces one warning for the
+	// lifetime of this Client. Use ClientIPDetails to inspect the result.
+	//
+	// Example:
+	//
+	//	client, err := arcjet.NewClient(arcjet.Config{
+	//		Key:     os.Getenv("ARCJET_KEY"),
+	//		Proxies: []string{"10.0.0.0/8", "192.168.1.10"},
+	//	})
 	Proxies []string
+	// Log receives SDK diagnostics. If nil, slog.Default is used.
+	Log *slog.Logger
 	// Platform selects a managed hosting platform explicitly, overriding the
 	// environment auto-detection. Set it when running behind a platform whose
 	// environment variables aren't present — most importantly a Go service
@@ -106,6 +125,12 @@ type Client struct {
 	platform         hostingPlatform
 	local            *localEvaluator
 	cache            *ruleCache
+	log              *slog.Logger
+	ipWarning        *clientIPWarningState
+}
+
+type clientIPWarningState struct {
+	once sync.Once
 }
 
 // NewClient creates a reusable request protection client.
@@ -134,6 +159,13 @@ func NewClient(cfg Config) (*Client, error) {
 	proxies, err := parseTrustedProxies(cfg.Proxies)
 	if err != nil {
 		return nil, err
+	}
+	logger := cfg.Log
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if hasTrustAllProxy(proxies) {
+		logger.Warn("Arcjet proxy configuration trusts an entire IP address family; use the narrowest proxy CIDRs possible", "trust_all", true)
 	}
 	platform := detectPlatform(os.Getenv)
 	if cfg.Platform != "" {
@@ -167,6 +199,8 @@ func NewClient(cfg Config) (*Client, error) {
 		decideClient:     decidev1alpha1connect.NewDecideServiceClient(httpClient, baseURL),
 		local:            local,
 		cache:            newRuleCache(),
+		log:              logger,
+		ipWarning:        &clientIPWarningState{},
 	}, nil
 }
 
@@ -281,7 +315,40 @@ type ProtectDetails struct {
 	// alongside the recorded decision so a chain of actions can be
 	// reconstructed. Bounded server-side to 256 bytes of printable ASCII;
 	// invalid values are dropped, not truncated.
-	CorrelationId string
+	CorrelationId   string
+	clientIPDetails *ClientIPDetails
+}
+
+// ClientIPProvenance identifies where Arcjet obtained a client IP address.
+type ClientIPProvenance string
+
+const (
+	// ClientIPProvenanceDirect means the address came from Request.RemoteAddr.
+	ClientIPProvenanceDirect ClientIPProvenance = "direct"
+	// ClientIPProvenancePlatform means a detected platform supplied the address.
+	ClientIPProvenancePlatform ClientIPProvenance = "platform"
+	// ClientIPProvenanceTrustedProxy means a configured proxy supplied the address.
+	ClientIPProvenanceTrustedProxy ClientIPProvenance = "trusted-proxy"
+	// ClientIPProvenanceUnverifiedHeader means an untrusted forwarding header supplied the address.
+	ClientIPProvenanceUnverifiedHeader ClientIPProvenance = "unverified-header"
+	// ClientIPProvenanceManual means WithIPSrc supplied the address.
+	ClientIPProvenanceManual ClientIPProvenance = "manual"
+	// ClientIPProvenanceRequest means ProtectDetails.IP supplied the address.
+	ClientIPProvenanceRequest ClientIPProvenance = "request"
+	// ClientIPProvenanceNone means no usable address was found.
+	ClientIPProvenanceNone ClientIPProvenance = "none"
+)
+
+// ClientIPDetails explains how Arcjet selected the client IP for a request.
+type ClientIPDetails struct {
+	// IP is the normalized IPv4 or IPv6 address, or empty when none was found.
+	IP string
+	// Provenance identifies the source used to obtain IP.
+	Provenance ClientIPProvenance
+	// Verified reports whether the source was directly observed or explicitly trusted.
+	Verified bool
+	// Header is the lower-case header name used to obtain IP, or empty otherwise.
+	Header string
 }
 
 // ProtectOptions contains per-request inputs used by specific rules.
@@ -299,8 +366,10 @@ type ProtectOptions struct {
 	SensitiveInfoValue string
 	// Email is the email address scanned by ValidateEmail.
 	Email string
-	// IPSrc overrides the request source IP.
-	IPSrc string
+	// IPSrc overrides the request source IP. Prefer WithIPSrc, which also marks
+	// the value as explicitly supplied and validates it during Protect.
+	IPSrc    string
+	ipSrcSet bool
 	// FilterLocal contains local-only fields for Filter expressions.
 	FilterLocal map[string]string
 	// Extra contains additional string fields sent to Arcjet.
@@ -370,8 +439,21 @@ func WithEmail(email string) ProtectOption {
 }
 
 // WithIPSrc overrides the request source IP sent to Arcjet.
+//
+// Use this only after your application or framework has authenticated the
+// source of the address. Protect rejects empty or malformed values with
+// ErrInvalidIP and normalizes valid IPv4 and IPv6 addresses.
+//
+// Example:
+//
+//	decision, err := client.Protect(ctx, request,
+//		arcjet.WithIPSrc(request.Context().Value(clientIPKey).(string)),
+//	)
 func WithIPSrc(ip string) ProtectOption {
-	return func(o *ProtectOptions) { o.IPSrc = ip }
+	return func(o *ProtectOptions) {
+		o.IPSrc = ip
+		o.ipSrcSet = true
+	}
 }
 
 // WithFilterLocal sets local-only values available to Filter expressions.
@@ -435,9 +517,23 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	if options.Email != "" {
 		details.Email = options.Email
 	}
-	if options.IPSrc != "" {
-		details.IP = options.IPSrc
+	ipDetails := details.clientIPDetails
+	if ipDetails == nil {
+		if details.IP == "" {
+			ipDetails = &ClientIPDetails{Provenance: ClientIPProvenanceNone}
+		} else {
+			ipDetails = &ClientIPDetails{IP: details.IP, Provenance: ClientIPProvenanceRequest, Verified: true}
+		}
 	}
+	if options.ipSrcSet {
+		ip := net.ParseIP(strings.TrimSpace(options.IPSrc))
+		if ip == nil {
+			return Decision{}, fmt.Errorf("arcjet: %w: %q", ErrInvalidIP, options.IPSrc)
+		}
+		details.IP = ip.String()
+		ipDetails = &ClientIPDetails{IP: details.IP, Provenance: ClientIPProvenanceManual, Verified: true}
+	}
+	c.reportClientIP(*ipDetails)
 	if options.CorrelationId != "" {
 		details.CorrelationId = options.CorrelationId
 	}
@@ -733,10 +829,11 @@ func buildRequestRule(rule Rule) (*decidev1.Rule, error) {
 
 // DetailsFromRequest extracts Arcjet request details from an HTTP request.
 //
-// It uses Request.RemoteAddr for the source IP. Configure Config.Proxies and use
-// Client.Protect when Arcjet should trust X-Forwarded-For from known proxies,
-// or when running on a supported hosting platform (Fly.io, Vercel, Render,
-// Firebase, Railway) where Client.Protect reads the platform's signed headers.
+// It uses Request.RemoteAddr when it contains a public source IP. Otherwise it
+// may fall back to a public address from a common forwarding header; because no
+// Client configuration is available, that fallback is unverified. Use
+// Client.ClientIPDetails or Client.Protect to apply Config.Proxies and managed
+// platform detection.
 func DetailsFromRequest(r *http.Request) ProtectDetails {
 	return detailsFromRequest(r, nil, platformNone)
 }
@@ -750,16 +847,18 @@ func detailsFromRequest(r *http.Request, proxies []trustedProxy, platform hostin
 	if host == "" {
 		host = r.URL.Host
 	}
+	ipDetails := clientIPDetails(r, proxies, platform)
 	return ProtectDetails{
-		IP:       clientIP(r, proxies, platform),
-		Method:   r.Method,
-		Protocol: r.Proto,
-		Host:     host,
-		Path:     r.URL.Path,
-		Headers:  headers,
-		Cookies:  r.Header.Get("Cookie"),
-		Query:    r.URL.RawQuery,
-		Extra:    map[string]string{},
+		IP:              ipDetails.IP,
+		Method:          r.Method,
+		Protocol:        r.Proto,
+		Host:            host,
+		Path:            r.URL.Path,
+		Headers:         headers,
+		Cookies:         r.Header.Get("Cookie"),
+		Query:           r.URL.RawQuery,
+		Extra:           map[string]string{},
+		clientIPDetails: &ipDetails,
 	}
 }
 
@@ -776,7 +875,7 @@ func parseTrustedProxies(values []string) ([]trustedProxy, error) {
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
-			continue
+			return nil, fmt.Errorf("arcjet: %w: empty value", ErrInvalidProxy)
 		}
 		if ip, network, err := net.ParseCIDR(value); err == nil {
 			network.IP = ip
@@ -790,6 +889,19 @@ func parseTrustedProxies(values []string) ([]trustedProxy, error) {
 		proxies = append(proxies, trustedProxy{ip: ip})
 	}
 	return proxies, nil
+}
+
+func hasTrustAllProxy(proxies []trustedProxy) bool {
+	for _, proxy := range proxies {
+		if proxy.network == nil {
+			continue
+		}
+		ones, _ := proxy.network.Mask.Size()
+		if ones == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // clientIP returns the request's source IP.
@@ -806,34 +918,106 @@ func parseTrustedProxies(values []string) ([]trustedProxy, error) {
 // observed and is the hardest for the user to spoof. Walking left-to-right
 // instead would trust whatever the original client wrote in.
 //
-// If RemoteAddr is not a trusted proxy, X-Forwarded-For is ignored entirely.
+// If RemoteAddr is a public address and is not a trusted proxy, it wins over
+// forwarding headers. If RemoteAddr is missing or non-public, common forwarding
+// headers are used as a best-effort fallback and marked unverified.
 func clientIP(r *http.Request, proxies []trustedProxy, platform hostingPlatform) string {
+	return clientIPDetails(r, proxies, platform).IP
+}
+
+func clientIPDetails(r *http.Request, proxies []trustedProxy, platform hostingPlatform) ClientIPDetails {
 	if platform != platformNone {
-		if ip := platformIP(r, platform, proxies); ip != "" {
-			return ip
+		if details := platformIPDetails(r, platform, proxies); details.IP != "" {
+			return details
 		}
-		return remoteIP(r.RemoteAddr)
+		ip := remoteIP(r.RemoteAddr)
+		if ip == "" {
+			return ClientIPDetails{Provenance: ClientIPProvenanceNone}
+		}
+		return ClientIPDetails{IP: ip, Provenance: ClientIPProvenanceDirect, Verified: true}
 	}
 	remote := remoteIP(r.RemoteAddr)
-	if len(proxies) == 0 || !isTrustedProxy(remote, proxies) {
-		return remote
-	}
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff == "" {
-		return remote
-	}
-	parts := strings.Split(xff, ",")
-	for _, part := range slices.Backward(parts) {
-		ip := strings.TrimSpace(part)
-		if ip == "" {
-			continue
+	if isTrustedProxy(remote, proxies) {
+		if ip := rightmostUntrustedXFF(r.Header.Get("X-Forwarded-For"), proxies); ip != "" {
+			return ClientIPDetails{
+				IP:         ip,
+				Provenance: ClientIPProvenanceTrustedProxy,
+				Verified:   true,
+				Header:     "x-forwarded-for",
+			}
 		}
-		if isTrustedProxy(ip, proxies) {
-			continue
-		}
-		return ip
+		return ClientIPDetails{IP: remote, Provenance: ClientIPProvenanceDirect, Verified: true}
 	}
-	return remote
+	if isPublicIP(remote) {
+		return ClientIPDetails{IP: remote, Provenance: ClientIPProvenanceDirect, Verified: true}
+	}
+	if ip, header := unverifiedHeaderIP(r.Header); ip != "" {
+		return ClientIPDetails{
+			IP:         ip,
+			Provenance: ClientIPProvenanceUnverifiedHeader,
+			Verified:   false,
+			Header:     header,
+		}
+	}
+	if remote != "" {
+		return ClientIPDetails{IP: remote, Provenance: ClientIPProvenanceDirect, Verified: true}
+	}
+	return ClientIPDetails{Provenance: ClientIPProvenanceNone}
+}
+
+var fallbackClientIPHeaders = [...]string{
+	"x-client-ip",
+	"do-connecting-ip",
+	"fastly-client-ip",
+	"true-client-ip",
+	"x-real-ip",
+	"x-cluster-client-ip",
+	"x-forwarded",
+	"forwarded-for",
+	"forwarded",
+	"x-appengine-user-ip",
+}
+
+func unverifiedHeaderIP(headers http.Header) (string, string) {
+	if ip := rightmostPublicIP(headers.Get("X-Forwarded-For")); ip != "" {
+		return ip, "x-forwarded-for"
+	}
+	for _, header := range fallbackClientIPHeaders {
+		if ip := firstPublicIP(headers.Get(header)); ip != "" {
+			return ip, header
+		}
+	}
+	return "", ""
+}
+
+func rightmostPublicIP(value string) string {
+	for _, part := range slices.Backward(strings.Split(value, ",")) {
+		if ip := firstPublicIP(part); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+func firstPublicIP(value string) string {
+	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == '=' || r == ' ' || r == '\t'
+	}) {
+		candidate := strings.Trim(strings.TrimSpace(field), "\"")
+		if strings.HasPrefix(candidate, "[") && strings.HasSuffix(candidate, "]") {
+			candidate = strings.TrimSuffix(strings.TrimPrefix(candidate, "["), "]")
+		}
+		if ip := remoteIP(candidate); isPublicIP(ip) {
+			return ip
+		}
+	}
+	return ""
+}
+
+func isPublicIP(value string) bool {
+	ip := net.ParseIP(value)
+	return ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() &&
+		!ip.IsLinkLocalUnicast() && !ip.IsUnspecified()
 }
 
 func isTrustedProxy(value string, proxies []trustedProxy) bool {
@@ -858,9 +1042,52 @@ func remoteIP(addr string) string {
 	}
 	host, _, err := net.SplitHostPort(addr)
 	if err == nil {
-		return host
+		addr = host
 	}
-	return addr
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+// ClientIPDetails explains how this client would resolve the request IP.
+//
+// It is side-effect-free: it does not protect the request, emit debug logs, or
+// consume the once-per-Client unverified-header warning. Inspect Provenance,
+// Verified, and Header when diagnosing proxy configuration.
+//
+// Example:
+//
+//	details := client.ClientIPDetails(request)
+//	slog.Info("Arcjet client IP", "ip", details.IP,
+//		"provenance", details.Provenance, "verified", details.Verified)
+func (c *Client) ClientIPDetails(r *http.Request) ClientIPDetails {
+	if c == nil || r == nil {
+		return ClientIPDetails{Provenance: ClientIPProvenanceNone}
+	}
+	return clientIPDetails(r, c.proxies, c.platform)
+}
+
+func (c *Client) reportClientIP(details ClientIPDetails) {
+	if c.log != nil {
+		c.log.Debug(
+			"Arcjet client IP resolved",
+			"client_ip_provenance", details.Provenance,
+			"client_ip_verified", details.Verified,
+			"client_ip_header", details.Header,
+		)
+	}
+	if details.Provenance != ClientIPProvenanceUnverifiedHeader || c.ipWarning == nil {
+		return
+	}
+	c.ipWarning.once.Do(func() {
+		c.log.Warn(
+			"Arcjet resolved the client IP from an unverified forwarding header; ensure a trusted proxy overwrites or safely appends forwarding headers, configure Proxies, or pass a validated WithIPSrc value",
+			"client_ip_provenance", details.Provenance,
+			"client_ip_header", details.Header,
+		)
+	})
 }
 
 func (d ProtectDetails) toProto() *decidev1.RequestDetails {

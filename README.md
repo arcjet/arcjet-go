@@ -244,17 +244,26 @@ enforcing.
 ## Installation
 
 > [!WARNING]
-> Outside supported hosting platforms, Arcjet uses `Request.RemoteAddr` and
-> ignores `X-Forwarded-For` unless the direct peer matches an IP or CIDR in
-> `Config.Proxies`. It then walks the header from right to left, skipping
-> configured proxy hops.
+> Outside supported hosting platforms, Arcjet first uses a public address from
+> `Request.RemoteAddr`. When the direct peer matches `Config.Proxies`, it walks
+> `X-Forwarded-For` from right to left and skips configured proxy hops. If
+> `RemoteAddr` is missing or non-public, Arcjet may use a public address from a
+> common forwarding header so protection can still run; that result has
+> `Provenance == "unverified-header"` and `Verified == false`. Client-IP
+> selection is logged at debug level with the `client_ip_provenance` facet, and
+> the fallback produces one warning for the lifetime of each Arcjet client.
 >
 > In production, make the application reachable only through the configured
 > proxies and ensure they overwrite or safely append `X-Forwarded-For`.
 > Configure the actual direct proxy and every trusted hop in `Config.Proxies`.
 > On a supported hosting platform, use `Config.Platform` when automatic
 > platform detection is unavailable. If your application determines the client
-> IP itself, pass a validated value with `WithIPSrc`.
+> IP itself, pass it with `WithIPSrc`; `NewClient` rejects blank or malformed
+> proxy entries, and `Protect` rejects blank or malformed manual IPs.
+> `0.0.0.0/0` and `::/0` produce a warning because they trust an entire address
+> family (the exact addresses `0.0.0.0` and `::` do not). Call
+> `client.ClientIPDetails(request)` to inspect `IP`, `Provenance`, `Verified`,
+> and `Header` without protecting the request.
 
 ```sh
 go get github.com/arcjet/arcjet-go
