@@ -1,0 +1,317 @@
+name: Release tags
+
+# Surface the selected ref and dry-run state in the run list and in the
+# protected-environment approval notification. The version is inferred from
+# types.go and shown in the preflight summary before approval.
+run-name: "Release tags from ${{ github.ref_name }}${{ inputs.dry-run && ' (dry run)' || '' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        default: true
+        description: Validate the release and run git push --dry-run without creating remote tags.
+        type: boolean
+
+permissions:
+  # The workflow token never writes repository contents. The gated job mints a
+  # short-lived, repository-scoped GitHub App token for the tag push.
+  contents: read
+
+# Never race two releases. Queue rather than cancel so a run that has passed
+# the approval gate can finish creating both module tags atomically.
+concurrency:
+  group: release-tags
+  cancel-in-progress: false
+
+jobs:
+  # Runs before approval so an environment reviewer can inspect a completed
+  # preflight and its step summary before allowing access to the App key.
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      rampart-tag: ${{ steps.release.outputs.rampart-tag }}
+      root-tag: ${{ steps.release.outputs.root-tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          disable-sudo: true
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            storage.googleapis.com:443
+            vuln.go.dev:443
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.25.x
+          check-latest: true
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+            sensitiveinfo/rampart/go.sum
+
+      - name: Assert valid release request and matching versions
+        id: release
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+
+          case "$DRY_RUN" in
+            true|false) ;;
+            *)
+              echo "::error::Invalid dry-run value; expected 'true' or 'false'."
+              exit 1
+              ;;
+          esac
+
+          if [[ "$REF_TYPE" != "branch" || "$REF_NAME" != "main" ]]; then
+            echo "::error::Dispatch this workflow from the main branch, not '$REF_NAME' ($REF_TYPE)."
+            exit 1
+          fi
+
+          version="$(sed -nE 's/^const Version = "([^"]+)"$/\1/p' types.go)"
+          semver_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+          if ! [[ "$version" =~ $semver_pattern ]]; then
+            echo "::error file=types.go::Version '$version' must be canonical SemVer without a leading 'v' or build metadata."
+            exit 1
+          fi
+
+          expected="v$version"
+          mismatched=""
+          check_requirement() {
+            local file="$1"
+            local module="$2"
+            local actual
+            actual="$(go mod edit -json "$file" | jq -r --arg module "$module" '.Require[] | select(.Path == $module) | .Version')"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error file=$file::$module is '${actual:-<missing>}', expected '$expected'."
+              mismatched="true"
+            fi
+          }
+
+          check_requirement sensitiveinfo/rampart/go.mod github.com/arcjet/arcjet-go
+          check_requirement examples/nethttp/go.mod github.com/arcjet/arcjet-go
+          check_requirement examples/nethttp/go.mod github.com/arcjet/arcjet-go/sensitiveinfo/rampart
+          if [[ -n "$mismatched" ]]; then
+            exit 1
+          fi
+
+          {
+            echo "version=$version"
+            echo "root-tag=v$version"
+            echo "rampart-tag=sensitiveinfo/rampart/v$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Assert release tags do not exist
+        env:
+          RAMPART_TAG: ${{ steps.release.outputs.rampart-tag }}
+          ROOT_TAG: ${{ steps.release.outputs.root-tag }}
+        run: |
+          set -euo pipefail
+          for tag in "$ROOT_TAG" "$RAMPART_TAG"; do
+            if output="$(git ls-remote --exit-code --tags origin "refs/tags/$tag" 2>&1)"; then
+              echo "$output"
+              echo "::error::Tag '$tag' already exists. Release tags must never be moved."
+              exit 1
+            else
+              status=$?
+              if [[ "$status" -ne 2 ]]; then
+                echo "$output"
+                echo "::error::Could not check whether tag '$tag' exists."
+                exit "$status"
+              fi
+            fi
+          done
+
+      - name: Verify modules are tidy
+        run: |
+          set -euo pipefail
+          go mod tidy
+          go -C tools mod tidy
+          go -C sensitiveinfo/rampart mod tidy
+          files=(
+            go.mod
+            go.sum
+            tools/go.mod
+            tools/go.sum
+            sensitiveinfo/rampart/go.mod
+            sensitiveinfo/rampart/go.sum
+          )
+          if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
+            echo "::error::Go modules are not tidy. Run 'just tidy' and commit the changes."
+            git --no-pager diff -- "${files[@]}"
+            exit 1
+          fi
+
+      - name: Run release checks
+        run: |
+          set -euo pipefail
+          go tool -modfile=tools/go.mod golangci-lint run ./...
+          go -C sensitiveinfo/rampart tool -modfile="${GITHUB_WORKSPACE}/tools/go.mod" golangci-lint run ./...
+          go tool -modfile=tools/go.mod govulncheck ./...
+          go -C sensitiveinfo/rampart tool -modfile="${GITHUB_WORKSPACE}/tools/go.mod" govulncheck ./...
+          go build ./...
+          go test -race -shuffle=on ./...
+          go -C sensitiveinfo/rampart build ./...
+          go -C sensitiveinfo/rampart test -shuffle=on -skip '^TestAdversarialConcurrentDetect$' ./...
+          go -C sensitiveinfo/rampart test -race -run '^TestAdversarialConcurrentDetect$' ./...
+          go -C examples/nethttp test ./...
+
+      - name: Summarize the release request
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          RAMPART_TAG: ${{ steps.release.outputs.rampart-tag }}
+          ROOT_TAG: ${{ steps.release.outputs.root-tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Release request"
+            echo "- version: \`$VERSION\`"
+            echo "- root module tag: \`$ROOT_TAG\`"
+            echo "- Rampart module tag: \`$RAMPART_TAG\`"
+            echo "- ref: \`$GITHUB_REF_NAME\` (\`$GITHUB_SHA\`)"
+            echo "- dry run: \`$DRY_RUN\`"
+            echo
+            echo "All version, module, lint, vulnerability, build, and test checks passed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Create ${{ needs.preflight.outputs.root-tag }} release tags
+    needs: preflight
+    runs-on: ubuntu-24.04
+    environment:
+      name: release-tags
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          disable-sudo: true
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+
+      - name: Checkout the preflighted commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Create and push annotated tags
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RAMPART_TAG: ${{ needs.preflight.outputs.rampart-tag }}
+          ROOT_TAG: ${{ needs.preflight.outputs.root-tag }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${APP_SLUG}[bot]@users.noreply.github.com"
+          gh auth setup-git
+
+          git tag --annotate "$ROOT_TAG" --message "$ROOT_TAG" "$TARGET_SHA"
+          git tag --annotate "$RAMPART_TAG" --message "$RAMPART_TAG" "$TARGET_SHA"
+
+          push_args=(--atomic)
+          if [[ "$DRY_RUN" == "true" ]]; then
+            push_args+=(--dry-run)
+          fi
+          git push "${push_args[@]}" origin \
+            "refs/tags/$ROOT_TAG:refs/tags/$ROOT_TAG" \
+            "refs/tags/$RAMPART_TAG:refs/tags/$RAMPART_TAG"
+
+      - name: Warm Go module proxy and request pkg.go.dev indexing
+        if: ${{ !inputs.dry-run }}
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected="v$VERSION"
+          check_module() {
+            local module="$1"
+            local info
+            if ! info="$(curl \
+                --fail \
+                --retry 12 \
+                --retry-all-errors \
+                --retry-delay 10 \
+                --show-error \
+                --silent \
+                "https://proxy.golang.org/$module/@v/$expected.info")"; then
+              echo "::error::The tags were published, but proxy.golang.org did not resolve '$module@$expected'."
+              echo "::notice::Do not delete or repoint either tag. Retry with: GOPROXY=https://proxy.golang.org go list -m '$module@$expected'"
+              return 1
+            fi
+            if ! jq -e --arg expected "$expected" '.Version == $expected' <<< "$info" > /dev/null; then
+              echo "$info"
+              echo "::error::The tags were published, but the Go module proxy returned an unexpected version for '$module'."
+              echo "::notice::Do not delete or repoint either tag. Retry with: GOPROXY=https://proxy.golang.org go list -m '$module@$expected'"
+              return 1
+            fi
+            echo "Available from proxy.golang.org: $module@$expected"
+          }
+
+          check_module github.com/arcjet/arcjet-go
+          check_module github.com/arcjet/arcjet-go/sensitiveinfo/rampart
+
+      - name: Summarize the result
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          RAMPART_TAG: ${{ needs.preflight.outputs.rampart-tag }}
+          ROOT_TAG: ${{ needs.preflight.outputs.root-tag }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$DRY_RUN" == "true" ]]; then
+            result="Dry run completed; no remote tags were created."
+          else
+            result="Created both remote tags atomically and made both versions available from proxy.golang.org."
+          fi
+          {
+            echo "## Release result"
+            echo "$result"
+            echo
+            echo "- \`$ROOT_TAG\`"
+            echo "- \`$RAMPART_TAG\`"
+            echo "- commit: \`$GITHUB_SHA\`"
+            if [[ "$DRY_RUN" == "false" ]]; then
+              echo "- pkg.go.dev: https://pkg.go.dev/github.com/arcjet/arcjet-go@v$VERSION"
+              echo "- Rampart docs: https://pkg.go.dev/github.com/arcjet/arcjet-go/sensitiveinfo/rampart@v$VERSION"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
