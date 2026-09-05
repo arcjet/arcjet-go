@@ -1449,6 +1449,8 @@ result. Its JSON fields (`arcjetDenied`, `reason`, `message`, `retryable`,
 `retryAfterSeconds`) match the JavaScript and Python SDKs. Use
 `arcjet.NewGuardUnavailableResult()` for the unavailable case; it always sets
 `retryAfterSeconds` to 5, since there is no decision to derive a hint from.
+For Microsoft Agent Framework tools, see the
+[`agentframework`](agentframework/README.md) module.
 
 #### `GuardActionPolicy` parameter reference
 
