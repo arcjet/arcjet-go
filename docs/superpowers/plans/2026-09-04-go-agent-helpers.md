@@ -27,6 +27,7 @@
 - PR titles and bodies need Rei's approval before a PR is opened. Default PR boundaries: one PR per phase per repository. Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 - The arcjet monorepo's git hooks hang; use `git commit --no-verify` and `git push --no-verify` there. A shell hook in this environment also rejects any command whose text names a formatter or linter binary; invoke tooling through `just` recipes and keep those binary names out of command strings.
 - Foreign repositories (`arcjet`, `skills`, `arcjet-plugin`, `arcjet-docs`) are sibling worktrees of this checkout at `../<repo>`, all on branch `rei/feat/go-framework-helpers`. Each foreign-repo phase opens with a reconciliation task.
+- **Release gate:** `docs/superpowers/` (this plan and its spec) is transient scaffolding and must be deleted from the branch before it merges, which is Task 25. Anything that must outlive the branch belongs in an ADR instead. This is separate from deleting the git-ignored `.superpowers/sdd/` workspace, and doing one does not satisfy the other.
 
 ## File structure
 
