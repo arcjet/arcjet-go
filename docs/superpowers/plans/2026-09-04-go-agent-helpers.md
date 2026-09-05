@@ -1012,6 +1012,23 @@ func TestGuardActionProgrammerErrorIsWrappedAsUnavailable(t *testing.T) {
 	if handler.guardCalls != 0 {
 		t.Fatalf("guard calls = %d, want 0", handler.guardCalls)
 	}
+
+	// Under allow the same programmer error lets fn run, degraded, still
+	// without a Guard call: there was no valid request to send.
+	handler = &testGuardHandler{resp: guardActionAllowResponse()}
+	client = newGuardActionTestClient(t, handler)
+	ran := false
+	_, err = GuardAction(context.Background(), client, GuardActionPolicy{Action: "Not A Label", OnGuardError: OnGuardErrorAllow},
+		func(context.Context) (struct{}, error) { ran = true; return struct{}{}, nil })
+	if err != nil || !ran {
+		t.Fatalf("err = %v, ran = %v; want fn to run under allow", err, ran)
+	}
+	if handler.guardCalls != 0 {
+		t.Fatalf("guard calls = %d, want 0", handler.guardCalls)
+	}
+	if events := flushedEvents(client, handler); len(events) != 1 || events[0].GetMetadataJson()["outcome"] != `"degraded"` || events[0].GetDecisionId() != "" {
+		t.Fatalf("events = %v", events)
+	}
 }
 
 func TestGuardActionResolveReplacesStaticInputs(t *testing.T) {
@@ -1024,8 +1041,13 @@ func TestGuardActionResolveReplacesStaticInputs(t *testing.T) {
 	_, err = GuardAction(context.Background(), client, GuardActionPolicy{
 		Action: "order.looked-up",
 		Actor:  "static-actor",
+		Inputs: map[string]GuardPolicyInput{"static": GuardPolicyServerString("x")},
 		Resolve: func(context.Context) (GuardActionInputs, error) {
-			return GuardActionInputs{Actor: "resolved-actor", Rules: []GuardRuleInput{limit.Key("user_1", 1)}}, nil
+			return GuardActionInputs{
+				Actor:  "resolved-actor",
+				Inputs: map[string]GuardPolicyInput{"recipient": GuardPolicyServerString("a@example.com")},
+				Rules:  []GuardRuleInput{limit.Key("user_1", 1)},
+			}, nil
 		},
 	}, func(context.Context) (struct{}, error) { return struct{}{}, nil })
 	if err != nil {
@@ -1036,6 +1058,13 @@ func TestGuardActionResolveReplacesStaticInputs(t *testing.T) {
 	}
 	if got := len(handler.seen.GetRuleSubmissions()); got != 1 {
 		t.Fatalf("rule submissions = %d, want 1", got)
+	}
+	inputs := handler.seen.GetPolicyInputs()
+	if _, ok := inputs["recipient"]; !ok {
+		t.Fatalf("resolved input missing from request: %v", inputs)
+	}
+	if _, ok := inputs["static"]; ok {
+		t.Fatalf("static input must be replaced, not merged: %v", inputs)
 	}
 }
 
@@ -1090,6 +1119,99 @@ func TestGuardActionNilClientFailsClosed(t *testing.T) {
 	var unavailable *GuardUnavailableError
 	if !errors.As(err, &unavailable) || !errors.Is(err, ErrNilClient) {
 		t.Fatalf("err = %v, want unavailable wrapping ErrNilClient", err)
+	}
+}
+
+// partialAllowResponse is an ALLOW decision the server completed but in
+// which one rule errored. Guard returns it with a nil error, so it is the
+// case where HasFailedOpen() alone decides that policy was not evaluated.
+func partialAllowResponse() *decidev2.GuardResponse {
+	return &decidev2.GuardResponse{Decision: &decidev2.GuardDecision{
+		Id:         "gdec_partial",
+		Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+		RuleResults: []*decidev2.GuardRuleResult{{
+			ResultId: "gres_err",
+			Type:     decidev2.GuardRuleType_GUARD_RULE_TYPE_PROMPT_INJECTION,
+			Result:   &decidev2.GuardRuleResult_Error{Error: &decidev2.ResultError{Message: "classifier timed out"}},
+		}},
+	}}
+}
+
+func TestGuardActionFailedOpenDecisionWithoutErrorIsUnevaluated(t *testing.T) {
+	// Under the default posture the action is blocked even though Guard
+	// returned no error: the decision itself reports it failed open.
+	handler := &testGuardHandler{resp: partialAllowResponse()}
+	client := newGuardActionTestClient(t, handler)
+	ran := false
+	_, err := GuardAction(context.Background(), client, GuardActionPolicy{Action: "refund.issued"},
+		func(context.Context) (struct{}, error) { ran = true; return struct{}{}, nil })
+	var unavailable *GuardUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("err = %v, want *GuardUnavailableError", err)
+	}
+	if ran {
+		t.Fatal("fn ran on a decision that failed open")
+	}
+	if unavailable.Err != nil {
+		t.Fatalf("Err = %v, want nil: Guard returned no error, the decision failed open", unavailable.Err)
+	}
+	if unavailable.Decision == nil || unavailable.Decision.ID != "gdec_partial" || !unavailable.Decision.HasFailedOpen() {
+		t.Fatalf("Decision = %+v", unavailable.Decision)
+	}
+	events := flushedEvents(client, handler)
+	if len(events) != 1 || events[0].GetMetadataJson()["outcome"] != `"unavailable"` || events[0].GetDecisionId() != "gdec_partial" {
+		t.Fatalf("events = %v", events)
+	}
+
+	// Under allow the action runs, the outcome is degraded, and the decision
+	// ID is kept: this is the record that says policy judged the action in
+	// part, as opposed to not at all.
+	handler = &testGuardHandler{resp: partialAllowResponse()}
+	client = newGuardActionTestClient(t, handler)
+	out, err := GuardAction(context.Background(), client, GuardActionPolicy{Action: "refund.issued", OnGuardError: OnGuardErrorAllow},
+		func(context.Context) (string, error) { return "ran", nil })
+	if err != nil || out != "ran" {
+		t.Fatalf("out = %q, err = %v", out, err)
+	}
+	events = flushedEvents(client, handler)
+	if len(events) != 1 || events[0].GetMetadataJson()["outcome"] != `"degraded"` {
+		t.Fatalf("events = %v", events)
+	}
+	if events[0].GetDecisionId() != "gdec_partial" {
+		t.Fatalf("decision id = %q, want gdec_partial kept on a degraded outcome", events[0].GetDecisionId())
+	}
+}
+
+func TestGuardActionCaptureFailureDoesNotAffectResult(t *testing.T) {
+	handler := &testGuardHandler{resp: guardActionAllowResponse(), captureErr: errors.New("capture down")}
+	client := newGuardActionTestClient(t, handler)
+	out, err := GuardAction(context.Background(), client, GuardActionPolicy{Action: "order.looked-up"},
+		func(context.Context) (string, error) { return "shipped", nil })
+	if err != nil || out != "shipped" {
+		t.Fatalf("out = %q, err = %v; a capture failure must never reach the caller", out, err)
+	}
+	client.Flush(context.Background()) // the send fails here; nothing propagates
+	if handler.guardCalls != 1 {
+		t.Fatalf("guard calls = %d", handler.guardCalls)
+	}
+}
+
+func TestGuardAndCaptureIgnoreContextCorrelation(t *testing.T) {
+	// Only the helpers read the context. The core calls keep their documented
+	// behaviour of never inheriting a correlation ID from ambient context.
+	handler := &testGuardHandler{resp: guardActionAllowResponse()}
+	client := newGuardActionTestClient(t, handler)
+	ctx := ContextWithCorrelationId(context.Background(), "ctx_1")
+	if _, err := client.Guard(ctx, GuardRequest{Label: "order.looked-up"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := handler.seen.GetCorrelationId(); got != "" {
+		t.Fatalf("Guard inherited correlation %q from the context", got)
+	}
+	client.Capture(CaptureEvent{Action: "order.looked-up"})
+	events := flushedEvents(client, handler)
+	if len(events) != 1 || events[0].GetCorrelationId() != "" {
+		t.Fatalf("Capture inherited correlation: %v", events)
 	}
 }
 ```
@@ -1193,7 +1315,9 @@ Remove any `var _ =` placeholder lines added in Task 3.
 
 **Files:** none changed at the end. Each mutation is reverted.
 
-- [ ] **Step 1: Flip the zero value.** In `guard_action.go`, swap the order of the two constants so `OnGuardErrorAllow` is `iota` zero. Run `go test ./ 2>&1 | grep -E '^--- FAIL'`. Expected failures, by name: `TestOnGuardErrorZeroValueIsDeny`, `TestGuardActionUnavailableFailsClosedByDefault`, `TestGuardActionResolveErrorIsUnevaluated`, `TestGuardActionNilClientFailsClosed`. Revert with `git checkout -- guard_action.go`.
+- [ ] **Step 1: Flip the zero value.** In `guard_action.go`, swap the order of the two constants so `OnGuardErrorAllow` is `iota` zero. Run `go test ./ 2>&1 | grep -E '^--- FAIL'`. Expected failures, by name: `TestOnGuardErrorZeroValueIsDeny`, `TestGuardActionUnavailableFailsClosedByDefault`, `TestGuardActionFailedOpenDecisionWithoutErrorIsUnevaluated`, `TestGuardActionResolveErrorIsUnevaluated`, `TestGuardActionProgrammerErrorIsWrappedAsUnavailable`, `TestGuardActionNilClientFailsClosed`. Revert with `git checkout -- guard_action.go`.
+
+- [ ] **Step 1b: Drop the failed-open half of the condition.** Change `if guardErr != nil || decision.HasFailedOpen()` to `if guardErr != nil`. Expected failure: `TestGuardActionFailedOpenDecisionWithoutErrorIsUnevaluated` only (the transport-error tests still pass because they also carry an error, which is why this test exists). Revert.
 
 - [ ] **Step 2: Let a caller overwrite the outcome.** In `captureGuardOutcome`, move `md["outcome"] = outcome` above `maps.Copy`. Expected failure: `TestGuardActionOutcomeOverridesCallerMetadata`. Revert.
 
@@ -1855,6 +1979,51 @@ func TestGuardToolOnDenyReshapesPayload(t *testing.T) {
 	}
 }
 
+func TestGuardToolOnDenyIsNotInvokedWhenUnavailable(t *testing.T) {
+	client := newTestClient(t, &fakeDecide{err: errors.New("decide unreachable")})
+	base, _ := newLookupTool(t)
+	guarded := MustGuardTool(client, base, ToolPolicy{
+		Action: "order.looked-up",
+		OnDeny: func(arcjet.GuardDecision) any {
+			t.Fatal("OnDeny must not run for an unavailable guard: it receives a DENY decision, and none exists")
+			return nil
+		},
+	})
+	out, err := guarded.Call(t.Context(), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload, ok := out.(arcjet.GuardDenialResult); !ok || payload.Reason != "ERROR" {
+		t.Fatalf("out = %#v, want the fixed unavailable payload", out)
+	}
+}
+
+func TestGuardToolErrorReachesTheLoopAsAnError(t *testing.T) {
+	// Contrast with the denial test: a real tool failure is still an error
+	// to the framework, which then applies its own error handling.
+	client := newTestClient(t, &fakeDecide{resp: allowResponse()})
+	failing, err := functoolNew(t, "lookup_order", func(context.Context, lookupArgs) (string, error) { return "", errToolFailed })
+	if err != nil {
+		t.Fatal(err)
+	}
+	guarded := MustGuardTool(client, failing, ToolPolicy{Action: "order.looked-up"})
+	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{
+		{functionCall("call_1", "lookup_order", `{"orderNumber":"o-1"}`)},
+		{assistantTextUpdate("done")},
+	}}
+	a := newAgent(runner, agent.Config{Tools: []tool.Tool{guarded}})
+	if _, err := a.RunText(t.Context(), "where is my order?").Collect(); err != nil {
+		t.Fatal(err)
+	}
+	result := lastFunctionResult(t, runner.seen[1])
+	if result.Error == nil {
+		t.Fatalf("tool failure reached the loop as a success: %#v", result)
+	}
+	if !errors.Is(result.Error, errToolFailed) {
+		t.Fatalf("loop saw %v, want the tool's own error", result.Error)
+	}
+}
+
 func TestGuardToolResolversReachGuardAndTheirErrorsFailClosed(t *testing.T) {
 	decide := &fakeDecide{resp: allowResponse()}
 	client := newTestClient(t, decide)
@@ -1866,6 +2035,13 @@ func TestGuardToolResolversReachGuardAndTheirErrorsFailClosed(t *testing.T) {
 	guarded := MustGuardTool(client, base, ToolPolicy{
 		Action: "order.looked-up",
 		Actor:  func(context.Context, json.RawMessage) (string, error) { return "user_1", nil },
+		Inputs: func(_ context.Context, raw json.RawMessage) (map[string]arcjet.GuardPolicyInput, error) {
+			var in lookupArgs
+			if err := json.Unmarshal(raw, &in); err != nil {
+				return nil, err
+			}
+			return map[string]arcjet.GuardPolicyInput{"orderNumber": arcjet.GuardPolicyServerString(in.OrderNumber)}, nil
+		},
 		Rules: Args(func(_ context.Context, in lookupArgs) ([]arcjet.GuardRuleInput, error) {
 			return []arcjet.GuardRuleInput{limit.Key(in.OrderNumber, 1)}, nil
 		}),
@@ -1876,6 +2052,9 @@ func TestGuardToolResolversReachGuardAndTheirErrorsFailClosed(t *testing.T) {
 	req := decide.request(0)
 	if req.GetActor() != "user_1" || len(req.GetRuleSubmissions()) != 1 {
 		t.Fatalf("request = %v", req)
+	}
+	if _, ok := req.GetPolicyInputs()["orderNumber"]; !ok {
+		t.Fatalf("Inputs resolver did not reach the request: %v", req.GetPolicyInputs())
 	}
 
 	failing := MustGuardTool(client, base, ToolPolicy{
@@ -2363,11 +2542,49 @@ func TestGuardToolsGuardsMCPClientTools(t *testing.T) {
 		t.Fatal("the remote tool ran despite the denial")
 	}
 
-	// A guarded tool also registers on an MCP server unchanged.
+	// A guarded tool also registers on an MCP server unchanged: a client sees
+	// the original name and schema, and calling it over MCP yields the denial
+	// payload as the tool's result.
+	serverTransport2, clientTransport2 := mcp.NewInMemoryTransports()
 	server2 := mcp.NewServer(&mcp.Implementation{Name: "orders2", Version: "1.0.0"}, nil)
 	mcptool.AddTool(server2, MustGuardTool(client, lookup, ToolPolicy{Action: "order.looked-up"}))
+	serverSession2, err := server2.Connect(ctx, serverTransport2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = serverSession2.Close() })
+	session2, err := mcptool.Connect(ctx, clientTransport2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session2.Close() })
+	remote2, err := mcptool.ListTools(ctx, session2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remote2) != 1 || remote2[0].Name() != "lookup_order" {
+		t.Fatalf("server2 exposes %v, want lookup_order", remote2)
+	}
+	wantSchema, _ := json.Marshal(lookup.Schema())
+	gotSchema, _ := json.Marshal(remote2[0].(tool.SchemaTool).Schema())
+	if string(gotSchema) != string(wantSchema) {
+		t.Fatalf("schema changed across the guarded MCP server:\n got %s\nwant %s", gotSchema, wantSchema)
+	}
+	over, err := remote2[0].(tool.FuncTool).Call(ctx, `{"orderNumber":"o-2"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overJSON, _ := json.Marshal(over)
+	if !strings.Contains(string(overJSON), `"arcjetDenied":true`) {
+		t.Fatalf("result over MCP = %s, want the denial payload", overJSON)
+	}
+	if *calls != 0 {
+		t.Fatal("the guarded tool behind the MCP server ran despite the denial")
+	}
 }
 ```
+
+Add `"encoding/json"` and `"strings"` to the imports.
 
 Add imports `"github.com/modelcontextprotocol/go-sdk/mcp"`, `"github.com/microsoft/agent-framework-go/tool/mcptool"`, and `"github.com/arcjet/arcjet-go"`.
 
@@ -2481,6 +2698,71 @@ func TestGuardMiddlewareInboundOnDenyReplacesResponse(t *testing.T) {
 	resp, _ := a.RunText(t.Context(), "hi").Collect()
 	if resp.String() != "custom refusal" {
 		t.Fatalf("resp = %q", resp.String())
+	}
+}
+
+func TestGuardMiddlewareInboundOnDenyIsNotInvokedWhenUnavailable(t *testing.T) {
+	client := newTestClient(t, &fakeDecide{err: errors.New("decide unreachable")})
+	policy := inboundPolicy(t)
+	policy.OnDeny = func(arcjet.GuardDecision) *agent.ResponseUpdate {
+		t.Fatal("OnDeny must not run for an unavailable guard")
+		return nil
+	}
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: policy})
+	a := newAgent(&scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("x")}}}, agent.Config{Middlewares: []agent.Middleware{mw}})
+	resp, err := a.RunText(t.Context(), "hi").Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.String() != arcjet.GuardUnavailableResult().Message {
+		t.Fatalf("resp = %q", resp.String())
+	}
+}
+
+func TestGuardMiddlewareInboundAllowPostureProceedsDuringOutage(t *testing.T) {
+	client := newTestClient(t, &fakeDecide{err: errors.New("decide unreachable")})
+	policy := inboundPolicy(t)
+	policy.OnGuardError = arcjet.OnGuardErrorAllow
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: policy})
+	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("hello")}}}
+	a := newAgent(runner, agent.Config{Middlewares: []agent.Middleware{mw}})
+	resp, err := a.RunText(t.Context(), "hi").Collect()
+	if err != nil || resp.String() != "hello" || runner.providerCalls() != 1 {
+		t.Fatalf("resp = %q, err = %v, calls = %d; allow posture must let the run proceed", resp.String(), err, runner.providerCalls())
+	}
+}
+
+func TestGuardMiddlewareInboundSeesOnlyTheNewTurn(t *testing.T) {
+	// Agent-level middleware runs before history injection, so the second
+	// turn's screening must receive only the second message, not the
+	// conversation so far.
+	decide := &fakeDecide{resp: allowResponse()}
+	client := newTestClient(t, decide)
+	var screened []string
+	policy := inboundPolicy(t)
+	rules := policy.Rules
+	policy.Rules = func(ctx context.Context, text string) ([]arcjet.GuardRuleInput, error) {
+		screened = append(screened, text)
+		return rules(ctx, text)
+	}
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: policy})
+	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("reply")}}}
+	a := newAgent(runner, agent.Config{Middlewares: []agent.Middleware{mw}})
+	session, err := a.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range []string{"first", "second"} {
+		if _, err := a.RunText(t.Context(), turn, agent.WithSession(session)).Collect(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(screened) != 2 || screened[0] != "first" || screened[1] != "second" {
+		t.Fatalf("screened = %q, want exactly the new message each turn", screened)
+	}
+	// The provider, by contrast, did see history on the second turn.
+	if len(runner.seen) != 2 || len(runner.seen[1]) <= len(runner.seen[0]) {
+		t.Fatalf("provider saw %d then %d messages; expected history to grow", len(runner.seen[0]), len(runner.seen[1]))
 	}
 }
 
@@ -2778,6 +3060,40 @@ func TestGuardMiddlewareDoesNotGuardTwice(t *testing.T) {
 	}
 	if decide.guardCalls() != 1 {
 		t.Fatalf("guard evaluated %d times for one tool call, want 1", decide.guardCalls())
+	}
+}
+
+func TestGuardToolOptionsPreservesNonToolOptions(t *testing.T) {
+	client := newTestClient(t, &fakeDecide{resp: allowResponse()})
+	lookup, _ := newLookupTool(t)
+	a := newAgent(&scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("x")}}}, agent.Config{})
+	session, err := a.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := []agent.Option{agent.WithTool(lookup), agent.WithSession(session), agent.WithInstructions("be brief")}
+	out, err := guardToolOptions(client, in, lookupPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("len = %d, want 3", len(out))
+	}
+	if got, ok := agent.GetOption(out, agent.WithSession); !ok || got != session {
+		t.Fatal("session option was dropped by the rewrite")
+	}
+	if got, ok := agent.GetOption(out, agent.WithInstructions); !ok || got != "be brief" {
+		t.Fatal("instructions option was dropped by the rewrite")
+	}
+	var tools []tool.Tool
+	for tl := range agent.AllOptions(out, agent.WithTool) {
+		tools = append(tools, tl)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("tool options = %d, want 1", len(tools))
+	}
+	if _, ok := tools[0].(guardedMarker); !ok {
+		t.Fatal("the tool option was not replaced by its guarded form")
 	}
 }
 ```
