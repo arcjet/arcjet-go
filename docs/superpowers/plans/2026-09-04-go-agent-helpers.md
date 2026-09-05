@@ -2566,8 +2566,14 @@ func TestGuardToolsGuardsMCPClientTools(t *testing.T) {
 	if len(remote2) != 1 || remote2[0].Name() != "lookup_order" {
 		t.Fatalf("server2 exposes %v, want lookup_order", remote2)
 	}
-	wantSchema, _ := json.Marshal(lookup.Schema())
-	gotSchema, _ := json.Marshal(remote2[0].(tool.SchemaTool).Schema())
+	wantSchema, err := json.Marshal(lookup.Schema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotSchema, err := json.Marshal(remote2[0].(tool.SchemaTool).Schema())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(gotSchema) != string(wantSchema) {
 		t.Fatalf("schema changed across the guarded MCP server:\n got %s\nwant %s", gotSchema, wantSchema)
 	}
@@ -2575,7 +2581,10 @@ func TestGuardToolsGuardsMCPClientTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	overJSON, _ := json.Marshal(over)
+	overJSON, err := json.Marshal(over)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(overJSON), `"arcjetDenied":true`) {
 		t.Fatalf("result over MCP = %s, want the denial payload", overJSON)
 	}
