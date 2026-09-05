@@ -16,7 +16,7 @@
 - Root additions are stable API under the repo's additive-only policy (`AGENTS.md`). The `agentframework` module is `v0.x` and its README and package doc say it tracks a preview framework.
 - Module path `github.com/arcjet/arcjet-go/agentframework`, package `agentframework`, no framework version in the path. Tags take the nested form `agentframework/v0.1.0`.
 - Helpers fail closed by default. The zero value of `OnGuardError` is deny.
-- A denial reaches the model as a successful tool result carrying `GuardDenialResult`, never as an error. MAF hides error text behind "Error: Function failed." and aborts a run after three consecutive tool errors (`agent/harness/toolautocall/autocall.go:1157-1190` at MAF commit 86079f9).
+- A denial reaches the model as a successful tool result carrying `GuardDenialResult`, never as an error. MAF hides error text behind "Error: Function failed." and allows three consecutive rounds of failing tool calls before the fourth ends the run (`agent/harness/toolautocall/autocall.go:1157-1190` at MAF commit 86079f9).
 - Correlation travels in `context.Context`. Only the helpers read it. Nothing generates an ID.
 - Capture outcome values are exactly `success`, `degraded`, `denied`, `error`, `unavailable`, written under the metadata key `outcome`, last, so a caller cannot overwrite it.
 - Denial payload JSON field names are exactly `arcjetDenied`, `reason`, `message`, `retryable`, `retryAfterSeconds`, matching JS and Python.
@@ -2856,7 +2856,7 @@ type guardMiddleware struct {
 // before the provider-owned tool loop, so it sees only the new turn's
 // messages and every tool as a run option.
 //
-// Per run it: puts the session's provider thread ID on the context as the
+// Per run it: puts the session's service ID on the context as the
 // correlation ID when the context has none; screens the user text when
 // Inbound is set, ending the run with one assistant update on a denial or an
 // unavailable guard; and replaces every tool option with its guarded form
@@ -2980,7 +2980,7 @@ func guardToolOptions(client *arcjet.GuardClient, opts []agent.Option, policy fu
 	return rest, nil
 }
 
-// withSessionCorrelation puts the session's provider thread ID on the
+// withSessionCorrelation puts the session's service ID on the
 // context when the context carries no correlation ID yet, so every guard and
 // capture in the run joins one Sequence. It never generates an ID.
 func withSessionCorrelation(ctx context.Context, opts []agent.Option) context.Context {
@@ -3120,7 +3120,7 @@ func TestGuardToolOptionsPreservesNonToolOptions(t *testing.T) {
 - [ ] **Step 1: Write the tests**:
 
 ```go
-func TestGuardMiddlewareUsesSessionThreadIDWhenContextHasNone(t *testing.T) {
+func TestGuardMiddlewareUsesSessionServiceIDWhenContextHasNone(t *testing.T) {
 	decide := &fakeDecide{resp: allowResponse()}
 	client := newTestClient(t, decide)
 	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: inboundPolicy(t)})
@@ -3135,7 +3135,7 @@ func TestGuardMiddlewareUsesSessionThreadIDWhenContextHasNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := decide.request(0).GetCorrelationId(); got != "thread_123" {
-		t.Fatalf("correlation = %q, want the session thread ID", got)
+		t.Fatalf("correlation = %q, want the session service ID", got)
 	}
 }
 
@@ -3310,9 +3310,9 @@ func must[T any](v T, err error) T {
 ## Denials are results, not errors
 
 The framework turns a tool error into the fixed text `Error: Function
-failed.` unless `IncludeDetailedErrors` is set, and aborts a run after three
-consecutive tool errors. So a guarded tool never returns an error for a
-denial. It returns `arcjet.GuardDenialResult` as its result:
+failed.` unless `IncludeDetailedErrors` is set, and it allows three
+consecutive rounds of failing tool calls before the fourth ends the run. So a
+guarded tool never returns an error for a denial. It returns `arcjet.GuardDenialResult` as its result:
 
 ```json
 {"arcjetDenied":true,"reason":"RATE_LIMIT","message":"Arcjet denied this call (RATE_LIMIT). It may be retried after 30 seconds.","retryable":true,"retryAfterSeconds":30}
@@ -3339,8 +3339,9 @@ Put an ID you already have on the context before `Run`:
 ctx = arcjet.ContextWithCorrelationId(ctx, conversationID)
 ```
 
-`GuardMiddleware` falls back to the session's provider thread ID
-(`agent.Session.ServiceID`) when the context has none. Nothing is generated:
+`GuardMiddleware` falls back to the session's service ID
+(`agent.Session.ServiceID`, the provider-specific identifier for the session)
+when the context has none. Nothing is generated:
 an uncorrelated run produces decisions that join no Sequence.
 
 ## Which tools the middleware sees
@@ -3388,9 +3389,10 @@ Agent-level middleware runs before the framework's tool loop, and tools from
    we integrate where MCP tools do not bypass the wrapped handler.
 2. **A denial is a successful tool result, never an error.** The tool loop
    replaces a tool error with the fixed text "Error: Function failed." unless
-   `IncludeDetailedErrors` is set, and aborts the run after three consecutive
-   tool errors. A denial returned as an error would therefore be invisible to
-   the model and could end the run. The wrapper returns
+   `IncludeDetailedErrors` is set, and it allows three consecutive failing
+   rounds (the default) before the fourth returns the aggregated errors to the
+   caller and ends the run. A denial returned as an error would therefore reach
+   the model stripped of its reason and could end the run. The wrapper returns
    `arcjet.GuardDenialResult` as the result and the loop attaches the call ID.
 3. **`agent.Middleware` in `agent.Config.Middlewares` is the inbound gate and
    the place to guard tools by name.** It runs before history and context
@@ -3402,10 +3404,10 @@ Agent-level middleware runs before the framework's tool loop, and tools from
    messages, which is what inbound screening wants.
 4. **There is no per-call hook in the tool loop** (`toolautocall.Config` has
    none), so the tool wrapper is the only per-call enforcement point.
-5. **Correlation is derived, never generated.** Precedence is an explicit
-   policy field, then the context set by `arcjet.ContextWithCorrelationId`,
-   then the session's provider thread ID (`agent.Session.ServiceID`), then
-   none. The context passed to a tool carries only the agent and an internal
+5. **Correlation is derived, never generated.** Precedence is the context set
+   by `arcjet.ContextWithCorrelationId`, then the session's service ID
+   (`agent.Session.ServiceID`, the provider-specific identifier for the
+   session), then none. The context passed to a tool carries only the agent and an internal
    tracer; the call ID is not in it, and is not needed because the loop
    attaches it to any plain result.
 6. **Human approval is not a policy gate.** `tool.ApprovalRequiredFunc` and
@@ -3760,8 +3762,9 @@ implementations have no Arcjet adapter. Do not import `@arcjet/guard` or
 ## Denials are tool results, never errors
 
 The framework replaces a tool error with `Error: Function failed.` and
-aborts a run after three consecutive tool errors. `GuardTool` therefore
-returns `arcjet.GuardDenialResult` as a successful result. Do not "fix" this
+allows three consecutive rounds of failing tool calls before the fourth ends
+the run. `GuardTool` therefore returns `arcjet.GuardDenialResult` as a
+successful result. Do not "fix" this
 by returning an error, and do not set `IncludeDetailedErrors` to make errors
 carry the denial.
 
@@ -4111,9 +4114,9 @@ input), `Metadata`, `OnGuardError`, and `OnDeny`. `InboundPolicy` takes
 ## Denials are results, not errors
 
 The framework replaces a tool error with `Error: Function failed.` unless
-`IncludeDetailedErrors` is set, and aborts a run after three consecutive tool
-errors. A guarded tool therefore returns `arcjet.GuardDenialResult` as its
-result. The fields are the same as every other adapter:
+`IncludeDetailedErrors` is set, and it allows three consecutive rounds of
+failing tool calls before the fourth ends the run. A guarded tool therefore
+returns `arcjet.GuardDenialResult` as its result. The fields are the same as every other adapter:
 
 ```json
 {"arcjetDenied":true,"reason":"RATE_LIMIT","message":"Arcjet denied this call (RATE_LIMIT). It may be retried after 30 seconds.","retryable":true,"retryAfterSeconds":30}

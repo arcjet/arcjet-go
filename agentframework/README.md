@@ -125,9 +125,10 @@ func must[T any](v T, err error) T {
 ## Denials are results, not errors
 
 The framework turns a tool error into the fixed text `Error: Function
-failed.` unless `IncludeDetailedErrors` is set, and aborts a run after three
-consecutive tool errors. So a guarded tool never returns an error for a
-denial. It returns `arcjet.GuardDenialResult` as its result:
+failed.` unless `IncludeDetailedErrors` is set, and it allows three
+consecutive rounds of failing tool calls before the fourth ends the run. So a
+guarded tool never returns an error for a denial. It returns
+`arcjet.GuardDenialResult` as its result:
 
 ```json
 {"arcjetDenied":true,"reason":"RATE_LIMIT","message":"Arcjet denied this call (RATE_LIMIT). It may be retried after 30 seconds.","retryable":true,"retryAfterSeconds":30}
@@ -154,9 +155,10 @@ Put an ID you already have on the context before `Run`:
 ctx = arcjet.ContextWithCorrelationId(ctx, conversationID)
 ```
 
-`GuardMiddleware` falls back to the session's provider thread ID
-(`agent.Session.ServiceID`) when the context has none. Nothing is generated:
-an uncorrelated run produces decisions that join no Sequence.
+`GuardMiddleware` falls back to the session's service ID
+(`agent.Session.ServiceID`, the provider-specific identifier for the session)
+when the context has none. Nothing is generated: an uncorrelated run produces
+decisions that join no Sequence.
 
 ## Which tools the middleware sees
 

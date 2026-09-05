@@ -39,12 +39,14 @@ agent middleware, with the workflow package left to a final analysis phase.
     slice by type-asserting each option's value to `tool.Tool`.
   - The tool loop has no per-call hook. A tool that returns an error reaches
     the model as "Error: Function failed." unless `IncludeDetailedErrors` is
-    set, and three consecutive errors abort the run. A plain result is
+    set, and three consecutive failing rounds are allowed before the
+    fourth aborts the run. A plain result is
     wrapped in a `FunctionResultContent` with the correct call ID and is not
     validated against the return schema.
   - The context passed to a tool carries only the agent and an internal
     tracer. The call ID is not in it.
-  - `agent.Session` exposes a provider thread ID (`ServiceID`) and a state bag.
+  - `agent.Session` exposes a service ID (`ServiceID`, the provider-specific
+    identifier for the session) and a state bag.
   - `toolapproval` is human-in-the-loop with auto-approval rules. Hosted tools
     execute at the provider.
 
@@ -274,7 +276,7 @@ Per run:
    non-empty `ServiceID`, put that ID on the context passed to next.
 
 Correlation precedence inside the framework is therefore: explicit policy
-field, context, session thread ID, none.
+field, context, session service ID, none.
 
 ### Documented, not built
 
@@ -301,7 +303,7 @@ ordinary tool error still reaches the loop as an error; approval-required
 status survives wrapping; `GuardTools` wraps function tools and passes others
 through; the middleware guards agent-level and per-run tools; inbound denial
 yields one assistant update and never invokes the provider; the marker
-prevents double evaluation; the session thread ID lands on the guard request
+prevents double evaluation; the session service ID lands on the guard request
 when the context has no correlation ID.
 
 **Mutation checks.** Before claiming coverage, break each default and
