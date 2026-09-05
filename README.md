@@ -1051,10 +1051,10 @@ func GetWeather(ctx context.Context, userID, message string) error {
 > sea of distinct-looking entries instead of one bucket per operation.
 
 `Guard()` is the low-level API and fails **open** on runtime degradation: it
-returns an `ALLOW` decision for which `HasFailedOpen()` is `true`. Go has no
-agent helper that flips this default, so applications wrapping sensitive tool
-calls or actions must gate manually on `HasFailedOpen()`, as in the example
-above.
+returns an `ALLOW` decision for which `HasFailedOpen()` is `true`. For a
+sensitive tool call or action, wrap it in [`GuardAction`](#agent-helpers)
+instead, which fails **closed** by default and records the outcome. The
+example above shows the manual gate `GuardAction` replaces.
 
 Unavailability is broader than an Arcjet Cloud outage. `HasFailedOpen()` also
 covers an incomplete remote policy, a deadline or transport failure, a missing
@@ -1378,6 +1378,73 @@ for _, w := range decision.Warnings {
 	log.Printf("arcjet guard warning: [%s] %s", w.Code, w.Message)
 }
 ```
+
+### Agent helpers
+
+`GuardAction` runs a function only if policy allows it. It is the Go
+counterpart of `guardAction` in `@arcjet/guard` and `guard_action` in
+`arcjet.guard`, and the building block the framework modules use.
+
+```go
+out, err := arcjet.GuardAction(ctx, guard, arcjet.GuardActionPolicy{
+	Action: "refund.issued", // hardcoded label, also the capture name
+	Actor:  userID,
+	Rules:  []arcjet.GuardRuleInput{refundLimit.Key(userID, 1)},
+	Metadata: arcjet.SecurityMetadata{
+		User:          userID,
+		Reversibility: "irreversible",
+	}.Metadata(),
+}, func(ctx context.Context) (Receipt, error) {
+	return refundPayment(ctx, paymentID)
+})
+
+var denied *arcjet.GuardDeniedError
+var unavailable *arcjet.GuardUnavailableError
+switch {
+case errors.As(err, &denied):
+	// Policy evaluated and said no. Do not retry.
+	reportPolicyDenial(denied.Decision.Reason)
+case errors.As(err, &unavailable):
+	// Policy could not be evaluated and the helper failed closed.
+	alertOperator(unavailable)
+	queueForRetry(paymentID)
+case err != nil:
+	// The wrapped function itself failed.
+	return err
+}
+```
+
+Guard is reached on every path that evaluates policy, even with no rules, so
+a remote policy configured for the label still applies. The helper records one
+capture event per call whose metadata `outcome` is `success`, `degraded`,
+`denied`, `error`, or `unavailable`.
+
+**Fail closed by default.** When policy cannot be evaluated, `GuardAction`
+returns `*GuardUnavailableError` without running the function. That covers a
+transport failure, a deadline, a rule error, a programmer error such as an
+invalid label, a decision that failed open, and any decision that is not a clean
+`ALLOW`, including a `CHALLENGE` and a conclusion this SDK does not recognise.
+Set `OnGuardError: arcjet.OnGuardErrorAllow` to run it anyway; the capture
+outcome is then `degraded`. A `DENY` always blocks and returns
+`*GuardDeniedError`, whatever the setting. The two errors are distinct on
+purpose: a denial is a decision, unavailability means no decision was made.
+
+**Correlation.** Put a request or job ID on the context once and every
+helper call in that context joins one Sequence in the Arcjet console:
+
+```go
+ctx = arcjet.ContextWithCorrelationId(ctx, requestID)
+```
+
+`GuardActionPolicy.CorrelationId` overrides the context. `Guard` and
+`Capture` never read the context; pass the ID to them explicitly. Nothing in
+the SDK generates a correlation ID: derive it from an ID you already have.
+
+**Model-facing denials.** When the caller is a model rather than your own
+code, return `arcjet.NewGuardDenialResult(denied.Decision)` as the tool's
+result. Its JSON fields (`arcjetDenied`, `reason`, `message`, `retryable`,
+`retryAfterSeconds`) match the JavaScript and Python SDKs. Use
+`arcjet.GuardUnavailableResult()` for the unavailable case.
 
 ### `Guard` parameter reference
 
