@@ -165,8 +165,8 @@ uncorrelated call, so the skill documents this) and a capture-action helper
    `*GuardUnavailableError` without running fn. Under allow, run fn and
    capture `outcome: "degraded"`. A clean ALLOW is one whose conclusion is
    ALLOW and whose `HasFailedOpen()` is false; any other conclusion,
-   including CHALLENGE and one the SDK does not recognise, is unevaluated and
-   fails closed.
+   including one the SDK does not recognise, is unevaluated and fails
+   closed.
 4. A clean ALLOW runs fn. If fn returns an error, capture `outcome: "error"`
    and return that error unchanged. Otherwise capture `outcome: "success"`.
 5. The capture event carries the action, the resolved correlation ID, the

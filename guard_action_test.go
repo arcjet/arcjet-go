@@ -361,6 +361,10 @@ func TestGuardActionNilFn(t *testing.T) {
 	if !errors.Is(err, ErrNilAction) {
 		t.Fatalf("err = %v, want ErrNilAction", err)
 	}
+	var unavailable *GuardUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("err = %v, want *GuardUnavailableError", err)
+	}
 	if handler.guardCalls != 0 {
 		t.Fatal("Guard must not be called for a nil fn")
 	}
@@ -496,6 +500,11 @@ func TestGuardActionUnrecognisedConclusionFailsClosed(t *testing.T) {
 	if ran {
 		t.Fatal("fn ran on a decision that is neither allow nor deny")
 	}
+	// The guard call happened and returned a real decision: an empty
+	// Conclusion must not be mistaken for no decision at all.
+	if unavailable.Decision == nil || unavailable.Decision.ID != "gdec_unspecified" {
+		t.Fatalf("Decision = %+v, want the fixture's decision kept", unavailable.Decision)
+	}
 	events := flushedEvents(client, handler)
 	if len(events) != 1 || events[0].GetMetadataJson()["outcome"] != `"unavailable"` || events[0].GetDecisionId() != "gdec_unspecified" {
 		t.Fatalf("events = %v", events)
@@ -559,8 +568,8 @@ func TestGuardActionDenyWinsOverCoOccurringError(t *testing.T) {
 }
 
 func TestGuardActionDegradedThenFnErrorCapturesError(t *testing.T) {
-	// ADR 2026-08-18: an action that ran and then failed records "error",
-	// which takes precedence over the degraded condition.
+	// An action that ran and then failed records "error", which takes
+	// precedence over the degraded condition.
 	handler := &testGuardHandler{errToReturn: errors.New("decide unreachable")}
 	client := newGuardActionTestClient(t, handler)
 	sentinel := errors.New("db down")

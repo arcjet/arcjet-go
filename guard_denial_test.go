@@ -21,8 +21,11 @@ func TestNewGuardDenialResultRateLimitDerivesRetryAfter(t *testing.T) {
 	if !got.ArcjetDenied || got.Reason != "RATE_LIMIT" || !got.Retryable {
 		t.Fatalf("payload = %+v", got)
 	}
-	if got.RetryAfterSeconds == nil || *got.RetryAfterSeconds != 30 {
-		t.Fatalf("retryAfterSeconds = %v, want 30", got.RetryAfterSeconds)
+	if got.RetryAfterSeconds == nil {
+		t.Fatal("retryAfterSeconds = nil, want 30")
+	}
+	if *got.RetryAfterSeconds != 30 {
+		t.Fatalf("retryAfterSeconds = %d, want 30", *got.RetryAfterSeconds)
 	}
 	if got.Message != "Arcjet denied this call (RATE_LIMIT). It may be retried after 30 seconds." {
 		t.Fatalf("message = %q", got.Message)
@@ -43,8 +46,11 @@ func TestNewGuardDenialResultRateLimitPastResetClampsToZero(t *testing.T) {
 		FixedWindow: &GuardFixedWindowResult{Conclusion: ConclusionDeny, ResetAtUnixSeconds: 1_000_030},
 	}}}
 	got := newGuardDenialResultAt(d, now)
-	if got.RetryAfterSeconds == nil || *got.RetryAfterSeconds != 0 {
-		t.Fatalf("retryAfterSeconds = %v, want 0", got.RetryAfterSeconds)
+	if got.RetryAfterSeconds == nil {
+		t.Fatal("retryAfterSeconds = nil, want 0")
+	}
+	if *got.RetryAfterSeconds != 0 {
+		t.Fatalf("retryAfterSeconds = %d, want 0", *got.RetryAfterSeconds)
 	}
 }
 
@@ -57,8 +63,11 @@ func TestNewGuardDenialResultRateLimitIgnoresAllowingResults(t *testing.T) {
 		{FixedWindow: &GuardFixedWindowResult{Conclusion: ConclusionDeny, ResetAtUnixSeconds: 1_000_045}},
 	}}
 	got := newGuardDenialResultAt(d, now)
-	if got.RetryAfterSeconds == nil || *got.RetryAfterSeconds != 45 {
-		t.Fatalf("retryAfterSeconds = %v, want 45 from the denying rule", got.RetryAfterSeconds)
+	if got.RetryAfterSeconds == nil {
+		t.Fatal("retryAfterSeconds = nil, want 45 from the denying rule")
+	}
+	if *got.RetryAfterSeconds != 45 {
+		t.Fatalf("retryAfterSeconds = %d, want 45 from the denying rule", *got.RetryAfterSeconds)
 	}
 }
 
@@ -69,8 +78,11 @@ func TestNewGuardDenialResultRateLimitTakesLatestDenyingReset(t *testing.T) {
 		{SlidingWindow: &GuardSlidingWindowResult{Conclusion: ConclusionDeny, ResetAtUnixSeconds: 1_000_060}},
 	}}
 	got := newGuardDenialResultAt(d, now)
-	if got.RetryAfterSeconds == nil || *got.RetryAfterSeconds != 60 {
-		t.Fatalf("retryAfterSeconds = %v, want 60: a caller cannot retry until the last denying limit resets", got.RetryAfterSeconds)
+	if got.RetryAfterSeconds == nil {
+		t.Fatal("retryAfterSeconds = nil, want 60: a caller cannot retry until the last denying limit resets")
+	}
+	if *got.RetryAfterSeconds != 60 {
+		t.Fatalf("retryAfterSeconds = %d, want 60: a caller cannot retry until the last denying limit resets", *got.RetryAfterSeconds)
 	}
 	if got.Message != "Arcjet denied this call (RATE_LIMIT). It may be retried after 60 seconds." {
 		t.Fatalf("message = %q", got.Message)
@@ -114,8 +126,11 @@ func TestGuardUnavailableResultLiterals(t *testing.T) {
 	if !got.ArcjetDenied || got.Reason != "ERROR" || !got.Retryable {
 		t.Fatalf("payload = %+v", got)
 	}
-	if got.RetryAfterSeconds == nil || *got.RetryAfterSeconds != 5 {
-		t.Fatalf("retryAfterSeconds = %v, want 5", got.RetryAfterSeconds)
+	if got.RetryAfterSeconds == nil {
+		t.Fatal("retryAfterSeconds = nil, want 5")
+	}
+	if *got.RetryAfterSeconds != 5 {
+		t.Fatalf("retryAfterSeconds = %d, want 5", *got.RetryAfterSeconds)
 	}
 	if got.Message != "Arcjet security check could not be completed; please retry later." {
 		t.Fatalf("message = %q", got.Message)

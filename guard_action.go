@@ -35,9 +35,12 @@ func (o OnGuardError) String() string {
 // GuardActionInputs are the per-call values a GuardActionPolicy.Resolve hook
 // computes from runtime input.
 type GuardActionInputs struct {
-	Actor  string
+	// Actor is the resolved actor identity available to remote policies.
+	Actor string
+	// Inputs are the resolved typed values exposed to remote policies.
 	Inputs map[string]GuardPolicyInput
-	Rules  []GuardRuleInput
+	// Rules are the resolved bound rule inputs.
+	Rules []GuardRuleInput
 }
 
 // GuardActionPolicy describes one guarded action.
@@ -45,7 +48,8 @@ type GuardActionPolicy struct {
 	// Action names the action. It is sent as the Guard label, so it must be a
 	// valid label slug, and it names the capture event.
 	Action string
-	// Actor is an optional actor identity available to remote policies.
+	// Actor is an optional actor identity available to remote policies. An
+	// empty string means unset.
 	Actor string
 	// Inputs are typed values exposed to remote policies.
 	Inputs map[string]GuardPolicyInput
@@ -124,12 +128,14 @@ func captureGuardOutcome(client *GuardClient, policy GuardActionPolicy, correlat
 // allows it. It is the fail-closed helper for consequential effects: tool
 // calls, jobs, and workers.
 //
-// Every call reaches Guard, including with no rules, because the server
-// selects remote policy by the action label. A DENY decision returns a
-// *GuardDeniedError without running fn, regardless of policy.OnGuardError.
-// An unevaluated policy (Guard returned an error, the decision failed open,
-// or Resolve failed) returns a *GuardUnavailableError under the default
-// OnGuardErrorDeny, or runs fn under OnGuardErrorAllow.
+// A nil fn returns *GuardUnavailableError wrapping ErrNilAction; Guard is not
+// called and no capture event is recorded. Otherwise, every call reaches
+// Guard, including with no rules, because the server selects remote policy
+// by the action label. A DENY decision returns a *GuardDeniedError without
+// running fn, regardless of policy.OnGuardError. An unevaluated policy
+// (Guard returned an error, the decision failed open, or Resolve failed)
+// returns a *GuardUnavailableError under the default OnGuardErrorDeny, or
+// runs fn under OnGuardErrorAllow.
 //
 // Each call records one capture event named policy.Action whose metadata
 // "outcome" is "success", "degraded", "denied", "error", or "unavailable".
@@ -141,7 +147,7 @@ func captureGuardOutcome(client *GuardClient, policy GuardActionPolicy, correlat
 func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardActionPolicy, fn func(context.Context) (T, error)) (T, error) {
 	var zero T
 	if fn == nil {
-		return zero, ErrNilAction
+		return zero, &GuardUnavailableError{Action: policy.Action, Err: ErrNilAction}
 	}
 	correlationID := policy.CorrelationId
 	if correlationID == "" {
@@ -151,6 +157,7 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 	inputs := GuardActionInputs{Actor: policy.Actor, Inputs: policy.Inputs, Rules: policy.Rules}
 	var decision GuardDecision
 	var guardErr error
+	var guardCalled bool
 	if policy.Resolve != nil {
 		inputs, guardErr = policy.Resolve(ctx)
 	}
@@ -166,6 +173,7 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 			actor := inputs.Actor
 			req.Actor = &actor
 		}
+		guardCalled = true
 		decision, guardErr = client.Guard(ctx, req)
 	}
 
@@ -181,7 +189,11 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 		if policy.OnGuardError != OnGuardErrorAllow {
 			captureGuardOutcome(client, policy, correlationID, decision.ID, guardOutcomeUnavailable)
 			unavailable := &GuardUnavailableError{Action: policy.Action, Err: guardErr}
-			if decision.Conclusion != "" {
+			// guardCalled alone is not enough: a programmer error (nil client,
+			// invalid label) also reaches client.Guard but returns the
+			// zero-value decision, which is not a decision to report. Require
+			// the decision to carry an ID or a conclusion too.
+			if guardCalled && (decision.ID != "" || decision.Conclusion != "") {
 				d := decision
 				unavailable.Decision = &d
 			}
