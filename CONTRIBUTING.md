@@ -8,13 +8,17 @@ This guide covers the local development workflow.
 
 ## Layout
 
-Four Go modules live in this repo:
+Five Go modules live in this repo:
 
 - `./go.mod` — the published SDK. Keep its dep graph minimal; consumers see
   every entry in their own go.sum.
 - `./sensitiveinfo/rampart/go.mod` — the optional on-device Rampart backend.
   This is released in lockstep with the SDK, but remains a separate module so
   its ~15 MB embedded model does not ship to applications that do not use it.
+- `./agentframework/go.mod` — integrates Arcjet Guard with Microsoft Agent
+  Framework for Go. It stays a separate module because that framework is a
+  public preview whose API may change, and because it needs a newer Go
+  version than the root module.
 - `./tools/go.mod` — a side module that pins development tools via Go's `tool`
   directive. Kept separate so tool transitives don't leak into consumer
   projects.
@@ -98,11 +102,16 @@ to `main`, and in the merge queue:
   golangci-lint and `govulncheck` for the SDK and Rampart backend.
 - **Test** (arm64 + amd64 matrix) — `go build ./...` and `go test -race
   -shuffle=on ./...`.
+- **agentframework module** (arm64, Go 1.26) — verifies
+  `agentframework/go.mod` is tidy, then runs golangci-lint, `govulncheck`,
+  build, and race tests.
 
-Both jobs use the latest security-patched Go 1.25 release while `go.mod` keeps
-the public compatibility floor at Go 1.25.0. Action versions are pinned by
-commit SHA and the runner is locked down with `step-security/harden-runner` in
-egress-block mode.
+The Lint and Test jobs use the latest security-patched Go 1.25 release while
+`go.mod` keeps the public compatibility floor at Go 1.25.0. The
+agentframework job uses the latest security-patched Go 1.26 release to match
+`agentframework/go.mod`'s floor of Go 1.26.0. Action versions are pinned by
+commit SHA and the runner is locked down with `step-security/harden-runner`
+in egress-block mode.
 
 ## Releasing
 
@@ -122,7 +131,8 @@ module in a repository subdirectory needs that subdirectory in its tag.
    `replace` directives; downstream consumers ignore them.
 4. Run `just tidy`, then `just check` and
    `go -C examples/nethttp test ./...`. `just check` includes lint, race tests,
-   and reachable-vulnerability checks for both published modules.
+   and reachable-vulnerability checks for the root module, the rampart
+   module, and the agentframework module.
 5. Review the exported API changes since the previous release. Once v1 is
    published, incompatible API changes require a new major module version.
 6. Merge the release PR to `main`, then create both annotated tags on the exact
@@ -158,3 +168,13 @@ module in a repository subdirectory needs that subdirectory in its tag.
 9. Create one GitHub release for the root tag. Mention that the optional Rampart
    backend was released in lockstep; do not create a second GitHub release for
    its module-qualified tag.
+
+The `agentframework` module is versioned independently at `v0.x` because it
+tracks a preview framework. Release it by bumping the SDK requirement in
+`agentframework/go.mod` to the current root tag, running `just tidy` and
+`just check`, merging, and tagging the merge commit:
+
+```sh
+git tag -a agentframework/v0.1.0 -m agentframework/v0.1.0
+git push origin agentframework/v0.1.0
+```

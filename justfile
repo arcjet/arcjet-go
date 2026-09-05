@@ -9,8 +9,9 @@
 # `./...` still resolves against the main module at the repo root.
 
 # Absolute modfile path so the pinned golangci-lint also runs from inside the
-# sensitiveinfo/rampart submodule (where a relative tools/go.mod would not
-# resolve). `./...` still resolves against whichever module is the cwd.
+# sensitiveinfo/rampart and agentframework submodules (where a relative
+# tools/go.mod would not resolve). `./...` still resolves against whichever
+# module is the cwd.
 golangci := "go tool -modfile=" + justfile_directory() + "/tools/go.mod golangci-lint"
 govulncheck := "go tool -modfile=" + justfile_directory() + "/tools/go.mod govulncheck"
 
@@ -29,6 +30,7 @@ check: fmt-check tidy-check lint vuln build test
 format:
     {{ golangci }} fmt
     cd sensitiveinfo/rampart && {{ golangci }} fmt
+    cd agentframework && {{ golangci }} fmt
     just --fmt
 
 # Verify the justfile is formatted (run `just format` to fix); fails if not.
@@ -39,6 +41,7 @@ fmt-check:
 lint:
     {{ golangci }} run ./...
     cd sensitiveinfo/rampart && {{ golangci }} run ./...
+    cd agentframework && {{ golangci }} run ./...
 
 # Lint the example modules. They sit outside `check` because nothing is
 # published from them, so run this when you touch one.
@@ -49,16 +52,19 @@ lint-examples:
 lint-fix:
     {{ golangci }} run --fix ./...
     cd sensitiveinfo/rampart && {{ golangci }} run --fix ./...
+    cd agentframework && {{ golangci }} run --fix ./...
 
 # Report reachable vulnerabilities in the SDK and optional rampart backend.
 vuln:
     {{ govulncheck }} ./...
     cd sensitiveinfo/rampart && {{ govulncheck }} ./...
+    cd agentframework && {{ govulncheck }} ./...
 
 # Build all packages (matches the CI build step).
 build:
     go build ./...
     go -C sensitiveinfo/rampart build ./...
+    go -C agentframework build ./...
 
 # Run tests the way CI does (race detector on, test order shuffled). The rampart
 # module runs the embedded model, so it is slower than the root suite.
@@ -71,6 +77,7 @@ test:
     # everything else without -race (fast).
     go -C sensitiveinfo/rampart test -shuffle=on -skip '^TestAdversarialConcurrentDetect$' ./...
     go -C sensitiveinfo/rampart test -race -run '^TestAdversarialConcurrentDetect$' ./...
+    go -C agentframework test -race -shuffle=on ./...
 
 # Regenerate gravity wasm bindings (pass `--from-monorepo [path]` to refresh .wasm first).
 wasm *args:
@@ -92,11 +99,12 @@ wasm-check:
       exit 1
     fi
 
-# Tidy the main module, the tools module, and the rampart module.
+# Tidy the main module, the tools module, and the rampart and agentframework modules.
 tidy:
     go mod tidy
     go -C tools mod tidy
     go -C sensitiveinfo/rampart mod tidy
+    go -C agentframework mod tidy
     go -C examples/nethttp mod tidy
 
 # Verify go.mod / go.sum are tidy (matches the CI tidy gate); fails if not.
@@ -106,9 +114,11 @@ tidy-check:
     go mod tidy
     go -C tools mod tidy
     go -C sensitiveinfo/rampart mod tidy
+    go -C agentframework mod tidy
     go -C examples/nethttp mod tidy
     files=(go.mod go.sum tools/go.mod tools/go.sum \
            sensitiveinfo/rampart/go.mod sensitiveinfo/rampart/go.sum \
+           agentframework/go.mod agentframework/go.sum \
            examples/nethttp/go.mod examples/nethttp/go.sum)
     if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
       echo "error: go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes." >&2
