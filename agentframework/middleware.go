@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"reflect"
 	"strings"
 
 	"github.com/microsoft/agent-framework-go/agent"
@@ -53,7 +54,7 @@ type guardMiddleware struct {
 // before the provider-owned tool loop, so it sees only the new turn's
 // messages and every tool as a run option.
 //
-// Per run it: puts the session's provider thread ID on the context as the
+// Per run it: puts the session's service ID on the context as the
 // correlation ID when the context has none; screens the user text when
 // Inbound is set, ending the run with one assistant update on a denial or an
 // unavailable guard; and replaces every tool option with its guarded form
@@ -124,7 +125,9 @@ func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message
 	}
 	if denied, ok := errors.AsType[*arcjet.GuardDeniedError](err); ok {
 		if p.OnDeny != nil {
-			return p.OnDeny(denied.Decision), true
+			if update := p.OnDeny(denied.Decision); update != nil {
+				return update, true
+			}
 		}
 		return assistantText(arcjet.NewGuardDenialResult(denied.Decision).Message), true
 	}
@@ -153,15 +156,27 @@ func assistantText(text string) *agent.ResponseUpdate {
 	}
 }
 
+// toolOptionType identifies the option type agent.WithTool produces, so
+// guardToolOptions can select tool options by the option's own type rather
+// than by whether its value happens to implement tool.Tool. The latter would
+// also match an unrelated option whose value coincidentally has a Name and a
+// Description method, dropping that option from the rebuilt list.
+var toolOptionType = reflect.TypeOf(agent.WithTool(nil))
+
 // guardToolOptions removes every tool option and re-adds each tool through
-// GuardTools. The framework's own tool loop rewrites the option slice the
-// same way, by asserting each option's value to tool.Tool.
+// GuardTools. The framework's own tool loop (agent/harness/toolautocall)
+// rewrites the option slice the same way: it collects tools with
+// agent.AllOptions(opts, agent.WithTool) and drops options by comparing their
+// concrete type against agent.WithTool's, not against what MAFValue() alone
+// looks like.
 func guardToolOptions(client *arcjet.GuardClient, opts []agent.Option, policy func(tool.Tool) (ToolPolicy, bool)) ([]agent.Option, error) {
 	var tools []tool.Tool
+	for t := range agent.AllOptions(opts, agent.WithTool) {
+		tools = append(tools, t)
+	}
 	rest := make([]agent.Option, 0, len(opts))
 	for _, o := range opts {
-		if t, ok := o.MAFValue().(tool.Tool); ok && t != nil {
-			tools = append(tools, t)
+		if reflect.TypeOf(o) == toolOptionType {
 			continue
 		}
 		rest = append(rest, o)
@@ -176,7 +191,7 @@ func guardToolOptions(client *arcjet.GuardClient, opts []agent.Option, policy fu
 	return rest, nil
 }
 
-// withSessionCorrelation puts the session's provider thread ID on the
+// withSessionCorrelation puts the session's service ID on the
 // context when the context carries no correlation ID yet, so every guard and
 // capture in the run joins one Sequence. It never generates an ID.
 func withSessionCorrelation(ctx context.Context, opts []agent.Option) context.Context {

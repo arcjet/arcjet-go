@@ -273,3 +273,43 @@ func TestGuardToolOptionsPreservesNonToolOptions(t *testing.T) {
 		t.Fatal("the tool option was not replaced by its guarded form")
 	}
 }
+
+// toolShapedOpt is an agent.Option whose value coincidentally has a Name and
+// a Description method, satisfying tool.Tool by shape while being an
+// unrelated option type. guardToolOptions must not mistake it for a tool
+// option.
+type toolShapedOpt struct{}
+
+func (toolShapedOpt) MAFValue() any       { return toolShapedOpt{} }
+func (toolShapedOpt) Name() string        { return "not-a-tool" }
+func (toolShapedOpt) Description() string { return "shaped like a tool but is not one" }
+
+func TestGuardToolOptionsSelectsByOptionTypeNotShape(t *testing.T) {
+	client := newTestClient(t, &fakeDecide{resp: allowResponse()})
+	lookup, _ := newLookupTool(t)
+	shaped := toolShapedOpt{}
+	in := []agent.Option{shaped, agent.WithTool(lookup)}
+	out, err := guardToolOptions(client, in, lookupPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, o := range out {
+		if _, ok := o.(toolShapedOpt); ok {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the tool-shaped option was dropped instead of surviving as itself")
+	}
+	var tools []tool.Tool
+	for tl := range agent.AllOptions(out, agent.WithTool) {
+		tools = append(tools, tl)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("tool options = %d, want 1", len(tools))
+	}
+	if _, ok := tools[0].(guardedMarker); !ok {
+		t.Fatal("the tool option was not replaced by its guarded form")
+	}
+}
