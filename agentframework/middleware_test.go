@@ -313,3 +313,51 @@ func TestGuardToolOptionsSelectsByOptionTypeNotShape(t *testing.T) {
 		t.Fatal("the tool option was not replaced by its guarded form")
 	}
 }
+
+func TestGuardMiddlewareUsesSessionServiceIDWhenContextHasNone(t *testing.T) {
+	decide := &fakeDecide{resp: allowResponse()}
+	client := newTestClient(t, decide)
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: inboundPolicy(t)})
+	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("ok")}}}
+	a := newAgent(runner, agent.Config{Middlewares: []agent.Middleware{mw}})
+	session, err := a.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SetServiceID("thread_123")
+	if _, err := a.RunText(t.Context(), "hi", agent.WithSession(session)).Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := decide.request(0).GetCorrelationId(); got != "thread_123" {
+		t.Fatalf("correlation = %q, want the session service ID", got)
+	}
+}
+
+func TestGuardMiddlewareContextCorrelationWinsOverSession(t *testing.T) {
+	decide := &fakeDecide{resp: allowResponse()}
+	client := newTestClient(t, decide)
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: inboundPolicy(t)})
+	a := newAgent(&scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("ok")}}}, agent.Config{Middlewares: []agent.Middleware{mw}})
+	session, _ := a.CreateSession(t.Context())
+	session.SetServiceID("thread_123")
+	ctx := arcjet.ContextWithCorrelationId(t.Context(), "req_9")
+	if _, err := a.RunText(ctx, "hi", agent.WithSession(session)).Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := decide.request(0).GetCorrelationId(); got != "req_9" {
+		t.Fatalf("correlation = %q, want the context ID", got)
+	}
+}
+
+func TestGuardMiddlewareNoSessionNoCorrelation(t *testing.T) {
+	decide := &fakeDecide{resp: allowResponse()}
+	client := newTestClient(t, decide)
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: inboundPolicy(t)})
+	a := newAgent(&scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("ok")}}}, agent.Config{Middlewares: []agent.Middleware{mw}})
+	if _, err := a.RunText(t.Context(), "hi").Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := decide.request(0).GetCorrelationId(); got != "" {
+		t.Fatalf("correlation = %q, want none (nothing is generated)", got)
+	}
+}
