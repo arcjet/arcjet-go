@@ -86,11 +86,20 @@ const (
     OnGuardErrorAllow
 )
 
+type GuardActionInputs struct {
+    Actor  string
+    Inputs map[string]GuardPolicyInput
+    Rules  []GuardRuleInput
+}
+
 type GuardActionPolicy struct {
     Action        string                      // required; sent as the guard Label
     Actor         string
     Inputs        map[string]GuardPolicyInput
     Rules         []GuardRuleInput            // may be empty; Guard is still called
+    // Resolve, when set, computes Actor, Inputs, and Rules at call time and
+    // replaces the static fields above. An error counts as unevaluated policy.
+    Resolve       func(ctx context.Context) (GuardActionInputs, error)
     Metadata      Metadata
     CorrelationId string                      // explicit; else read from ctx
     OnGuardError  OnGuardError
@@ -146,8 +155,9 @@ uncorrelated call, so the skill documents this) and a capture-action helper
 
 ## Engine semantics
 
-1. Guard is always called, including with no rules, because the server
-   selects remote policy by label.
+1. Guard is called on every path that reaches policy evaluation, including
+   one with no rules, because the server selects remote policy by label. A
+   `Resolve` failure is the single exception, and item 9 covers it.
 2. A DENY decision captures `outcome: "denied"` with the decision ID and
    returns `*GuardDeniedError`, regardless of posture.
 3. An unevaluated policy, meaning Guard returned an error or an ALLOW whose
@@ -167,6 +177,9 @@ uncorrelated call, so the skill documents this) and a capture-action helper
 8. Programmer errors from Guard take the unevaluated path and, under deny,
    are wrapped by `*GuardUnavailableError` so `errors.Is` still identifies
    them.
+9. A `Resolve` error takes the unevaluated path without calling Guard. Under
+   deny it returns `*GuardUnavailableError` wrapping the resolver's error.
+   Under allow, fn runs and the outcome is `degraded`.
 
 ## The `agentframework` module
 
@@ -183,17 +196,19 @@ type ToolPolicy struct {
     OnDeny       func(arcjet.GuardDecision) any
 }
 
-func GuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolicy) tool.FuncTool
+func GuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolicy) (tool.FuncTool, error)
+func MustGuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolicy) tool.FuncTool
 
 func Args[In any](fn func(context.Context, In) ([]arcjet.GuardRuleInput, error)) func(context.Context, json.RawMessage) ([]arcjet.GuardRuleInput, error)
 ```
+
+Constructors validate a nil client, a nil tool, and an empty `Action` at wiring time and return an error, following `functool.New`; `MustGuardTool` panics for package-level initialization.
 
 The wrapper embeds the tool so name, description, and both schemas pass
 through. `Call` runs the underlying call inside `GuardAction`. A
 `*GuardDeniedError` becomes the denial payload returned as a successful
 result, or the `OnDeny` value. A `*GuardUnavailableError` becomes the
-unavailable payload. Any other error passes through untouched. A resolver
-error from `Actor`, `Inputs`, or `Rules` counts as unevaluated policy.
+unavailable payload. Any other error passes through untouched. The three resolvers run inside the policy's `Resolve` hook, so a resolver error counts as unevaluated policy.
 
 The wrapper implements `tool.ApprovalRequiredTool` by delegating, returning
 false when the underlying tool does not implement it, so a human approval
@@ -210,7 +225,7 @@ arrives as `{"arg0": ...}`. The plan verifies this against
 
 ```go
 func GuardTools(client *arcjet.GuardClient, tools []tool.Tool,
-    policy func(tool.Tool) (ToolPolicy, bool)) []tool.Tool
+    policy func(tool.Tool) (ToolPolicy, bool)) ([]tool.Tool, error)
 ```
 
 Wraps each tool that implements `tool.FuncTool`, does not already carry the
@@ -238,7 +253,7 @@ type MiddlewareConfig struct {
     Inbound *InboundPolicy
 }
 
-func GuardMiddleware(client *arcjet.GuardClient, cfg MiddlewareConfig) agent.Middleware
+func GuardMiddleware(client *arcjet.GuardClient, cfg MiddlewareConfig) (agent.Middleware, error)
 ```
 
 Per run:
