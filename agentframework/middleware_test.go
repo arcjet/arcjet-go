@@ -7,6 +7,7 @@ import (
 
 	"github.com/microsoft/agent-framework-go/agent"
 	"github.com/microsoft/agent-framework-go/message"
+	"github.com/microsoft/agent-framework-go/tool"
 
 	"github.com/arcjet/arcjet-go"
 )
@@ -170,5 +171,105 @@ func TestUserTextConcatenatesOnlyUserMessages(t *testing.T) {
 	got := userText([]*message.Message{sys, message.NewText("first"), nil, message.NewText("second")})
 	if got != "first\nsecond" {
 		t.Fatalf("userText = %q", got)
+	}
+}
+
+func lookupPolicy(tl tool.Tool) (ToolPolicy, bool) {
+	return ToolPolicy{Action: "order.looked-up"}, tl.Name() == "lookup_order"
+}
+
+func TestGuardMiddlewareGuardsAgentLevelTools(t *testing.T) {
+	decide := &fakeDecide{resp: denyRateLimitResponse()}
+	client := newTestClient(t, decide)
+	lookup, calls := newLookupTool(t)
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Tools: lookupPolicy})
+	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{
+		{functionCall("call_1", "lookup_order", `{"orderNumber":"o-1"}`)},
+		{assistantTextUpdate("done")},
+	}}
+	a := newAgent(runner, agent.Config{Tools: []tool.Tool{lookup}, Middlewares: []agent.Middleware{mw}})
+	if _, err := a.RunText(t.Context(), "where is my order?").Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 0 {
+		t.Fatalf("unguarded tool ran %d times", *calls)
+	}
+	result := lastFunctionResult(t, runner.seen[1])
+	if _, ok := result.Result.(arcjet.GuardDenialResult); !ok || result.Error != nil {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestGuardMiddlewareGuardsPerRunTools(t *testing.T) {
+	decide := &fakeDecide{resp: denyRateLimitResponse()}
+	client := newTestClient(t, decide)
+	lookup, calls := newLookupTool(t)
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Tools: lookupPolicy})
+	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{
+		{functionCall("call_1", "lookup_order", `{"orderNumber":"o-1"}`)},
+		{assistantTextUpdate("done")},
+	}}
+	a := newAgent(runner, agent.Config{Middlewares: []agent.Middleware{mw}})
+	if _, err := a.RunText(t.Context(), "where is my order?", agent.WithTool(lookup)).Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 0 || decide.guardCalls() != 1 {
+		t.Fatalf("calls = %d, guard calls = %d", *calls, decide.guardCalls())
+	}
+}
+
+func TestGuardMiddlewareDoesNotGuardTwice(t *testing.T) {
+	decide := &fakeDecide{resp: allowResponse()}
+	client := newTestClient(t, decide)
+	lookup, calls := newLookupTool(t)
+	already := MustGuardTool(client, lookup, ToolPolicy{Action: "order.looked-up"})
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Tools: lookupPolicy})
+	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{
+		{functionCall("call_1", "lookup_order", `{"orderNumber":"o-1"}`)},
+		{assistantTextUpdate("done")},
+	}}
+	a := newAgent(runner, agent.Config{Tools: []tool.Tool{already}, Middlewares: []agent.Middleware{mw}})
+	if _, err := a.RunText(t.Context(), "where is my order?").Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 1 {
+		t.Fatalf("tool ran %d times, want 1", *calls)
+	}
+	if decide.guardCalls() != 1 {
+		t.Fatalf("guard evaluated %d times for one tool call, want 1", decide.guardCalls())
+	}
+}
+
+func TestGuardToolOptionsPreservesNonToolOptions(t *testing.T) {
+	client := newTestClient(t, &fakeDecide{resp: allowResponse()})
+	lookup, _ := newLookupTool(t)
+	a := newAgent(&scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("x")}}}, agent.Config{})
+	session, err := a.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := []agent.Option{agent.WithTool(lookup), agent.WithSession(session), agent.WithInstructions("be brief")}
+	out, err := guardToolOptions(client, in, lookupPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("len = %d, want 3", len(out))
+	}
+	if got, ok := agent.GetOption(out, agent.WithSession); !ok || got != session {
+		t.Fatal("session option was dropped by the rewrite")
+	}
+	if got, ok := agent.GetOption(out, agent.WithInstructions); !ok || got != "be brief" {
+		t.Fatal("instructions option was dropped by the rewrite")
+	}
+	var tools []tool.Tool
+	for tl := range agent.AllOptions(out, agent.WithTool) {
+		tools = append(tools, tl)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("tool options = %d, want 1", len(tools))
+	}
+	if _, ok := tools[0].(guardedMarker); !ok {
+		t.Fatal("the tool option was not replaced by its guarded form")
 	}
 }
