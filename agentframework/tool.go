@@ -16,6 +16,7 @@ var (
 	errNilClient     = errors.New("agentframework: guard client is nil")
 	errNilTool       = errors.New("agentframework: tool is nil")
 	errMissingAction = errors.New("agentframework: policy Action is required")
+	errNilPolicyFunc = errors.New("agentframework: policy function is nil")
 )
 
 // ToolPolicy describes how one tool is guarded. Action is required and must
