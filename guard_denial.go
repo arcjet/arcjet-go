@@ -86,10 +86,10 @@ func guardRetryAfterSeconds(d GuardDecision, now time.Time) (int, bool) {
 	return int(max(latest-now.Unix(), 0)), true
 }
 
-// GuardUnavailableResult builds the payload returned when policy could not be
+// NewGuardUnavailableResult builds the payload returned when policy could not be
 // evaluated and the helper fails closed. It carries a fixed retry hint because
 // there is no decision to derive one from.
-func GuardUnavailableResult() GuardDenialResult {
+func NewGuardUnavailableResult() GuardDenialResult {
 	retry := guardUnavailableRetryAfterSeconds
 	return GuardDenialResult{
 		ArcjetDenied:      true,

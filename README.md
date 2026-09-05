@@ -1447,7 +1447,7 @@ the SDK generates a correlation ID: derive it from an ID you already have.
 code, return `arcjet.NewGuardDenialResult(denied.Decision)` as the tool's
 result. Its JSON fields (`arcjetDenied`, `reason`, `message`, `retryable`,
 `retryAfterSeconds`) match the JavaScript and Python SDKs. Use
-`arcjet.GuardUnavailableResult()` for the unavailable case; it always sets
+`arcjet.NewGuardUnavailableResult()` for the unavailable case; it always sets
 `retryAfterSeconds` to 5, since there is no decision to derive a hint from.
 
 #### `GuardActionPolicy` parameter reference

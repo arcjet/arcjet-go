@@ -130,7 +130,7 @@ type GuardDenialResult struct {
     RetryAfterSeconds *int   `json:"retryAfterSeconds,omitempty"`
 }
 func NewGuardDenialResult(d GuardDecision) GuardDenialResult
-func GuardUnavailableResult() GuardDenialResult
+func NewGuardUnavailableResult() GuardDenialResult
 
 func ContextWithCorrelationId(ctx context.Context, id string) context.Context
 func CorrelationIdFromContext(ctx context.Context) (string, bool)

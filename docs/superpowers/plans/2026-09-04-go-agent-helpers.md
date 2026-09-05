@@ -37,7 +37,7 @@
 | --- | --- |
 | `guard_action.go` | `OnGuardError`, `GuardActionInputs`, `GuardActionPolicy`, `GuardDeniedError`, `GuardUnavailableError`, `GuardAction`, capture-outcome helper |
 | `guard_action_test.go` | Engine tests against the in-process fake Decide server |
-| `guard_denial.go` | `GuardDenialResult`, `NewGuardDenialResult`, `GuardUnavailableResult`, retry-after derivation |
+| `guard_denial.go` | `GuardDenialResult`, `NewGuardDenialResult`, `NewGuardUnavailableResult`, retry-after derivation |
 | `guard_denial_test.go` | Literal-value payload tests |
 | `correlation.go` | `ContextWithCorrelationId`, `CorrelationIdFromContext` |
 | `correlation_test.go` | Context round trip |
@@ -454,7 +454,7 @@ func captureGuardOutcome(client *GuardClient, policy GuardActionPolicy, correlat
 - Test: `guard_denial_test.go`
 
 **Interfaces:**
-- Produces: `GuardDenialResult`, `NewGuardDenialResult(GuardDecision) GuardDenialResult`, `GuardUnavailableResult() GuardDenialResult`, unexported `newGuardDenialResultAt(GuardDecision, time.Time)`.
+- Produces: `GuardDenialResult`, `NewGuardDenialResult(GuardDecision) GuardDenialResult`, `NewGuardUnavailableResult() GuardDenialResult`, unexported `newGuardDenialResultAt(GuardDecision, time.Time)`.
 
 - [ ] **Step 1: Write the failing tests**:
 
@@ -538,8 +538,8 @@ func TestNewGuardDenialResultOtherReasonIsNotRetryable(t *testing.T) {
 	}
 }
 
-func TestGuardUnavailableResultLiterals(t *testing.T) {
-	got := GuardUnavailableResult()
+func TestNewGuardUnavailableResultLiterals(t *testing.T) {
+	got := NewGuardUnavailableResult()
 	if !got.ArcjetDenied || got.Reason != "ERROR" || !got.Retryable {
 		t.Fatalf("payload = %+v", got)
 	}
@@ -552,7 +552,7 @@ func TestGuardUnavailableResultLiterals(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run** `go test -run 'GuardDenialResult|GuardUnavailableResult' ./`. Expected: compile failure.
+- [ ] **Step 2: Run** `go test -run 'GuardDenialResult|NewGuardUnavailableResult' ./`. Expected: compile failure.
 
 - [ ] **Step 3: Create `guard_denial.go`**:
 
@@ -628,10 +628,10 @@ func guardRetryAfterSeconds(d GuardDecision, now time.Time) (int, bool) {
 	return 0, false
 }
 
-// GuardUnavailableResult builds the payload returned when policy could not be
+// NewGuardUnavailableResult builds the payload returned when policy could not be
 // evaluated and the helper fails closed. It carries a fixed retry hint because
 // there is no decision to derive one from.
-func GuardUnavailableResult() GuardDenialResult {
+func NewGuardUnavailableResult() GuardDenialResult {
 	retry := guardUnavailableRetryAfterSeconds
 	return GuardDenialResult{
 		ArcjetDenied:      true,
@@ -1410,7 +1410,7 @@ the SDK generates a correlation ID: derive it from an ID you already have.
 code, return `arcjet.NewGuardDenialResult(denied.Decision)` as the tool's
 result. Its JSON fields (`arcjetDenied`, `reason`, `message`, `retryable`,
 `retryAfterSeconds`) match the JavaScript and Python SDKs. Use
-`arcjet.GuardUnavailableResult()` for the unavailable case. The
+`arcjet.NewGuardUnavailableResult()` for the unavailable case. The
 [`agentframework`](agentframework/README.md) module does this for Microsoft
 Agent Framework tools.
 ```
@@ -1463,7 +1463,7 @@ require (
 // guards every tool the run can see.
 //
 // The helpers fail closed by default: when policy cannot be evaluated the
-// tool does not run and the model receives arcjet.GuardUnavailableResult. A
+// tool does not run and the model receives arcjet.NewGuardUnavailableResult. A
 // denial is returned to the model as a successful tool result carrying
 // arcjet.GuardDenialResult, never as an error, because the framework hides
 // tool error text from the model and aborts a run after repeated errors.
@@ -1818,7 +1818,7 @@ var errToolFailed = errors.New("db down")
 - Test: `agentframework/tool_test.go`
 
 **Interfaces:**
-- Consumes: `arcjet.GuardAction`, `*arcjet.GuardDeniedError`, `*arcjet.GuardUnavailableError`, `arcjet.NewGuardDenialResult`, `arcjet.GuardUnavailableResult`.
+- Consumes: `arcjet.GuardAction`, `*arcjet.GuardDeniedError`, `*arcjet.GuardUnavailableError`, `arcjet.NewGuardDenialResult`, `arcjet.NewGuardUnavailableResult`.
 - Produces: `ToolPolicy`, `GuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolicy) (tool.FuncTool, error)`, `MustGuardTool`, unexported `guardedMarker` interface, `errNilClient`, `errNilTool`, `errMissingAction`.
 
 - [ ] **Step 1: Write the failing tests** in `tool_test.go`:
@@ -2123,7 +2123,7 @@ type ToolPolicy struct {
 	OnGuardError arcjet.OnGuardError
 	// OnDeny, when set, replaces the arcjet.GuardDenialResult returned to the
 	// model on a DENY decision. It is not called when the guard is
-	// unavailable; that path always returns arcjet.GuardUnavailableResult.
+	// unavailable; that path always returns arcjet.NewGuardUnavailableResult.
 	OnDeny func(arcjet.GuardDecision) any
 }
 
@@ -2192,7 +2192,7 @@ func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 		}
 		return arcjet.NewGuardDenialResult(denied.Decision), nil
 	case errors.As(err, &unavailable):
-		return arcjet.GuardUnavailableResult(), nil
+		return arcjet.NewGuardUnavailableResult(), nil
 	}
 	return out, err
 }
@@ -2685,7 +2685,7 @@ func TestGuardMiddlewareInboundUnavailableFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runner.providerCalls() != 0 || resp.String() != arcjet.GuardUnavailableResult().Message {
+	if runner.providerCalls() != 0 || resp.String() != arcjet.NewGuardUnavailableResult().Message {
 		t.Fatalf("calls = %d, resp = %q", runner.providerCalls(), resp.String())
 	}
 }
@@ -2715,7 +2715,7 @@ func TestGuardMiddlewareInboundOnDenyIsNotInvokedWhenUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.String() != arcjet.GuardUnavailableResult().Message {
+	if resp.String() != arcjet.NewGuardUnavailableResult().Message {
 		t.Fatalf("resp = %q", resp.String())
 	}
 }
@@ -2819,7 +2819,7 @@ type InboundPolicy struct {
 	// OnDeny, when set, builds the single response update returned on a DENY
 	// decision. By default the update is assistant text carrying the
 	// arcjet.GuardDenialResult message. It is not called when the guard is
-	// unavailable; that path returns the arcjet.GuardUnavailableResult
+	// unavailable; that path returns the arcjet.NewGuardUnavailableResult
 	// message.
 	OnDeny func(arcjet.GuardDecision) *agent.ResponseUpdate
 }
@@ -2924,7 +2924,7 @@ func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message
 		return assistantText(arcjet.NewGuardDenialResult(denied.Decision).Message), true
 	}
 	// *arcjet.GuardUnavailableError, or any other failure: block.
-	return assistantText(arcjet.GuardUnavailableResult().Message), true
+	return assistantText(arcjet.NewGuardUnavailableResult().Message), true
 }
 
 // userText joins the text of the user-role messages with newlines.
@@ -3316,7 +3316,7 @@ errors pass through unchanged.
 
 When policy cannot be evaluated (Arcjet unreachable, a deadline, a rule
 error, a resolver error, an invalid label), the tool does not run and the
-model receives `arcjet.GuardUnavailableResult()`, whose `reason` is `ERROR`
+model receives `arcjet.NewGuardUnavailableResult()`, whose `reason` is `ERROR`
 with a five second retry hint. `GuardMiddleware` ends the run with that
 message as assistant text. Set `OnGuardError: arcjet.OnGuardErrorAllow` on a
 policy to run anyway; the capture outcome is then `degraded`. A `DENY` always
@@ -3760,7 +3760,7 @@ carry the denial.
 
 `GuardTool`, `GuardTools`, `GuardMiddleware`, and `arcjet.GuardAction` deny
 when policy cannot be evaluated. A denied tool call returns
-`arcjet.GuardUnavailableResult()` (reason `ERROR`, five second retry hint);
+`arcjet.NewGuardUnavailableResult()` (reason `ERROR`, five second retry hint);
 an inbound denial ends the run with that message. Set
 `OnGuardError: arcjet.OnGuardErrorAllow` only where availability matters
 more than enforcement, such as a read-only lookup. A `DENY` always blocks.
@@ -3919,7 +3919,7 @@ out, err := arcjet.GuardAction(ctx, guard, arcjet.GuardActionPolicy{
 }, func(ctx context.Context) (Receipt, error) { return refundPayment(ctx, id) })
 ```
 
-Distinguish the two errors with `errors.As`. `OnGuardError: arcjet.OnGuardErrorAllow` opts a call site back into fail-open; a `DENY` still blocks. Use `arcjet.NewGuardDenialResult(decision)` and `arcjet.GuardUnavailableResult()` when the caller is a model and needs a JSON result rather than a Go error. Available from `arcjet-go` v1.1.0.
+Distinguish the two errors with `errors.As`. `OnGuardError: arcjet.OnGuardErrorAllow` opts a call site back into fail-open; a `DENY` still blocks. Use `arcjet.NewGuardDenialResult(decision)` and `arcjet.NewGuardUnavailableResult()` when the caller is a model and needs a JSON result rather than a Go error. Available from `arcjet-go` v1.1.0.
 
 For Microsoft Agent Framework for Go, load [integrate-arcjet-guard-agent-framework-go](../../integrate-arcjet-guard-agent-framework-go/SKILL.md) instead of wrapping tools by hand.
 ```
@@ -4113,7 +4113,7 @@ result. The fields are the same as every other adapter:
 ## Fail-closed default
 
 When policy cannot be evaluated, the tool does not run and the model
-receives `arcjet.GuardUnavailableResult()` (`reason: "ERROR"`, five second
+receives `arcjet.NewGuardUnavailableResult()` (`reason: "ERROR"`, five second
 retry hint). `GuardMiddleware` ends the run with that message. Set
 `OnGuardError: arcjet.OnGuardErrorAllow` per policy to run anyway; the
 capture outcome is then `degraded`. A `DENY` always blocks.

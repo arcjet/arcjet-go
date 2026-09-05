@@ -121,8 +121,8 @@ func TestNewGuardDenialResultOtherReasonIsNotRetryable(t *testing.T) {
 	}
 }
 
-func TestGuardUnavailableResultLiterals(t *testing.T) {
-	got := GuardUnavailableResult()
+func TestNewGuardUnavailableResultLiterals(t *testing.T) {
+	got := NewGuardUnavailableResult()
 	if !got.ArcjetDenied || got.Reason != "ERROR" || !got.Retryable {
 		t.Fatalf("payload = %+v", got)
 	}
