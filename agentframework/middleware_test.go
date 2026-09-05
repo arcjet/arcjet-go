@@ -90,6 +90,22 @@ func TestGuardMiddlewareInboundOnDenyReplacesResponse(t *testing.T) {
 	}
 }
 
+func TestGuardMiddlewareInboundOnDenyNilFallsBackToDefaultMessage(t *testing.T) {
+	client := newTestClient(t, &fakeDecide{resp: denyPromptInjectionResponse()})
+	policy := inboundPolicy(t)
+	policy.OnDeny = func(arcjet.GuardDecision) *agent.ResponseUpdate { return nil }
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: policy})
+	a := newAgent(&scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("x")}}}, agent.Config{Middlewares: []agent.Middleware{mw}})
+	resp, err := a.RunText(t.Context(), "hi").Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := arcjet.NewGuardDenialResult(arcjet.GuardDecision{Reason: arcjet.ReasonPromptInjection}).Message
+	if resp.String() != want {
+		t.Fatalf("resp = %q, want %q", resp.String(), want)
+	}
+}
+
 func TestGuardMiddlewareInboundOnDenyIsNotInvokedWhenUnavailable(t *testing.T) {
 	client := newTestClient(t, &fakeDecide{err: errors.New("decide unreachable")})
 	policy := inboundPolicy(t)

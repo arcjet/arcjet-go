@@ -164,11 +164,13 @@ func assistantText(text string) *agent.ResponseUpdate {
 var toolOptionType = reflect.TypeOf(agent.WithTool(nil))
 
 // guardToolOptions removes every tool option and re-adds each tool through
-// GuardTools. The framework's own tool loop (agent/harness/toolautocall)
-// rewrites the option slice the same way: it collects tools with
-// agent.AllOptions(opts, agent.WithTool) and drops options by comparing their
-// concrete type against agent.WithTool's, not against what MAFValue() alone
-// looks like.
+// GuardTools. The framework's own tool loop
+// (agent/harness/toolautocall.prepareOptionsForLastIteration) collects tools
+// the same type-exact way, with agent.AllOptions(opts, agent.WithTool), but
+// its own drop step asserts opt.MAFValue().(tool.Tool), which also matches an
+// unrelated option whose value happens to have a Name and a Description
+// method. guardToolOptions is deliberately type-exact on both halves, so an
+// option is dropped only when it truly is a tool option.
 func guardToolOptions(client *arcjet.GuardClient, opts []agent.Option, policy func(tool.Tool) (ToolPolicy, bool)) ([]agent.Option, error) {
 	var tools []tool.Tool
 	for t := range agent.AllOptions(opts, agent.WithTool) {
