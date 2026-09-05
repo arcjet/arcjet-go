@@ -160,10 +160,13 @@ uncorrelated call, so the skill documents this) and a capture-action helper
    `Resolve` failure is the single exception, and item 9 covers it.
 2. A DENY decision captures `outcome: "denied"` with the decision ID and
    returns `*GuardDeniedError`, regardless of posture.
-3. An unevaluated policy, meaning Guard returned an error or an ALLOW whose
-   `HasFailedOpen()` is true: under deny, capture `outcome: "unavailable"`
-   and return `*GuardUnavailableError` without running fn. Under allow, run
-   fn and capture `outcome: "degraded"`.
+3. An unevaluated policy, meaning Guard returned an error or the decision is
+   not a clean ALLOW: under deny, capture `outcome: "unavailable"` and return
+   `*GuardUnavailableError` without running fn. Under allow, run fn and
+   capture `outcome: "degraded"`. A clean ALLOW is one whose conclusion is
+   ALLOW and whose `HasFailedOpen()` is false; any other conclusion,
+   including CHALLENGE and one the SDK does not recognise, is unevaluated and
+   fails closed.
 4. A clean ALLOW runs fn. If fn returns an error, capture `outcome: "error"`
    and return that error unchanged. Otherwise capture `outcome: "success"`.
 5. The capture event carries the action, the resolved correlation ID, the

@@ -3,6 +3,7 @@ package arcjet
 import (
 	"context"
 	"fmt"
+	"maps"
 )
 
 // OnGuardError selects what a helper does when policy could not be
@@ -98,3 +99,106 @@ func (e *GuardUnavailableError) Error() string {
 
 // Unwrap returns Err so errors.Is and errors.As see the underlying error.
 func (e *GuardUnavailableError) Unwrap() error { return e.Err }
+
+const (
+	guardOutcomeSuccess     = "success"
+	guardOutcomeDegraded    = "degraded"
+	guardOutcomeDenied      = "denied"
+	guardOutcomeError       = "error"
+	guardOutcomeUnavailable = "unavailable"
+)
+
+func captureGuardOutcome(client *GuardClient, policy GuardActionPolicy, correlationID, decisionID, outcome string) {
+	md := make(Metadata, len(policy.Metadata)+1)
+	maps.Copy(md, policy.Metadata)
+	md["outcome"] = outcome
+	client.Capture(CaptureEvent{
+		Action:        policy.Action,
+		CorrelationId: correlationID,
+		DecisionId:    decisionID,
+		Metadata:      md,
+	})
+}
+
+// GuardAction evaluates policy for one action and runs fn only if the policy
+// allows it. It is the fail-closed helper for consequential effects: tool
+// calls, jobs, and workers.
+//
+// Every call reaches Guard, including with no rules, because the server
+// selects remote policy by the action label. A DENY decision returns a
+// *GuardDeniedError without running fn, regardless of policy.OnGuardError.
+// An unevaluated policy (Guard returned an error, the decision failed open,
+// or Resolve failed) returns a *GuardUnavailableError under the default
+// OnGuardErrorDeny, or runs fn under OnGuardErrorAllow.
+//
+// Each call records one capture event named policy.Action whose metadata
+// "outcome" is "success", "degraded", "denied", "error", or "unavailable".
+// A decision ID is attached when the decision has one. Capture is
+// best-effort and never affects the returned values.
+//
+// The correlation ID is policy.CorrelationId when set, otherwise the ID
+// carried by ctx via ContextWithCorrelationId, otherwise none.
+func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardActionPolicy, fn func(context.Context) (T, error)) (T, error) {
+	var zero T
+	if fn == nil {
+		return zero, ErrNilAction
+	}
+	correlationID := policy.CorrelationId
+	if correlationID == "" {
+		correlationID, _ = CorrelationIdFromContext(ctx)
+	}
+
+	inputs := GuardActionInputs{Actor: policy.Actor, Inputs: policy.Inputs, Rules: policy.Rules}
+	var decision GuardDecision
+	var guardErr error
+	if policy.Resolve != nil {
+		inputs, guardErr = policy.Resolve(ctx)
+	}
+	if guardErr == nil {
+		req := GuardRequest{
+			Label:         policy.Action,
+			Inputs:        inputs.Inputs,
+			Metadata:      policy.Metadata,
+			CorrelationId: correlationID,
+			Rules:         inputs.Rules,
+		}
+		if inputs.Actor != "" {
+			actor := inputs.Actor
+			req.Actor = &actor
+		}
+		decision, guardErr = client.Guard(ctx, req)
+	}
+
+	// A DENY is a completed decision even when Guard also returned an error
+	// (a locally enforced denial whose reporting failed), so it wins.
+	if decision.IsDenied() {
+		captureGuardOutcome(client, policy, correlationID, decision.ID, guardOutcomeDenied)
+		return zero, &GuardDeniedError{Action: policy.Action, Decision: decision}
+	}
+
+	degraded := false
+	if guardErr != nil || !decision.IsAllowed() || decision.HasFailedOpen() {
+		if policy.OnGuardError != OnGuardErrorAllow {
+			captureGuardOutcome(client, policy, correlationID, decision.ID, guardOutcomeUnavailable)
+			unavailable := &GuardUnavailableError{Action: policy.Action, Err: guardErr}
+			if decision.Conclusion != "" {
+				d := decision
+				unavailable.Decision = &d
+			}
+			return zero, unavailable
+		}
+		degraded = true
+	}
+
+	out, err := fn(ctx)
+	if err != nil {
+		captureGuardOutcome(client, policy, correlationID, decision.ID, guardOutcomeError)
+		return out, err
+	}
+	outcome := guardOutcomeSuccess
+	if degraded {
+		outcome = guardOutcomeDegraded
+	}
+	captureGuardOutcome(client, policy, correlationID, decision.ID, outcome)
+	return out, nil
+}
