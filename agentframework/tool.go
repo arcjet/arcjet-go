@@ -63,9 +63,11 @@ func (g *guardedTool) ApprovalRequired() bool {
 // a denial, or NewGuardUnavailableResult for an unavailable guard, unless
 // ToolPolicy.OnDeny is set, in which case a denial returns whatever OnDeny
 // produces instead. An error from the wrapped tool passes through unchanged,
-// unless it is itself one of Arcjet's own denial or unavailable error types,
-// which happens when the wrapped tool is itself guarded; that error is
-// converted into a result the same way.
+// unless the tool returns one of Arcjet's own denial or unavailable error
+// types, which a tool that calls arcjet.GuardAction in its own body can do;
+// such an error is converted into a result the same way. A tool already
+// wrapped by GuardTool never reaches this case, because it converts its own
+// denial to a result before returning.
 func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 	raw := json.RawMessage(args)
 	p := g.policy
