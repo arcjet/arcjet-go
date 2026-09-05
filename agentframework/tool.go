@@ -57,9 +57,14 @@ func (g *guardedTool) ApprovalRequired() bool {
 }
 
 // Call evaluates the policy, then runs the wrapped tool if allowed. A denial
-// or an unavailable guard is returned as a successful result carrying the
-// shared payload, so the model reads it and the run is not aborted. Any
-// other error from the wrapped tool passes through unchanged.
+// or an unavailable guard is returned as a successful result, not an error,
+// so the model reads it and the run is not aborted: NewGuardDenialResult for
+// a denial, or NewGuardUnavailableResult for an unavailable guard, unless
+// ToolPolicy.OnDeny is set, in which case a denial returns whatever OnDeny
+// produces instead. An error from the wrapped tool passes through unchanged,
+// unless it is itself one of Arcjet's own denial or unavailable error types,
+// which happens when the wrapped tool is itself guarded; that error is
+// converted into a result the same way.
 func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 	raw := json.RawMessage(args)
 	p := g.policy
@@ -107,6 +112,12 @@ func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 
 // GuardTool wraps t so every call is evaluated by Arcjet first. The result
 // keeps t's name, description, schemas, and approval-required status.
+//
+// If t also needs tool.ApprovalRequiredFunc, apply that first and pass its
+// result to GuardTool, not the other way round: ApprovalRequiredFunc's
+// wrapper does not forward the guarded marker a later guarding pass looks
+// for, so wrapping an already-guarded tool with it would let that tool be
+// guarded a second time.
 func GuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolicy) (tool.FuncTool, error) {
 	if client == nil {
 		return nil, errNilClient
@@ -133,7 +144,8 @@ func MustGuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolic
 // Args adapts a typed rule resolver to the raw-JSON form ToolPolicy.Rules
 // takes. In is decoded the way functool decodes it: a struct input is the
 // arguments object itself; any other input type arrives wrapped in a
-// single-property object.
+// single-property object. The wrapped form must carry exactly one property;
+// zero or more than one fails the call closed.
 func Args[In any](fn func(context.Context, In) ([]arcjet.GuardRuleInput, error)) func(context.Context, json.RawMessage) ([]arcjet.GuardRuleInput, error) {
 	return func(ctx context.Context, raw json.RawMessage) ([]arcjet.GuardRuleInput, error) {
 		in, err := decodeArgs[In](raw)

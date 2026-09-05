@@ -69,6 +69,15 @@ func (f *fakeDecide) request(i int) *decidev2.GuardRequest {
 	return f.requests[i]
 }
 
+// capturedEvents returns every capture event the fake service has received so
+// far. Call client.Flush first: Capture enqueues events for asynchronous
+// delivery, so reading captures without flushing races the delivery worker.
+func (f *fakeDecide) capturedEvents() []*decidev2.CaptureEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.captures
+}
+
 func newTestClient(t *testing.T, f *fakeDecide) *arcjet.GuardClient {
 	t.Helper()
 	path, h := decidev2connect.NewDecideServiceHandler(f)

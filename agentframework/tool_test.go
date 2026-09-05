@@ -95,6 +95,11 @@ func TestGuardToolDenialIsASuccessfulResultThroughTheLoop(t *testing.T) {
 	if got := decide.request(0).GetLabel(); got != "order.looked-up" {
 		t.Fatalf("label = %q", got)
 	}
+	client.Flush(t.Context())
+	events := decide.capturedEvents()
+	if len(events) != 1 || events[0].GetMetadataJson()["outcome"] != `"denied"` {
+		t.Fatalf("events = %v, want one event with outcome \"denied\"", events)
+	}
 }
 
 func TestGuardToolDenialWithNonRateLimitReasonIsNotRetryable(t *testing.T) {
@@ -132,6 +137,11 @@ func TestGuardToolUnavailableFailsClosedWithPayload(t *testing.T) {
 	}
 	if *calls != 0 {
 		t.Fatal("tool ran while the guard was unavailable")
+	}
+	client.Flush(t.Context())
+	events := decide.capturedEvents()
+	if len(events) != 1 || events[0].GetMetadataJson()["outcome"] != `"unavailable"` {
+		t.Fatalf("events = %v, want one event with outcome \"unavailable\"", events)
 	}
 }
 
@@ -267,5 +277,59 @@ func TestGuardToolResolversReachGuardAndTheirErrorsFailClosed(t *testing.T) {
 	}
 	if decide.guardCalls() != 1 {
 		t.Fatalf("guard calls = %d, want 1 (the failing resolver must not reach Guard)", decide.guardCalls())
+	}
+}
+
+func TestArgsDecodesStructAndWrappedInputs(t *testing.T) {
+	// Struct input: the arguments object is the value.
+	structRules := Args(func(_ context.Context, in lookupArgs) ([]arcjet.GuardRuleInput, error) {
+		if in.OrderNumber != "o-9" {
+			t.Fatalf("decoded %+v", in)
+		}
+		return nil, nil
+	})
+	if _, err := structRules(t.Context(), json.RawMessage(`{"orderNumber":"o-9"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-struct input: read the property name functool generates so the
+	// test tracks the framework rather than assuming a key.
+	scalar, err := functoolNew(t, "echo", func(_ context.Context, s string) (string, error) { return s, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, err := json.Marshal(scalar.Schema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Properties) != 1 {
+		t.Fatalf("functool wraps a scalar in %d properties, want 1: %s", len(parsed.Properties), schema)
+	}
+	var key string
+	for k := range parsed.Properties {
+		key = k
+	}
+	wrapped, err := json.Marshal(map[string]string{key: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scalarRules := Args(func(_ context.Context, s string) ([]arcjet.GuardRuleInput, error) {
+		if s != "hello" {
+			t.Fatalf("decoded %q", s)
+		}
+		return nil, nil
+	})
+	if _, err := scalarRules(t.Context(), wrapped); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := scalarRules(t.Context(), json.RawMessage(`{"a":1,"b":2}`)); err == nil {
+		t.Fatal("two properties must be rejected")
 	}
 }
