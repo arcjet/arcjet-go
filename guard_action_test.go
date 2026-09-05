@@ -159,6 +159,23 @@ func TestGuardActionUnavailableFailsClosedByDefault(t *testing.T) {
 	}
 }
 
+func TestGuardActionOutOfRangePostureFailsClosed(t *testing.T) {
+	// Only OnGuardErrorAllow opts into running fn on unevaluated policy. A
+	// posture value outside the two named constants must still fail closed.
+	handler := &testGuardHandler{errToReturn: errors.New("decide unreachable")}
+	client := newGuardActionTestClient(t, handler)
+	ran := false
+	_, err := GuardAction(context.Background(), client, GuardActionPolicy{Action: "refund.issued", OnGuardError: OnGuardError(2)},
+		func(context.Context) (int, error) { ran = true; return 1, nil })
+	var unavailable *GuardUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("err = %v, want *GuardUnavailableError", err)
+	}
+	if ran {
+		t.Fatal("fn ran while the policy was unevaluated under an out-of-range posture")
+	}
+}
+
 func TestGuardActionUnavailableAllowRunsDegraded(t *testing.T) {
 	handler := &testGuardHandler{errToReturn: errors.New("decide unreachable")}
 	client := newGuardActionTestClient(t, handler)
