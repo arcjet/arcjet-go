@@ -45,6 +45,8 @@ var (
 	// ErrMissingFunc is returned when a custom rule has no evaluation
 	// function.
 	ErrMissingFunc = errors.New("custom rule function required")
+	// ErrNilAction is returned by GuardAction when fn is nil.
+	ErrNilAction = errors.New("guard action function required")
 	// ErrInvalidWasm is returned when a Wasm module is empty or invalid.
 	ErrInvalidWasm = errors.New("invalid wasm module")
 	// ErrWasmClosed is returned when a Wasm module method is called after
