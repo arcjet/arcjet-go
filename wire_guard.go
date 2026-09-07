@@ -152,8 +152,19 @@ type GuardPolicyResult struct {
 	StringLength         *GuardStringConstraintResult     `json:"stringLength,omitempty"`
 	StringListMembership *GuardStringListMembershipResult `json:"stringListMembership,omitempty"`
 	LocalSensitiveInfo   *GuardSensitiveInfoResult        `json:"localSensitiveInfo,omitempty"`
+	PolicyExpression     *GuardPolicyExpressionResult     `json:"policyExpression,omitempty"`
 	Error                *ArcjetError                     `json:"error,omitempty"`
 	NotRun               bool                             `json:"notRun,omitempty"`
+}
+
+// GuardPolicyExpressionResult is the result of a remote policy rule decided by
+// the policy's expression language.
+//
+// It carries the conclusion and nothing more. Which conditions fired is a
+// property of the compiled artifact named by PolicyRevision, not something the
+// result restates.
+type GuardPolicyExpressionResult struct {
+	Conclusion Conclusion `json:"conclusion"`
 }
 
 // GuardRuleExecution identifies where a remote rule was evaluated.
@@ -461,6 +472,8 @@ func policyRuleType(t decidev2.GuardRuleType) GuardRuleType {
 		return GuardRuleTypeStringListMembership
 	case decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO:
 		return GuardRuleTypeLocalSensitiveInfo
+	case decidev2.GuardRuleType_GUARD_RULE_TYPE_POLICY_EXPRESSION:
+		return GuardRuleTypePolicyExpression
 	default:
 		return GuardRuleTypeUnknown
 	}
@@ -530,6 +543,10 @@ func policyResultFromProto(p *decidev2.GuardPolicyRuleResult) GuardPolicyResult 
 		r.LocalSensitiveInfo = &GuardSensitiveInfoResult{Conclusion: policyConclusion(x.GetConclusion()), Detected: x.GetDetected(), DetectedEntityTypes: types}
 		r.Conclusion = r.LocalSensitiveInfo.Conclusion
 		r.Reason = ReasonSensitiveInfo
+	case *decidev2.GuardPolicyRuleResult_PolicyExpression:
+		r.PolicyExpression = &GuardPolicyExpressionResult{Conclusion: policyConclusion(v.PolicyExpression.GetConclusion())}
+		r.Conclusion = r.PolicyExpression.Conclusion
+		r.Reason = ReasonPolicyExpression
 	case *decidev2.GuardPolicyRuleResult_Error:
 		r.Error = &ArcjetError{Code: v.Error.GetCode(), Message: v.Error.GetMessage()}
 		r.Reason = ReasonError
