@@ -406,6 +406,60 @@ func TestGuardPolicyResultConversionAndSeparation(t *testing.T) {
 	}
 }
 
+// A policy v2 states its rules as an expression, so policy_expression is the
+// variant every Rego rule reports through. The type switch has no default and
+// the result it fills starts at ConclusionAllow, so an unmatched variant read
+// as an allowed rule with no detail — a denying rule reported as ALLOW. Both
+// conclusions are asserted because only the DENY case shows the conclusion is
+// taken from the message rather than left at its initial value.
+func TestGuardPolicyExpressionResultConversion(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		proto decidev2.GuardConclusion
+		want  Conclusion
+	}{
+		{"deny", decidev2.GuardConclusion_GUARD_CONCLUSION_DENY, ConclusionDeny},
+		{"allow", decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW, ConclusionAllow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := policyResultFromProto(&decidev2.GuardPolicyRuleResult{
+				ResultId:       "result-expression",
+				PolicyId:       "policy-id",
+				PolicyRevision: "rev-1",
+				RuleId:         "deny-recipient",
+				Type:           decidev2.GuardRuleType_GUARD_RULE_TYPE_POLICY_EXPRESSION,
+				Mode:           decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE,
+				Execution:      decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SERVER,
+				Source:         decidev2.GuardRuleSource_GUARD_RULE_SOURCE_REMOTE,
+				Result: &decidev2.GuardPolicyRuleResult_PolicyExpression{
+					PolicyExpression: &decidev2.ResultPolicyExpression{Conclusion: tc.proto},
+				},
+			})
+
+			if got.Conclusion != tc.want {
+				t.Errorf("conclusion = %q, want %q", got.Conclusion, tc.want)
+			}
+			if got.Reason != ReasonPolicyExpression {
+				t.Errorf("reason = %q, want %q", got.Reason, ReasonPolicyExpression)
+			}
+			if got.Type != GuardRuleTypePolicyExpression {
+				t.Errorf("type = %q, want %q", got.Type, GuardRuleTypePolicyExpression)
+			}
+			if got.PolicyExpression == nil {
+				t.Fatal("PolicyExpression detail is nil")
+			}
+			if got.PolicyExpression.Conclusion != tc.want {
+				t.Errorf("detail conclusion = %q, want %q", got.PolicyExpression.Conclusion, tc.want)
+			}
+			// The rule's identity still has to survive: it is what names the
+			// rule in a log or an audit trail.
+			if got.RuleID != "deny-recipient" || got.PolicyRevision != "rev-1" {
+				t.Errorf("identity = %#v", got)
+			}
+		})
+	}
+}
+
 func TestGuardPolicyUnknownStatusAndUnavailableFailOpen(t *testing.T) {
 	unknown := guardDecisionFromProto(&decidev2.GuardResponse{Decision: &decidev2.GuardDecision{
 		Id:         "unknown",
