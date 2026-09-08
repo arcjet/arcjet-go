@@ -47,6 +47,7 @@ lint:
 # published from them, so run this when you touch one.
 lint-examples:
     cd examples/nethttp && {{ golangci }} run ./...
+    cd examples/agentframework && {{ golangci }} run ./...
 
 # Lint and auto-apply fixes where the linters support it.
 lint-fix:
@@ -106,6 +107,7 @@ tidy:
     go -C sensitiveinfo/rampart mod tidy
     go -C agentframework mod tidy
     go -C examples/nethttp mod tidy
+    go -C examples/agentframework mod tidy
 
 # Verify go.mod / go.sum are tidy (matches the CI tidy gate); fails if not.
 tidy-check:
@@ -116,10 +118,12 @@ tidy-check:
     go -C sensitiveinfo/rampart mod tidy
     go -C agentframework mod tidy
     go -C examples/nethttp mod tidy
+    go -C examples/agentframework mod tidy
     files=(go.mod go.sum tools/go.mod tools/go.sum \
            sensitiveinfo/rampart/go.mod sensitiveinfo/rampart/go.sum \
            agentframework/go.mod agentframework/go.sum \
-           examples/nethttp/go.mod examples/nethttp/go.sum)
+           examples/nethttp/go.mod examples/nethttp/go.sum \
+           examples/agentframework/go.mod examples/agentframework/go.sum)
     if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
       echo "error: go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes." >&2
       git --no-pager diff -- "${files[@]}"

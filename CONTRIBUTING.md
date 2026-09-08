@@ -8,7 +8,7 @@ This guide covers the local development workflow.
 
 ## Layout
 
-Five Go modules live in this repo:
+Six Go modules live in this repo:
 
 - `./go.mod` — the published SDK. Keep its dep graph minimal; consumers see
   every entry in their own go.sum.
@@ -24,6 +24,9 @@ Five Go modules live in this repo:
   projects.
 - `./examples/nethttp/go.mod` — the runnable example server. Its local
   `replace` directives make it exercise the working tree.
+- `./examples/agentframework/go.mod` — the runnable Microsoft Agent Framework
+  example. Its local `replace` directives make it exercise both the SDK and
+  the agentframework module in the working tree.
 
 ## Commands
 
@@ -126,13 +129,17 @@ module in a repository subdirectory needs that subdirectory in its tag.
 
 1. Create a release branch from an up-to-date `main`.
 2. Set `Version` in `types.go` to the release version without the leading `v`.
-3. Update the SDK requirement in `sensitiveinfo/rampart/go.mod` and both SDK
-   requirements in `examples/nethttp/go.mod` to `v<version>`. Keep the local
-   `replace` directives; downstream consumers ignore them.
-4. Run `just tidy`, then `just check` and
-   `go -C examples/nethttp test ./...`. `just check` includes lint, race tests,
-   and reachable-vulnerability checks for the root module, the rampart
-   module, and the agentframework module.
+3. Update the SDK requirement in `sensitiveinfo/rampart/go.mod`, both SDK
+   requirements in `examples/nethttp/go.mod`, and the `arcjet-go` requirement
+   in `examples/agentframework/go.mod` to `v<version>`. Keep the local
+   `replace` directives; downstream consumers ignore them. Leave
+   `examples/agentframework/go.mod`'s `agentframework` requirement alone; it
+   moves only with an agentframework release.
+4. Run `just tidy`, then `just check`,
+   `go -C examples/nethttp test ./...`, and
+   `go -C examples/agentframework test ./...`. `just check` includes lint,
+   race tests, and reachable-vulnerability checks for the root module, the
+   rampart module, and the agentframework module.
 5. Review the exported API changes since the previous release. Once v1 is
    published, incompatible API changes require a new major module version.
 6. Merge the release PR to `main`, then create both annotated tags on the exact
@@ -171,8 +178,10 @@ module in a repository subdirectory needs that subdirectory in its tag.
 
 The `agentframework` module is versioned independently at `v0.x` because it
 tracks a preview framework. Release it by bumping the SDK requirement in
-`agentframework/go.mod` to the current root tag, running `just tidy` and
-`just check`, merging, and tagging the merge commit:
+`agentframework/go.mod` to the current root tag and the `agentframework`
+requirement in `examples/agentframework/go.mod` to the new agentframework
+version, running `just tidy` and `just check`, merging, and tagging the
+merge commit:
 
 ```sh
 git tag -a agentframework/v0.1.0 -m agentframework/v0.1.0
