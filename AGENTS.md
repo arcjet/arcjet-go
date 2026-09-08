@@ -49,12 +49,12 @@ The repo is a multi-module workspace. Each sibling module has its own `go.mod`
 and a `replace` back to the repo root so local changes are picked up without a
 release:
 
-| Module                   | What it is                                                                    | In the gate?                        |
-| ------------------------ | ----------------------------------------------------------------------------- | ----------------------------------- |
-| `.` (root)               | The SDK                                                                       | Yes                                 |
-| `tools/`                 | Pinned tooling (golangci-lint)                                                | Tidy-checked                        |
-| `sensitiveinfo/rampart/` | Optional on-device NER sensitive-info backend (~15 MB embedded model weights) | Yes (build, test, lint, tidy)       |
-| `examples/nethttp/`      | Runnable example server                                                       | No — build it manually if you touch it |
+| Module                   | What it is                                                                    | In the gate?                             |
+| ------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------- |
+| `.` (root)               | The SDK                                                                       | Yes                                      |
+| `tools/`                 | Pinned tooling (golangci-lint)                                                | Tidy-checked                             |
+| `sensitiveinfo/rampart/` | Optional on-device NER sensitive-info backend (~15 MB embedded model weights) | Yes (build, test, lint, tidy)            |
+| `examples/nethttp/`      | Runnable example server                                                       | Tidy-checked; build and lint it manually |
 
 The `just` recipes (`build`, `test`, `lint`, `tidy`) and CI fan out over the
 root **and** the rampart module, so `just check` covers both. The rampart tests
@@ -71,8 +71,11 @@ go test -race -run '^TestAdversarialConcurrentDetect$' ./...          # concurre
 go tool -modfile=../../tools/go.mod golangci-lint run ./...           # inherits the repo-root .golangci.yml
 ```
 
-`examples/nethttp/` is **not** in the gate; compile it without leaving a binary
-in the worktree (`go -C examples/nethttp test ./...`) if you change it.
+`examples/nethttp/` is not built or tested by the gate; compile it without
+leaving a binary in the worktree (`go -C examples/nethttp test ./...`) if you
+change it, and lint it with `just lint-examples`. Its `go.mod` and `go.sum` are
+covered by `just tidy` and `just tidy-check`, so a dependency bump in the root
+module cannot leave the example stale unnoticed.
 
 The rampart module's `weights.bin` is a generated artifact (not the hand-written
 Go). It is repackaged from the upstream int4 ONNX by `internal/modelgen`; see the
