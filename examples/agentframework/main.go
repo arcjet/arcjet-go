@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -32,13 +33,18 @@ type orderArgs struct {
 }
 
 func main() {
-	if os.Getenv("ARCJET_KEY") == "" {
-		slog.Error("ARCJET_KEY is required. Get one with: arcjet sites get-key, or from https://app.arcjet.com")
+	if err := run(); err != nil {
+		slog.Error("orders agent", "error", err)
 		os.Exit(1)
 	}
+}
+
+func run() error {
+	if os.Getenv("ARCJET_KEY") == "" {
+		return errors.New("ARCJET_KEY is required. Get one with: arcjet sites get-key, or from https://app.arcjet.com")
+	}
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		slog.Error("ANTHROPIC_API_KEY is required")
-		os.Exit(1)
+		return errors.New("ANTHROPIC_API_KEY is required")
 	}
 	model := os.Getenv("ANTHROPIC_MODEL")
 	if model == "" {
@@ -47,8 +53,7 @@ func main() {
 
 	guard, err := arcjet.NewGuardClient(arcjet.GuardConfig{})
 	if err != nil {
-		slog.Error("arcjet guard client", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("arcjet guard client: %w", err)
 	}
 	defer func() { _ = guard.Close(context.Background()) }()
 
@@ -62,7 +67,9 @@ func main() {
 
 	// The authenticated user. In a real service this comes from the request.
 	userID := "user_alice"
-	actor := func(context.Context, json.RawMessage) (string, error) { return userID, nil }
+	actor := func(context.Context, json.RawMessage) (string, error) { //nolint:unparam // ToolPolicy.Actor's signature requires the error result
+		return userID, nil
+	}
 
 	lookupOrder := functool.MustNew(functool.Config{Name: "lookup_order", Description: "Look up the status of an order"},
 		func(_ context.Context, in orderArgs) (string, error) {
@@ -100,8 +107,7 @@ func main() {
 		return agentframework.ToolPolicy{}, false
 	})
 	if err != nil {
-		slog.Error("guarding tools", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("guarding tools: %w", err)
 	}
 
 	inbound, err := agentframework.GuardMiddleware(guard, agentframework.MiddlewareConfig{
@@ -113,8 +119,7 @@ func main() {
 		},
 	})
 	if err != nil {
-		slog.Error("guard middleware", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("guard middleware: %w", err)
 	}
 
 	a := anthropicprovider.NewAgent(anthropic.NewClient(), anthropicprovider.AgentConfig{
@@ -146,6 +151,8 @@ func main() {
 		}
 		fmt.Println(resp.String())
 	}
+
+	return nil
 }
 
 func must[T any](v T, err error) T {
