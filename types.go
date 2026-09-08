@@ -127,6 +127,10 @@ const (
 	ReasonCustom ReasonType = "CUSTOM"
 	// ReasonInputConstraint means a remote policy input constraint determined the result.
 	ReasonInputConstraint ReasonType = "INPUT_CONSTRAINT"
+	// ReasonPolicyExpression means a remote policy's expression determined the
+	// result. A policy v2 states its rules as an expression over the inputs it
+	// declares, so this is the reason every such rule reports.
+	ReasonPolicyExpression ReasonType = "POLICY_EXPRESSION"
 )
 
 // LogValue implements [slog.LogValuer] so ReasonType logs as its string form.
@@ -179,6 +183,9 @@ const (
 	GuardRuleTypeLocalSensitiveInfo GuardRuleType = "LOCAL_SENSITIVE_INFO"
 	// GuardRuleTypeLocalCustom identifies a custom local Guard rule.
 	GuardRuleTypeLocalCustom GuardRuleType = "LOCAL_CUSTOM"
+	// GuardRuleTypePolicyExpression identifies a remote policy rule decided by
+	// the policy's expression language.
+	GuardRuleTypePolicyExpression GuardRuleType = "POLICY_EXPRESSION"
 )
 
 // LogValue implements [slog.LogValuer] so GuardRuleType logs as its string form.
