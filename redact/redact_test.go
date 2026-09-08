@@ -204,3 +204,126 @@ func TestRedactNoMatchesReturnsInput(t *testing.T) {
 		t.Fatalf("unredact changed input: %q", unredact(redacted))
 	}
 }
+
+// The component used to report a token's `+`-separated alternates as spans
+// overlapping the token they came from, and in the wrong order. Redact rebuilds
+// the string in one forward pass, so that panicked on the slice and every
+// plus-addressed email failed outright. Reserved test data only (RFC 2606).
+func TestRedactPlusAddressedEmail(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{Entities: []string{"email"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	const input = "mail a+victim@example.com end"
+	redacted, unredact, err := r.Redact(ctx, input)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if strings.Contains(redacted, "victim@example.com") {
+		t.Fatalf("email not redacted: %q", redacted)
+	}
+	if !strings.HasPrefix(redacted, "mail ") || !strings.HasSuffix(redacted, " end") {
+		t.Fatalf("surrounding text was altered: %q", redacted)
+	}
+	if got := unredact(redacted); got != input {
+		t.Fatalf("round trip: got %q, want %q", got, input)
+	}
+}
+
+// Offsets are byte offsets into the original text. Trimmed leading characters
+// and percent-escapes both used to shift them, leaving part of the entity —
+// with enough of a prefix, all of it — outside its own redaction.
+func TestRedactOffsetsSurviveShiftingPrefixes(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	const pan = "4111111111111111"
+	for _, input := range []string{
+		"Card " + pan + " end",
+		"Card ." + pan + " end",
+		"Card " + strings.Repeat(".", 16) + pan + " end",
+		"Hello%20world Card " + pan + " end",
+		"a%2Bb%2Bc Card " + pan + " end",
+		"Здравствуйте, карта " + pan + " end",
+		"mail .victim@example.com end",
+	} {
+		redacted, unredact, err := r.Redact(ctx, input)
+		if err != nil {
+			t.Errorf("input %q: %v", input, err)
+			continue
+		}
+		if strings.Contains(redacted, pan) {
+			t.Errorf("input %q: card number survived: %q", input, redacted)
+		}
+		if strings.Contains(redacted, "victim@example.com") {
+			t.Errorf("input %q: email survived: %q", input, redacted)
+		}
+		if got := unredact(redacted); got != input {
+			t.Errorf("input %q: round trip got %q", input, got)
+		}
+	}
+}
+
+// Separator-only tokens were skipped by recursing once each, so a few thousand
+// spaces aborted the wasm instead of returning a result.
+func TestRedactLongSeparatorRun(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	input := strings.Repeat("  ", 20000) + "4111111111111111"
+	redacted, _, err := r.Redact(ctx, input)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if strings.Contains(redacted, "4111111111111111") {
+		t.Fatal("card number survived redaction")
+	}
+}
+
+// Two detected spans can cross rather than nest: U+FDFA expands to several
+// words under NFKC, so a custom detector matching a token either side of it
+// yields spans that partly overlap. Resolving that by dropping the later span
+// left the part of it past the first span in the output. Unredact still
+// restores the original, so this asserts on the redacted text.
+func TestRedactCrossingOverlap(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{
+		Entities: []string{"secret"},
+		Detect: func(tokens []string) []string {
+			out := make([]string, len(tokens))
+			for i, token := range tokens {
+				if strings.Contains(token, "AAA") || strings.Contains(token, "SECRET") {
+					out[i] = "secret"
+				}
+			}
+			return out
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	const input = "AAAﷺSECRET"
+	redacted, unredact, err := r.Redact(ctx, input)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if strings.Contains(redacted, "SECRET") || strings.Contains(redacted, "AAA") {
+		t.Fatalf("detected value survived redaction: %q", redacted)
+	}
+	if got := unredact(redacted); got != input {
+		t.Fatalf("round trip: got %q, want %q", got, input)
+	}
+}
