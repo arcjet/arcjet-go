@@ -3729,7 +3729,7 @@ tool result it receives is an `arcjetDenied` payload, not an error.
 name: integrate-arcjet-guard-agent-framework-go
 description: Integrate Arcjet Guard into Microsoft Agent Framework for Go (github.com/microsoft/agent-framework-go). Wrap a functool or MCP tool with GuardTool, guard every tool an agent can see and screen inbound text with GuardMiddleware, or guard any Go function with arcjet.GuardAction. Use when asked to add Arcjet to a Go agent built on Microsoft Agent Framework, rate limit its tools, block prompt injection, or fail closed on tool calls. This is the Go framework, not the .NET or Python Microsoft Agent Framework.
 license: Apache-2.0
-compatibility: Requires Go >= 1.26 and github.com/arcjet/arcjet-go/agentframework v0.1.0 or later, which requires github.com/arcjet/arcjet-go v1.1.0 or later and github.com/microsoft/agent-framework-go v0.1.0 or later.
+compatibility: Requires Go >= 1.26 and github.com/arcjet/arcjet-go/agentframework v0.1.0 or later, which requires github.com/arcjet/arcjet-go v1.0.0 or later and github.com/microsoft/agent-framework-go v0.1.0 or later.
 metadata:
   author: arcjet
   type: core
@@ -3931,14 +3931,15 @@ out, err := arcjet.GuardAction(ctx, guard, arcjet.GuardActionPolicy{
 }, func(ctx context.Context) (Receipt, error) { return refundPayment(ctx, id) })
 ```
 
-Distinguish the two errors with `errors.As`. `OnGuardError: arcjet.OnGuardErrorAllow` opts a call site back into fail-open; a `DENY` still blocks. Use `arcjet.NewGuardDenialResult(decision)` and `arcjet.NewGuardUnavailableResult()` when the caller is a model and needs a JSON result rather than a Go error. Available from `arcjet-go` v1.1.0.
+Distinguish the two errors with `errors.As`. `OnGuardError: arcjet.OnGuardErrorAllow` opts a call site back into fail-open; a `DENY` still blocks. Use `arcjet.NewGuardDenialResult(decision)` and `arcjet.NewGuardUnavailableResult()` when the caller is a model and needs a JSON result rather than a Go error. Available from `arcjet-go` v1.0.0.
 
 For Microsoft Agent Framework for Go, load [integrate-arcjet-guard-agent-framework-go](../../integrate-arcjet-guard-agent-framework-go/SKILL.md) instead of wrapping tools by hand.
 ```
 
   and change the "## Correlation IDs" section to add: "The agent helpers read `arcjet.ContextWithCorrelationId(ctx, id)`; `Guard` and `Capture` do not, so pass `CorrelationId` to them explicitly."
 
-  Replace `v1.1.0` with the real root tag that carries the helpers.
+  The helpers ship in `arcjet-go` v1.0.0, whose release is gated on this
+  work, and the framework module's first tag is `agentframework/v0.1.0`.
 
 - [ ] **Step 5: Update `README.md`** in `../skills`: add a row `| `integrate-arcjet-guard-agent-framework-go` | Go Microsoft Agent Framework |` to the skill table, and change the paragraph above it to mention the Go skill.
 
