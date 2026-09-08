@@ -8,7 +8,7 @@ replace github.com/arcjet/arcjet-go => ../..
 
 require github.com/arcjet/arcjet-go v1.0.0
 
-require golang.org/x/text v0.40.0 // indirect
+require golang.org/x/text v0.41.0 // indirect
 
 require (
 	connectrpc.com/connect v1.20.0 // indirect
