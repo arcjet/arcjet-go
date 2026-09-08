@@ -40,6 +40,11 @@ lint:
     {{ golangci }} run ./...
     cd sensitiveinfo/rampart && {{ golangci }} run ./...
 
+# Lint the example modules. They sit outside `check` because nothing is
+# published from them, so run this when you touch one.
+lint-examples:
+    cd examples/nethttp && {{ golangci }} run ./...
+
 # Lint and auto-apply fixes where the linters support it.
 lint-fix:
     {{ golangci }} run --fix ./...
@@ -92,6 +97,7 @@ tidy:
     go mod tidy
     go -C tools mod tidy
     go -C sensitiveinfo/rampart mod tidy
+    go -C examples/nethttp mod tidy
 
 # Verify go.mod / go.sum are tidy (matches the CI tidy gate); fails if not.
 tidy-check:
@@ -100,8 +106,10 @@ tidy-check:
     go mod tidy
     go -C tools mod tidy
     go -C sensitiveinfo/rampart mod tidy
+    go -C examples/nethttp mod tidy
     files=(go.mod go.sum tools/go.mod tools/go.sum \
-           sensitiveinfo/rampart/go.mod sensitiveinfo/rampart/go.sum)
+           sensitiveinfo/rampart/go.mod sensitiveinfo/rampart/go.sum \
+           examples/nethttp/go.mod examples/nethttp/go.sum)
     if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
       echo "error: go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes." >&2
       git --no-pager diff -- "${files[@]}"
