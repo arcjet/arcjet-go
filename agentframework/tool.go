@@ -12,6 +12,19 @@ import (
 	"github.com/arcjet/arcjet-go"
 )
 
+// validateAction rejects an Action that Guard would reject as a label, so a
+// misspelled slug fails at construction rather than disabling the guard for
+// the life of the process.
+func validateAction(action string) error {
+	if action == "" {
+		return errMissingAction
+	}
+	if err := arcjet.ValidateGuardLabel(action); err != nil {
+		return fmt.Errorf("agentframework: policy Action %q: %w", action, err)
+	}
+	return nil
+}
+
 var (
 	errNilClient     = errors.New("agentframework: guard client is nil")
 	errNilTool       = errors.New("agentframework: tool is nil")
@@ -108,7 +121,9 @@ func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 	switch {
 	case errors.As(err, &denied):
 		if p.OnDeny != nil {
-			return p.OnDeny(denied.Decision), nil
+			if out := p.OnDeny(denied.Decision); out != nil {
+				return out, nil
+			}
 		}
 		return arcjet.NewGuardDenialResult(denied.Decision), nil
 	case errors.As(err, &unavailable):
@@ -132,8 +147,8 @@ func GuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolicy) (
 	if t == nil {
 		return nil, errNilTool
 	}
-	if policy.Action == "" {
-		return nil, errMissingAction
+	if err := validateAction(policy.Action); err != nil {
+		return nil, err
 	}
 	return &guardedTool{FuncTool: t, client: client, policy: policy}, nil
 }
@@ -165,6 +180,11 @@ func Args[In any](fn func(context.Context, In) ([]arcjet.GuardRuleInput, error))
 
 func decodeArgs[In any](raw json.RawMessage) (In, error) {
 	var in In
+	// The framework decodes empty arguments as an empty object rather than
+	// as null, so a tool that takes no arguments is called with "".
+	if len(raw) == 0 {
+		raw = json.RawMessage("{}")
+	}
 	typ := reflect.TypeFor[In]()
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()

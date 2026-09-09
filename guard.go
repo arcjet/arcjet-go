@@ -1171,6 +1171,17 @@ func guardConclusion(c Conclusion) string {
 	return "GUARD_CONCLUSION_ALLOW"
 }
 
+// ValidateGuardLabel reports whether label is a usable Guard label. A label
+// may hold up to 256 bytes of lowercase letters, digits, dash and dot, and
+// must start and end with a lowercase letter or digit. Errors wrap
+// [ErrInvalidLabel].
+//
+// Framework integrations use it to reject a policy at construction rather
+// than failing every call.
+func ValidateGuardLabel(label string) error {
+	return validateGuardLabel(label)
+}
+
 func validateGuardLabel(label string) error {
 	if label == "" {
 		return fmt.Errorf("%w: required", ErrInvalidLabel)

@@ -76,8 +76,10 @@ func GuardMiddleware(client *arcjet.GuardClient, cfg MiddlewareConfig) (agent.Mi
 	if client == nil {
 		return nil, errNilClient
 	}
-	if cfg.Inbound != nil && cfg.Inbound.Action == "" {
-		return nil, errMissingAction
+	if cfg.Inbound != nil {
+		if err := validateAction(cfg.Inbound.Action); err != nil {
+			return nil, err
+		}
 	}
 	return &guardMiddleware{client: client, cfg: cfg}, nil
 }
