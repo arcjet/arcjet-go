@@ -340,7 +340,7 @@ func TestGuardMiddlewareUsesSessionStateWhenContextHasNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.Set(CorrelationIdStateKey, "conversation_123")
+	session.Set(CorrelationIDStateKey, "conversation_123")
 	if _, err := a.RunText(t.Context(), "hi", agent.WithSession(session)).Collect(); err != nil {
 		t.Fatal(err)
 	}
@@ -374,11 +374,11 @@ func TestGuardMiddlewareInboundPolicyCorrelationIdWinsOverContext(t *testing.T) 
 	decide := &fakeDecide{resp: allowResponse()}
 	client := newTestClient(t, decide)
 	inbound := inboundPolicy(t)
-	inbound.CorrelationId = "policy_1"
+	inbound.CorrelationID = "policy_1"
 	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: inbound})
 	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("ok")}}}
 	a := newAgent(runner, agent.Config{Middlewares: []agent.Middleware{mw}})
-	ctx := arcjet.ContextWithCorrelationId(t.Context(), "ctx_1")
+	ctx := arcjet.ContextWithCorrelationID(t.Context(), "ctx_1")
 	if _, err := a.RunText(ctx, "hi").Collect(); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestGuardMiddlewareContextCorrelationWinsOverSession(t *testing.T) {
 	a := newAgent(&scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("ok")}}}, agent.Config{Middlewares: []agent.Middleware{mw}})
 	session, _ := a.CreateSession(t.Context())
 	session.SetServiceID("thread_123")
-	ctx := arcjet.ContextWithCorrelationId(t.Context(), "req_9")
+	ctx := arcjet.ContextWithCorrelationID(t.Context(), "req_9")
 	if _, err := a.RunText(ctx, "hi", agent.WithSession(session)).Collect(); err != nil {
 		t.Fatal(err)
 	}

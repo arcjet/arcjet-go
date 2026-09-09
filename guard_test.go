@@ -150,7 +150,7 @@ func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {
 	decision, err := client.Guard(context.Background(), GuardRequest{
 		Label:         "tools.weather",
 		Metadata:      Metadata{"env": "test", "user": map[string]any{"id": "u_1"}},
-		CorrelationId: "wf_abcdef",
+		CorrelationID: "wf_abcdef",
 		Rules:         []GuardRuleInput{limit.Key("user_123", 2)},
 	})
 	if err != nil {
@@ -352,7 +352,7 @@ func TestGuardLiveProjectedSensitiveInfoDenialUsesSanitizedGuardRPC(t *testing.T
 	decision, err := client.Guard(context.Background(), GuardRequest{
 		Label:         "message.send",
 		Actor:         &actor,
-		CorrelationId: "sensitive-correlation",
+		CorrelationID: "sensitive-correlation",
 		Inputs: map[string]GuardPolicyInput{
 			"body":   GuardPolicyLocalString("secret user@example.com"),
 			"server": GuardPolicyServerString("must not be transported"),
@@ -414,7 +414,7 @@ func TestGuardRefreshLiveProjectedSensitiveInfoSanitizesRetry(t *testing.T) {
 	decision, err := client.Guard(context.Background(), GuardRequest{
 		Label:         "message.send",
 		Actor:         &actor,
-		CorrelationId: "sensitive-correlation",
+		CorrelationID: "sensitive-correlation",
 		Inputs: map[string]GuardPolicyInput{
 			"body": GuardPolicyLocalString("secret user@example.com"), "server": GuardPolicyServerString("raw secret"),
 		},

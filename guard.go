@@ -138,12 +138,12 @@ type GuardRequest struct {
 	// it on GuardDecision.Warnings. Nothing here can fail the call or change
 	// the decision.
 	Metadata Metadata
-	// CorrelationId is an optional, caller-supplied opaque identifier used to
+	// CorrelationID is an optional, caller-supplied opaque identifier used to
 	// correlate this Guard call with other Guard and Protect calls that belong
 	// to the same workflow, agent run, or multi-step task. Unlike Metadata it
 	// is a dedicated, indexable field; it does not affect the decision. Bounded
 	// server-side to 256 bytes of printable ASCII; invalid values are dropped.
-	CorrelationId string
+	CorrelationID string
 	// Rules are bound rule inputs evaluated by Guard.
 	Rules []GuardRuleInput
 }
@@ -229,7 +229,7 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		Label:               req.Label,
 		MetadataJson:        envelopeMetadata,
 		RuleSubmissions:     submissions,
-		CorrelationId:       req.CorrelationId,
+		CorrelationId:       req.CorrelationID,
 		PolicyInputs:        prepared.inputs,
 		LocalPolicyRevision: prepared.revision,
 		LocalPolicyResults:  prepared.results,
@@ -323,7 +323,7 @@ func localPolicyDenialRequest(req GuardRequest, userAgent string, start time.Tim
 		SentAtUnixMs:        &sentAt,
 		Label:               req.Label,
 		Actor:               req.Actor,
-		CorrelationId:       req.CorrelationId,
+		CorrelationId:       req.CorrelationID,
 		MetadataJson:        metadata,
 		PolicyInputs:        localOnlyPolicyInputs(prepared.inputs),
 		LocalPolicyRevision: prepared.revision,

@@ -228,15 +228,15 @@ func TestGuardActionCorrelationPrecedence(t *testing.T) {
 		explicit string
 		want     string
 	}{
-		{"explicit wins over context", ContextWithCorrelationId(context.Background(), "ctx_1"), "explicit_1", "explicit_1"},
-		{"context when no explicit", ContextWithCorrelationId(context.Background(), "ctx_1"), "", "ctx_1"},
+		{"explicit wins over context", ContextWithCorrelationID(context.Background(), "ctx_1"), "explicit_1", "explicit_1"},
+		{"context when no explicit", ContextWithCorrelationID(context.Background(), "ctx_1"), "", "ctx_1"},
 		{"none", context.Background(), "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := &testGuardHandler{resp: guardActionAllowResponse()}
 			client := newGuardActionTestClient(t, handler)
-			_, err := GuardAction(tc.ctx, client, GuardActionPolicy{Action: "order.looked-up", CorrelationId: tc.explicit},
+			_, err := GuardAction(tc.ctx, client, GuardActionPolicy{Action: "order.looked-up", CorrelationID: tc.explicit},
 				func(context.Context) (struct{}, error) { return struct{}{}, nil })
 			if err != nil {
 				t.Fatal(err)
@@ -267,21 +267,51 @@ func TestGuardActionProgrammerErrorIsWrappedAsUnavailable(t *testing.T) {
 		t.Fatalf("guard calls = %d, want 0", handler.guardCalls)
 	}
 
-	// Under allow the same programmer error lets fn run, degraded, still
-	// without a Guard call: there was no valid request to send.
+	// OnGuardErrorAllow covers availability, not misconfiguration, so the
+	// same programmer error still denies and fn does not run.
 	handler = &testGuardHandler{resp: guardActionAllowResponse()}
 	client = newGuardActionTestClient(t, handler)
 	ran := false
 	_, err = GuardAction(context.Background(), client, GuardActionPolicy{Action: "Not A Label", OnGuardError: OnGuardErrorAllow},
 		func(context.Context) (struct{}, error) { ran = true; return struct{}{}, nil })
-	if err != nil || !ran {
-		t.Fatalf("err = %v, ran = %v; want fn to run under allow", err, ran)
+	if !errors.As(err, &unavailable) || !errors.Is(err, ErrInvalidLabel) {
+		t.Fatalf("err = %v, want *GuardUnavailableError wrapping ErrInvalidLabel", err)
+	}
+	if ran {
+		t.Fatal("fn ran under a programmer error; allow covers availability only")
 	}
 	if handler.guardCalls != 0 {
 		t.Fatalf("guard calls = %d, want 0", handler.guardCalls)
 	}
-	if events := flushedEvents(client, handler); len(events) != 1 || events[0].GetMetadataJson()["outcome"] != `"degraded"` || events[0].GetDecisionId() != "" {
+	if events := flushedEvents(client, handler); len(events) != 1 || events[0].GetMetadataJson()["outcome"] != `"unavailable"` || events[0].GetDecisionId() != "" {
 		t.Fatalf("events = %v", events)
+	}
+}
+
+// A rule that cannot be bound is misconfiguration reported by Guard itself,
+// so it denies even under allow. This is the shape where a rate-limit key
+// derived from model-supplied arguments arrives empty.
+func TestGuardActionUnbindableRuleDeniesUnderAllow(t *testing.T) {
+	handler := &testGuardHandler{resp: guardActionAllowResponse()}
+	client := newGuardActionTestClient(t, handler)
+	limit, err := GuardTokenBucket(GuardTokenBucketOptions{
+		Mode: ModeLive, RefillRate: 5, Interval: time.Hour, Capacity: 5, Bucket: "refunds",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	_, err = GuardAction(context.Background(), client, GuardActionPolicy{
+		Action:       "refund.issued",
+		Rules:        []GuardRuleInput{limit.Key("", 1)},
+		OnGuardError: OnGuardErrorAllow,
+	}, func(context.Context) (struct{}, error) { ran = true; return struct{}{}, nil })
+	var unavailable *GuardUnavailableError
+	if !errors.As(err, &unavailable) || !errors.Is(err, ErrEmptyKey) {
+		t.Fatalf("err = %v, want *GuardUnavailableError wrapping ErrEmptyKey", err)
+	}
+	if ran {
+		t.Fatal("fn ran with an unbindable rule; the action would be unlimited")
 	}
 }
 
@@ -459,7 +489,7 @@ func TestGuardAndCaptureIgnoreContextCorrelation(t *testing.T) {
 	// behaviour of never inheriting a correlation ID from ambient context.
 	handler := &testGuardHandler{resp: guardActionAllowResponse()}
 	client := newGuardActionTestClient(t, handler)
-	ctx := ContextWithCorrelationId(context.Background(), "ctx_1")
+	ctx := ContextWithCorrelationID(context.Background(), "ctx_1")
 	if _, err := client.Guard(ctx, GuardRequest{Label: "order.looked-up"}); err != nil {
 		t.Fatal(err)
 	}

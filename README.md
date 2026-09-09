@@ -1436,10 +1436,10 @@ the SDK will not act on, whether or not a degraded decision came back.
 helper call in that context joins one Sequence in the Arcjet console:
 
 ```go
-ctx = arcjet.ContextWithCorrelationId(ctx, requestID)
+ctx = arcjet.ContextWithCorrelationID(ctx, requestID)
 ```
 
-`GuardActionPolicy.CorrelationId` overrides the context. `Guard` and
+`GuardActionPolicy.CorrelationID` overrides the context. `Guard` and
 `Capture` never read the context; pass the ID to them explicitly. Nothing in
 the SDK generates a correlation ID: derive it from an ID you already have.
 
@@ -1462,7 +1462,7 @@ For Microsoft Agent Framework tools, see the
 | `Rules` | `[]arcjet.GuardRuleInput` | Bound rule inputs; may be empty, since Guard is still reached because remote policy is selected by `Action` |
 | `Resolve` | `func(context.Context) (arcjet.GuardActionInputs, error)` | Computes `Actor`, `Inputs`, and `Rules` per call, replacing the static fields above. An error here counts as unevaluated policy, so it fails the action closed by default |
 | `Metadata` | `arcjet.Metadata` | Attached to the Guard call and to the capture event; see [Metadata](#metadata). The capture event's `outcome` key is written by `GuardAction` and overrides any caller value of that name |
-| `CorrelationId` | `string` | Overrides the correlation ID carried by the context |
+| `CorrelationID` | `string` | Overrides the correlation ID carried by the context |
 | `OnGuardError` | `arcjet.OnGuardError` | Fail closed (`OnGuardErrorDeny`, the zero value) or fail open (`OnGuardErrorAllow`) when policy cannot be evaluated |
 
 ### `Guard` parameter reference
@@ -1472,7 +1472,7 @@ For Microsoft Agent Framework tools, see the
 | `Rules` | `[]arcjet.GuardRuleInput` | Bound rule inputs; may be empty, since Guard is still reached because remote policy is selected by `Label` |
 | `Label` | `string` | Hardcoded label identifying this guard call (required) |
 | `Metadata` | `arcjet.Metadata` | Optional structured metadata — see [Metadata](#metadata) |
-| `CorrelationId` | `string` | Opaque id correlating this call with other `Guard`/`Protect` calls |
+| `CorrelationID` | `string` | Opaque id correlating this call with other `Guard`/`Protect` calls |
 
 ### Capture
 
@@ -1483,7 +1483,7 @@ visibility data, never security decisions — they do not affect `Guard` or
 ```go
 guard.Capture(arcjet.CaptureEvent{
 	Action:        "refund.issued", // resource.verb, past tense
-	CorrelationId: runID,
+	CorrelationID: runID,
 	DecisionId:    decision.ID,
 	Metadata: arcjet.Metadata{
 		"invoice":  map[string]any{"id": "inv_123", "amount": 4200},
@@ -1494,7 +1494,7 @@ guard.Capture(arcjet.CaptureEvent{
 
 `Action` is required. Convention is `"resource.verb"` in the past tense
 (for example `"refund.issued"`). An empty action drops the event. Optional
-fields: `CorrelationId`, `DecisionId`, `Metadata`, and `OccurredAt` (zero
+fields: `CorrelationID`, `DecisionId`, `Metadata`, and `OccurredAt` (zero
 means now). Every event is sent with source `"sdk"`.
 
 Capture is best-effort and never blocks or returns an error. The SDK keeps a

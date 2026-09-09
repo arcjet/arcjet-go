@@ -41,9 +41,9 @@ type ToolPolicy struct {
 	Actor  func(ctx context.Context, args json.RawMessage) (string, error)
 	Inputs func(ctx context.Context, args json.RawMessage) (map[string]arcjet.GuardPolicyInput, error)
 	Rules  func(ctx context.Context, args json.RawMessage) ([]arcjet.GuardRuleInput, error)
-	// CorrelationId, when set, wins over the ID carried by the context and
+	// CorrelationID, when set, wins over the ID carried by the context and
 	// over the session's stored ID.
-	CorrelationId string
+	CorrelationID string
 	Metadata      arcjet.Metadata
 	OnGuardError  arcjet.OnGuardError
 	// OnDeny, when set, replaces the arcjet.GuardDenialResult returned to the
@@ -89,7 +89,7 @@ func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 	p := g.policy
 	policy := arcjet.GuardActionPolicy{
 		Action:        p.Action,
-		CorrelationId: p.CorrelationId,
+		CorrelationID: p.CorrelationID,
 		Metadata:      p.Metadata,
 		OnGuardError:  p.OnGuardError,
 		Resolve: func(ctx context.Context) (arcjet.GuardActionInputs, error) {

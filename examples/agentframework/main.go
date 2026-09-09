@@ -134,7 +134,7 @@ func run() error {
 	})
 
 	// One ID per conversation, taken from something the application already has.
-	ctx := arcjet.ContextWithCorrelationId(context.Background(), "conversation_"+time.Now().Format("20060102T150405"))
+	ctx := arcjet.ContextWithCorrelationID(context.Background(), "conversation_"+time.Now().Format("20060102T150405"))
 
 	for _, prompt := range []string{
 		"Where is order o-1001?",

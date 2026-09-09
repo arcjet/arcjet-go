@@ -308,14 +308,14 @@ type ProtectDetails struct {
 	Query string
 	// Extra contains additional string fields sent to Arcjet.
 	Extra map[string]string
-	// CorrelationId is an optional, caller-supplied opaque identifier used to
+	// CorrelationID is an optional, caller-supplied opaque identifier used to
 	// correlate this request with other Protect and Guard calls that belong to
 	// the same workflow, agent run, or multi-step task. It does not affect the
 	// decision and is excluded from the decision cache key; it is stored
 	// alongside the recorded decision so a chain of actions can be
 	// reconstructed. Bounded server-side to 256 bytes of printable ASCII;
 	// invalid values are dropped, not truncated.
-	CorrelationId   string
+	CorrelationID   string
 	clientIPDetails *ClientIPDetails
 }
 
@@ -376,11 +376,11 @@ type ProtectOptions struct {
 	Extra map[string]string
 	// Body overrides the request body sent to Arcjet.
 	Body []byte
-	// CorrelationId is an optional, caller-supplied opaque identifier used to
+	// CorrelationID is an optional, caller-supplied opaque identifier used to
 	// correlate this request with other Protect and Guard calls in the same
 	// workflow or agent run. It does not affect the decision and is excluded
 	// from the decision cache key.
-	CorrelationId string
+	CorrelationID string
 	// Metadata is optional structured metadata for correlation and analytics:
 	// string keys mapped to any JSON-serializable value, including nested maps
 	// and slices. Each top-level value is JSON-encoded by the SDK and stored
@@ -473,12 +473,12 @@ func WithExtra(extra map[string]string) ProtectOption {
 	return func(o *ProtectOptions) { o.Extra = cloneMap(extra) }
 }
 
-// WithCorrelationId sets an optional, caller-supplied opaque identifier used to
+// WithCorrelationID sets an optional, caller-supplied opaque identifier used to
 // correlate this request with other Protect and Guard calls in the same
 // workflow or agent run. It does not affect the decision and is excluded from
 // the decision cache key.
-func WithCorrelationId(id string) ProtectOption {
-	return func(o *ProtectOptions) { o.CorrelationId = id }
+func WithCorrelationID(id string) ProtectOption {
+	return func(o *ProtectOptions) { o.CorrelationID = id }
 }
 
 // WithMetadata sets structured metadata for correlation and analytics: string
@@ -534,8 +534,8 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 		ipDetails = &ClientIPDetails{IP: details.IP, Provenance: ClientIPProvenanceManual, Verified: true}
 	}
 	c.reportClientIP(*ipDetails)
-	if options.CorrelationId != "" {
-		details.CorrelationId = options.CorrelationId
+	if options.CorrelationID != "" {
+		details.CorrelationID = options.CorrelationID
 	}
 	if details.Extra == nil {
 		details.Extra = make(map[string]string)
@@ -1105,7 +1105,7 @@ func (d ProtectDetails) toProto() *decidev1.RequestDetails {
 		Query:    queryWithQuestion(d.Query),
 		// Not a fingerprint characteristic, so it never enters the per-rule
 		// cache key (ruleID, fingerprint); see ruleFingerprints.
-		CorrelationId: d.CorrelationId,
+		CorrelationId: d.CorrelationID,
 	}
 }
 

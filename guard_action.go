@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"time"
 )
 
 // OnGuardError selects what a helper does when policy could not be
 // evaluated: Guard returned an error, the decision failed open, or a Resolve
 // hook failed. The zero value is deny, so a policy literal that omits the
-// field fails closed. A DENY decision always blocks regardless of this
+// field fails closed. OnGuardErrorAllow covers availability only; a
+// misconfigured policy denies whatever it is set to. A DENY decision always
+// blocks regardless of this
 // setting.
 type OnGuardError int
 
@@ -64,8 +67,8 @@ type GuardActionPolicy struct {
 	// capture event's "outcome" key is written by GuardAction and overrides
 	// any caller value of that name.
 	Metadata Metadata
-	// CorrelationId, when set, wins over the ID carried by the context.
-	CorrelationId string
+	// CorrelationID, when set, wins over the ID carried by the context.
+	CorrelationID string
 	// OnGuardError selects fail closed (the zero value) or fail open.
 	OnGuardError OnGuardError
 }
@@ -112,13 +115,19 @@ const (
 	guardOutcomeUnavailable = "unavailable"
 )
 
+// defaultGuardTimeout bounds the Guard call GuardAction makes when the
+// caller's context carries no deadline. Without it a Decide service that
+// accepts a connection and then stops responding would hang the action
+// forever rather than failing closed. It matches the Protect default.
+const defaultGuardTimeout = 2 * time.Second
+
 func captureGuardOutcome(client *GuardClient, policy GuardActionPolicy, correlationID, decisionID, outcome string) {
 	md := make(Metadata, len(policy.Metadata)+1)
 	maps.Copy(md, policy.Metadata)
 	md["outcome"] = outcome
 	client.Capture(CaptureEvent{
 		Action:        policy.Action,
-		CorrelationId: correlationID,
+		CorrelationID: correlationID,
 		DecisionId:    decisionID,
 		Metadata:      md,
 	})
@@ -142,16 +151,16 @@ func captureGuardOutcome(client *GuardClient, policy GuardActionPolicy, correlat
 // A decision ID is attached when the decision has one. Capture is
 // best-effort and never affects the returned values.
 //
-// The correlation ID is policy.CorrelationId when set, otherwise the ID
-// carried by ctx via ContextWithCorrelationId, otherwise none.
+// The correlation ID is policy.CorrelationID when set, otherwise the ID
+// carried by ctx via ContextWithCorrelationID, otherwise none.
 func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardActionPolicy, fn func(context.Context) (T, error)) (T, error) {
 	var zero T
 	if fn == nil {
 		return zero, &GuardUnavailableError{Action: policy.Action, Err: ErrNilAction}
 	}
-	correlationID := policy.CorrelationId
+	correlationID := policy.CorrelationID
 	if correlationID == "" {
-		correlationID, _ = CorrelationIdFromContext(ctx)
+		correlationID, _ = CorrelationIDFromContext(ctx)
 	}
 
 	inputs := GuardActionInputs{Actor: policy.Actor, Inputs: policy.Inputs, Rules: policy.Rules}
@@ -166,7 +175,7 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 			Label:         policy.Action,
 			Inputs:        inputs.Inputs,
 			Metadata:      policy.Metadata,
-			CorrelationId: correlationID,
+			CorrelationID: correlationID,
 			Rules:         inputs.Rules,
 		}
 		if inputs.Actor != "" {
@@ -174,7 +183,9 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 			req.Actor = &actor
 		}
 		guardCalled = true
-		decision, guardErr = client.Guard(ctx, req)
+		guardCtx, cancel := withDefaultDeadline(ctx, defaultGuardTimeout)
+		decision, guardErr = client.Guard(guardCtx, req)
+		cancel()
 	}
 
 	// A DENY is a completed decision even when Guard also returned an error
@@ -184,9 +195,19 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 		return zero, &GuardDeniedError{Action: policy.Action, Decision: decision}
 	}
 
+	// Guard separates two error classes. A programmer error, such as a nil
+	// client, an invalid label or a rule that cannot be bound, returns the
+	// zero-value decision alongside its error; runtime degradation always
+	// returns a usable decision. A Resolve hook that fails never reaches
+	// Guard and stays governed by OnGuardError.
+	// Misconfiguration is not an availability
+	// problem, so OnGuardErrorAllow does not cover it: allowing there would
+	// run the action under policy that was never evaluated.
+	misconfigured := guardCalled && guardErr != nil && decision.ID == "" && decision.Conclusion == ""
+
 	degraded := false
 	if guardErr != nil || !decision.IsAllowed() || decision.HasFailedOpen() {
-		if policy.OnGuardError != OnGuardErrorAllow {
+		if misconfigured || policy.OnGuardError != OnGuardErrorAllow {
 			captureGuardOutcome(client, policy, correlationID, decision.ID, guardOutcomeUnavailable)
 			unavailable := &GuardUnavailableError{Action: policy.Action, Err: guardErr}
 			// guardCalled alone is not enough: a programmer error (nil client,

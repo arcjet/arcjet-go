@@ -105,7 +105,7 @@ func main() {
 	})
 
 	// One correlation ID per conversation so every decision lands on one Sequence.
-	ctx := arcjet.ContextWithCorrelationId(context.Background(), "conversation_123")
+	ctx := arcjet.ContextWithCorrelationID(context.Background(), "conversation_123")
 	resp, err := a.RunText(ctx, "Refund order o-1").Collect()
 	if err != nil {
 		panic(err)
@@ -152,19 +152,19 @@ blocks.
 Put an ID you already have on the context before `Run`:
 
 ```go
-ctx = arcjet.ContextWithCorrelationId(ctx, conversationID)
+ctx = arcjet.ContextWithCorrelationID(ctx, conversationID)
 ```
 
 For work that outlives one call, store the ID on the session instead, and
 `GuardMiddleware` uses it whenever the context carries none:
 
 ```go
-session.Set(agentframework.CorrelationIdStateKey, conversationID)
+session.Set(agentframework.CorrelationIDStateKey, conversationID)
 ```
 
 Session state is serialized with the session, so the ID survives a session
 that is persisted and restored. A `ToolPolicy` or `InboundPolicy` may also set
-`CorrelationId` directly, which wins over both.
+`CorrelationID` directly, which wins over both.
 
 `agent.Session.ServiceID` is deliberately not used. It belongs to the
 provider, and the OpenAI Responses, AG-UI, A2A and Copilot providers all

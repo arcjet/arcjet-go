@@ -78,7 +78,7 @@ func TestNormalizeCaptureOptionalFields(t *testing.T) {
 	occurred := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	event := normalizeCaptureEvent(CaptureEvent{
 		Action:        "refund.issued",
-		CorrelationId: "workflow_123",
+		CorrelationID: "workflow_123",
 		DecisionId:    "gdec_abc",
 		OccurredAt:    occurred,
 		Metadata: Metadata{
@@ -403,7 +403,7 @@ func TestGuardClientCaptureFlushDrains(t *testing.T) {
 	client.captureBatchDelay = time.Hour // would otherwise sit until Flush
 	client.Capture(CaptureEvent{
 		Action:        "refund.issued",
-		CorrelationId: "wf_1",
+		CorrelationID: "wf_1",
 		DecisionId:    "gdec_1",
 		Metadata:      Metadata{"invoice": "inv_123"},
 	})

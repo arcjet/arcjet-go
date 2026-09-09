@@ -14,15 +14,15 @@ import (
 	"github.com/arcjet/arcjet-go"
 )
 
-// CorrelationIdStateKey is the [agent.Session] state key GuardMiddleware
+// CorrelationIDStateKey is the [agent.Session] state key GuardMiddleware
 // reads a correlation ID from when the context carries none. Set it once,
 // with an ID the application already has:
 //
-//	session.Set(agentframework.CorrelationIdStateKey, conversationID)
+//	session.Set(agentframework.CorrelationIDStateKey, conversationID)
 //
 // Session state is serialized with the session, so the ID survives a session
 // that is persisted and restored. Nothing here generates an ID.
-const CorrelationIdStateKey = "arcjet.correlationId"
+const CorrelationIDStateKey = "arcjet.correlationId"
 
 // InboundPolicy screens the user text of a run before the provider is
 // called. Rules receives the concatenated text of the run's user-role
@@ -31,9 +31,9 @@ type InboundPolicy struct {
 	Action string
 	Rules  func(ctx context.Context, text string) ([]arcjet.GuardRuleInput, error)
 	Actor  func(ctx context.Context, messages []*message.Message) (string, error)
-	// CorrelationId, when set, wins over the ID carried by the context and
+	// CorrelationID, when set, wins over the ID carried by the context and
 	// over the session's stored ID.
-	CorrelationId string
+	CorrelationID string
 	Metadata      arcjet.Metadata
 	OnGuardError  arcjet.OnGuardError
 	// OnDeny, when set, builds the single response update returned on a DENY
@@ -114,7 +114,7 @@ func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message
 	text := userText(messages)
 	policy := arcjet.GuardActionPolicy{
 		Action:        p.Action,
-		CorrelationId: p.CorrelationId,
+		CorrelationID: p.CorrelationID,
 		Metadata:      p.Metadata,
 		OnGuardError:  p.OnGuardError,
 		Resolve: func(ctx context.Context) (arcjet.GuardActionInputs, error) {
@@ -213,12 +213,12 @@ func guardToolOptions(client *arcjet.GuardClient, opts []agent.Option, policy fu
 // context when the context carries none, so every guard and capture in the run
 // joins one Sequence. It never generates an ID.
 //
-// The ID is read from the session's own state under [CorrelationIdStateKey],
+// The ID is read from the session's own state under [CorrelationIDStateKey],
 // where the application put it. Session.ServiceID is deliberately not used: it
 // belongs to the provider, and the OpenAI Responses, AG-UI, A2A and Copilot
 // providers all rewrite it during a run.
 func withSessionCorrelation(ctx context.Context, opts []agent.Option) context.Context {
-	if _, ok := arcjet.CorrelationIdFromContext(ctx); ok {
+	if _, ok := arcjet.CorrelationIDFromContext(ctx); ok {
 		return ctx
 	}
 	session, ok := agent.GetOption(opts, agent.WithSession)
@@ -226,9 +226,9 @@ func withSessionCorrelation(ctx context.Context, opts []agent.Option) context.Co
 		return ctx
 	}
 	var id string
-	found, err := session.Get(CorrelationIdStateKey, &id)
+	found, err := session.Get(CorrelationIDStateKey, &id)
 	if err != nil || !found || id == "" {
 		return ctx
 	}
-	return arcjet.ContextWithCorrelationId(ctx, id)
+	return arcjet.ContextWithCorrelationID(ctx, id)
 }

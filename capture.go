@@ -59,10 +59,10 @@ type CaptureEvent struct {
 	// tense (for example "refund.issued"). Required; an empty action drops
 	// the event, since it records nothing.
 	Action string
-	// CorrelationId is an optional opaque identifier correlating this event
+	// CorrelationID is an optional opaque identifier correlating this event
 	// with other Guard, Protect, and Capture calls in the same workflow.
 	// Never inherited from ambient context.
-	CorrelationId string
+	CorrelationID string
 	// DecisionId is an optional join key referencing the decision this
 	// action relates to (for example a [GuardDecision.ID]).
 	DecisionId string
@@ -207,7 +207,7 @@ func normalizeCaptureEvent(event CaptureEvent, diagnose captureDiagnose) *decide
 
 	return &decidev2.CaptureEvent{
 		OccurredAtUnixMs: occurredAtUnixMs,
-		CorrelationId:    event.CorrelationId,
+		CorrelationId:    event.CorrelationID,
 		DecisionId:       event.DecisionId,
 		Action:           event.Action,
 		MetadataJson:     encoded,
