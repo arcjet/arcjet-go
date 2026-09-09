@@ -2,6 +2,7 @@ package arcjet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"time"
@@ -197,16 +198,13 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 		return zero, &GuardDeniedError{Action: policy.Action, Decision: decision}
 	}
 
-	// Guard separates two error classes. A programmer error, such as a nil
-	// client, an invalid label or a rule that cannot be bound, returns the
-	// zero-value decision alongside its error; runtime degradation always
-	// returns a usable decision. A Resolve hook that fails never reaches
-	// Guard and stays governed by OnGuardError.
-	// Misconfiguration is not an availability
-	// problem, so OnGuardErrorAllow does not cover it: allowing there would
-	// run the action under policy that was never evaluated.
+	// Guard marks a request it could not use with ErrGuardMisconfigured, and
+	// that class is not an availability problem, so OnGuardErrorAllow does
+	// not cover it: allowing there would run the action under policy that was
+	// never evaluated. A Resolve hook that fails never reaches Guard and
+	// stays governed by OnGuardError.
 	hasDecision := decision.ID != "" || decision.Conclusion != ""
-	misconfigured := guardCalled && guardErr != nil && !hasDecision
+	misconfigured := guardCalled && errors.Is(guardErr, ErrGuardMisconfigured)
 
 	degraded := false
 	if guardErr != nil || !decision.IsAllowed() || decision.HasFailedOpen() {

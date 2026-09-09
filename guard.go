@@ -151,9 +151,10 @@ type GuardRequest struct {
 // Guard evaluates bound guard rule inputs.
 //
 // Programmer errors (nil client, invalid label, nil rule, or a rule that
-// cannot be encoded) return the zero-value decision and a non-nil error —
-// callers must handle the error. These are not fail-open: they reflect misuse
-// or misconfiguration, not runtime degradation.
+// cannot be encoded) return the zero-value decision and a non-nil error that
+// wraps [ErrGuardMisconfigured] alongside its specific cause — callers must
+// handle the error. These are not fail-open: they reflect misuse or
+// misconfiguration, not runtime degradation.
 //
 // Runtime degradation — a transport failure reaching the Decide service — is
 // fail-open: the returned decision is a usable ALLOW carrying a synthetic
@@ -164,10 +165,10 @@ type GuardRequest struct {
 // fail-open (synthesized by guardDecisionFromProto), but returns a nil error.
 func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecision, error) {
 	if c == nil {
-		return GuardDecision{}, fmt.Errorf("arcjet: %w", ErrNilClient)
+		return GuardDecision{}, fmt.Errorf("arcjet: %w: %w", ErrGuardMisconfigured, ErrNilClient)
 	}
 	if err := validateGuardLabel(req.Label); err != nil {
-		return GuardDecision{}, err
+		return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 	}
 	start := time.Now()
 	// Metadata keys the SDK could not encode. These are reported to the server as
@@ -178,7 +179,7 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	prepared, err := c.policy.prepare(ctx, req.Label, req.Inputs, false)
 	if err != nil {
 		if errors.Is(err, ErrInvalidPolicyInput) {
-			return GuardDecision{}, err
+			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 		}
 		return withLocalWarnings(guardErrorDecision("REMOTE_POLICY_UNAVAILABLE", "remote Guard policy preparation failed"), warnings), err
 	}
@@ -191,11 +192,11 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	submissions := make([]*decidev2.GuardRuleSubmission, 0, len(req.Rules))
 	for ruleIndex, rule := range req.Rules {
 		if rule == nil {
-			return GuardDecision{}, fmt.Errorf("arcjet: guard request: %w", ErrNilRule)
+			return GuardDecision{}, fmt.Errorf("arcjet: guard request: %w: %w", ErrGuardMisconfigured, ErrNilRule)
 		}
 		wireSub, err := rule.guardSubmission(ctx, c.local)
 		if err != nil {
-			return GuardDecision{}, err
+			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 		}
 		if wireSub.Rule == nil {
 			// No-op rule input (e.g. an analyzer that isn't shipped yet).
@@ -212,11 +213,11 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 
 		data, err := jsonMarshal(wireSub)
 		if err != nil {
-			return GuardDecision{}, err
+			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 		}
 		var sub decidev2.GuardRuleSubmission
 		if err := protojson.Unmarshal(data, &sub); err != nil {
-			return GuardDecision{}, err
+			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 		}
 		submissions = append(submissions, &sub)
 	}
