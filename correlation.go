@@ -9,6 +9,12 @@ type correlationIDContextKey struct{}
 // CorrelationID. Guard and Capture never read it: pass the ID to them
 // explicitly.
 func ContextWithCorrelationID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		// Storing an empty ID would shadow one an outer layer already set,
+		// and every decision below here would silently join no Sequence.
+		// A caller passing through a missing header should change nothing.
+		return ctx
+	}
 	return context.WithValue(ctx, correlationIDContextKey{}, id)
 }
 

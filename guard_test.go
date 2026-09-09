@@ -115,7 +115,7 @@ func (h *testGuardHandler) capturedEvents() []*decidev2.CaptureEvent {
 	return events
 }
 
-func newGuardTestClient(t *testing.T, handler *testGuardHandler) (*GuardClient, func()) {
+func newGuardTestClient(t *testing.T, handler *testGuardHandler) *GuardClient {
 	t.Helper()
 	path, h := decidev2connect.NewDecideServiceHandler(handler)
 	mux := http.NewServeMux()
@@ -128,17 +128,16 @@ func newGuardTestClient(t *testing.T, handler *testGuardHandler) (*GuardClient, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return client, func() {
-		// Close flushes pending capture events and releases the locally
-		// compiled analyzer. Without it both outlive the test binary.
-		_ = client.Close(context.Background())
-	}
+	// Registered here rather than returned: a returned closer was discarded
+	// at most call sites, so the capture worker and any compiled analyzer
+	// outlived the test.
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+	return client
 }
 
 func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {
 	handler := &testGuardHandler{}
-	client, closeServer := newGuardTestClient(t, handler)
-	defer closeServer()
+	client := newGuardTestClient(t, handler)
 
 	limit, err := GuardTokenBucket(GuardTokenBucketOptions{
 		Mode:       ModeLive,
@@ -214,8 +213,7 @@ func TestGuardPolicyOnlyRequestCarriesActorInputsAndCapabilities(t *testing.T) {
 		Id:         "gdec_policy_only",
 		Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
 	}}}
-	client, closeServer := newGuardTestClient(t, handler)
-	defer closeServer()
+	client := newGuardTestClient(t, handler)
 
 	actor := ""
 	decision, err := client.Guard(context.Background(), GuardRequest{
@@ -279,8 +277,7 @@ func TestGuardRefreshesRemotePolicyAndRetriesExactlyOnce(t *testing.T) {
 			}},
 		},
 	}
-	client, closeServer := newGuardTestClient(t, handler)
-	defer closeServer()
+	client := newGuardTestClient(t, handler)
 
 	decision, err := client.Guard(context.Background(), GuardRequest{
 		Label:  "email.sent",
@@ -337,7 +334,7 @@ func TestGuardLiveProjectedSensitiveInfoDenialUsesSanitizedGuardRPC(t *testing.T
 			},
 		}},
 	}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.policy.backend = policySensitiveInfoBackend{}
 
 	customCalls := 0
@@ -405,7 +402,7 @@ func TestGuardRefreshLiveProjectedSensitiveInfoSanitizesRetry(t *testing.T) {
 			{Decision: &decidev2.GuardDecision{Id: "refresh-denial", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY}},
 		},
 	}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.policy.backend = policySensitiveInfoBackend{}
 
 	custom, err := GuardCustom(GuardCustomOptions{Mode: ModeLive, Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
@@ -442,7 +439,7 @@ func TestGuardLiveProjectedSensitiveInfoReportingFailurePreservesDenial(t *testi
 		policyResponses: []*decidev2.GetGuardPolicyResponse{projectedSensitiveInfoPolicy("rev-1", decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE)},
 		errToReturn:     errors.New("offline"),
 	}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.policy.backend = policySensitiveInfoBackend{}
 	decision, err := client.Guard(context.Background(), GuardRequest{Label: "message.send", Inputs: map[string]GuardPolicyInput{"body": GuardPolicyLocalString("user@example.com")}})
 	if err == nil || !decision.IsDenied() || decision.ID != "" || handler.guardCalls != 1 {
@@ -463,7 +460,7 @@ func TestGuardLiveProjectedSensitiveInfoRejectsIncompleteReportingResponse(t *te
 				policyResponses: []*decidev2.GetGuardPolicyResponse{projectedSensitiveInfoPolicy("rev-1", decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE)},
 				resp:            test.resp,
 			}
-			client, _ := newGuardTestClient(t, handler)
+			client := newGuardTestClient(t, handler)
 			client.policy.backend = policySensitiveInfoBackend{}
 			decision, err := client.Guard(context.Background(), GuardRequest{Label: "message.send", Inputs: map[string]GuardPolicyInput{"body": GuardPolicyLocalString("user@example.com")}})
 			if err != nil {
@@ -495,7 +492,7 @@ func TestGuardRefreshLiveProjectedSensitiveInfoRejectsIncompleteReportingRespons
 					test.resp,
 				},
 			}
-			client, _ := newGuardTestClient(t, handler)
+			client := newGuardTestClient(t, handler)
 			client.policy.backend = policySensitiveInfoBackend{}
 			decision, err := client.Guard(context.Background(), GuardRequest{Label: "message.send", Inputs: map[string]GuardPolicyInput{"body": GuardPolicyLocalString("user@example.com")}})
 			if err != nil {
@@ -513,7 +510,7 @@ func TestGuardDryRunProjectedSensitiveInfoContinuesToGuardRPC(t *testing.T) {
 		policyResponses: []*decidev2.GetGuardPolicyResponse{projectedSensitiveInfoPolicy("rev-1", decidev2.GuardRuleMode_GUARD_RULE_MODE_DRY_RUN, decidev2.GuardRuleMode_GUARD_RULE_MODE_DRY_RUN)},
 		resp:            &decidev2.GuardResponse{Decision: &decidev2.GuardDecision{Id: "server", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW}},
 	}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.policy.backend = policySensitiveInfoBackend{}
 
 	customCalls := 0
@@ -554,7 +551,7 @@ func TestGuardRefreshDryRunProjectedSensitiveInfoSanitizesRetry(t *testing.T) {
 			{Decision: &decidev2.GuardDecision{Id: "ordinary-retry", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW}},
 		},
 	}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.policy.backend = policySensitiveInfoBackend{}
 	decision, err := client.Guard(context.Background(), GuardRequest{Label: "message.send", Inputs: map[string]GuardPolicyInput{
 		"body": GuardPolicyLocalString("user@example.com"), "server": GuardPolicyServerString("server-policy-marker"),
@@ -579,7 +576,7 @@ func TestGuardRefreshKeepsInitialDryRunSanitizationSticky(t *testing.T) {
 			{Decision: &decidev2.GuardDecision{Id: "ordinary-retry", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW}},
 		},
 	}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.policy.backend = policySensitiveInfoBackend{}
 	custom, err := GuardCustom(GuardCustomOptions{Mode: ModeLive, Func: func(context.Context, map[string]string) (GuardCustomResult, error) {
 		return GuardCustomResult{Conclusion: ConclusionAllow}, nil
@@ -627,8 +624,7 @@ func TestGuardSensitiveInfoSubmitsLocalResultAndHashedText(t *testing.T) {
 			Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
 		},
 	}}
-	client, closeServer := newGuardTestClient(t, handler)
-	defer closeServer()
+	client := newGuardTestClient(t, handler)
 	defer client.Close(context.Background())
 
 	rule, err := GuardSensitiveInfo(GuardSensitiveInfoOptions{
@@ -691,8 +687,7 @@ func TestGuardSensitiveInfoAllowsWhenNoMatch(t *testing.T) {
 			Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
 		},
 	}}
-	client, closeServer := newGuardTestClient(t, handler)
-	defer closeServer()
+	client := newGuardTestClient(t, handler)
 	defer client.Close(context.Background())
 
 	rule, err := GuardSensitiveInfo(GuardSensitiveInfoOptions{
@@ -724,8 +719,7 @@ func TestGuardSensitiveInfoAllowListSubmitsAllowEntities(t *testing.T) {
 	handler := &testGuardHandler{resp: &decidev2.GuardResponse{
 		Decision: &decidev2.GuardDecision{Id: "gdec_si_allow", Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW},
 	}}
-	client, closeServer := newGuardTestClient(t, handler)
-	defer closeServer()
+	client := newGuardTestClient(t, handler)
 	defer client.Close(context.Background())
 
 	rule, err := GuardSensitiveInfo(GuardSensitiveInfoOptions{
@@ -832,8 +826,7 @@ func TestGuardBuilderValidation(t *testing.T) {
 }
 
 func TestGuardLabelValidation(t *testing.T) {
-	client, closeServer := newGuardTestClient(t, &testGuardHandler{})
-	defer closeServer()
+	client := newGuardTestClient(t, &testGuardHandler{})
 	_, err := client.Guard(context.Background(), GuardRequest{Label: "Tools.Bad"})
 	if !errors.Is(err, ErrInvalidLabel) {
 		t.Fatalf("expected ErrInvalidLabel, got %v", err)
@@ -853,7 +846,7 @@ func TestGuardClientNilReceiver(t *testing.T) {
 }
 
 func TestGuardClientRejectsNilRuleInput(t *testing.T) {
-	client, _ := newGuardTestClient(t, &testGuardHandler{})
+	client := newGuardTestClient(t, &testGuardHandler{})
 	_, err := client.Guard(context.Background(), GuardRequest{
 		Label: "tools.test",
 		Rules: []GuardRuleInput{nil},
@@ -1266,7 +1259,7 @@ func TestGuardSensitiveInfoRejectsConflictingAllowDeny(t *testing.T) {
 // usable fail-open ALLOW decision carrying a synthetic TRANSPORT_ERROR result,
 // so a caller that ignores err still has HasFailedOpen() report true.
 func TestGuardTransportFailureFailsOpenDecision(t *testing.T) {
-	client, _ := newGuardTestClient(t, &testGuardHandler{
+	client := newGuardTestClient(t, &testGuardHandler{
 		errToReturn: connect.NewError(connect.CodeUnavailable, errors.New("upstream down")),
 	})
 	tb, err := GuardTokenBucket(GuardTokenBucketOptions{
@@ -1307,7 +1300,7 @@ func TestGuardTransportFailureFailsOpenDecision(t *testing.T) {
 // NOT fail open, so HasFailedOpen() on the returned (zero) decision is false
 // and the caller must handle err.
 func TestGuardProgrammerErrorsReturnZeroDecision(t *testing.T) {
-	client, _ := newGuardTestClient(t, &testGuardHandler{})
+	client := newGuardTestClient(t, &testGuardHandler{})
 	d, err := client.Guard(context.Background(), GuardRequest{
 		Label: "tools.test",
 		Rules: []GuardRuleInput{nil},

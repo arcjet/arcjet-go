@@ -171,10 +171,24 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 	if fn == nil {
 		return zero, &GuardUnavailableError{Action: policy.Action, Err: ErrNilAction}
 	}
+	if ctx == nil {
+		// A nil context is misconfiguration, and a fail-closed helper must
+		// not panic on it. Denying is better than substituting a background
+		// context, which would run the action with no deadline and no
+		// cancellation the caller can reach.
+		return zero, &GuardUnavailableError{
+			Action: policy.Action,
+			Err:    fmt.Errorf("%w: context is nil", ErrGuardMisconfigured),
+		}
+	}
 	correlationID := policy.CorrelationID
 	if correlationID == "" {
 		correlationID, _ = CorrelationIDFromContext(ctx)
 	}
+	// The action runs under the ID this call resolved, so a nested guard or
+	// capture inside fn joins the same Sequence. A no-op when the context
+	// already carries it.
+	ctx = ContextWithCorrelationID(ctx, correlationID)
 
 	inputs := GuardActionInputs{Actor: policy.Actor, Inputs: policy.Inputs, Rules: policy.Rules}
 	var decision GuardDecision

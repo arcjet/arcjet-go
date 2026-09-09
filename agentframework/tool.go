@@ -73,6 +73,10 @@ func (g *guardedTool) ApprovalRequired() bool {
 	return false
 }
 
+// The wrapper forwards Initialize, Close and ApprovalRequired to the wrapped
+// tool, and [guardedTool.Unwrap] returns that tool. Any other method outside
+// tool.FuncTool is not reachable through the wrapper; take it from Unwrap.
+//
 // Call evaluates the policy, then runs the wrapped tool if allowed. A denial
 // or an unavailable guard is returned as a successful result, not an error,
 // so the model reads it and the run is not aborted: NewGuardDenialResult for
@@ -159,6 +163,34 @@ func isNilValue(v any) bool {
 	default:
 		return false
 	}
+}
+
+// Unwrap returns the tool GuardTool wrapped. A caller that needs a method
+// outside tool.FuncTool, or wants to hand the original to something that
+// type-asserts on its concrete type, reaches it here.
+func (g *guardedTool) Unwrap() tool.FuncTool { return g.FuncTool }
+
+// Initialize forwards to the wrapped tool when it has one, so a tool that
+// sets up state before its first call still gets that call. It is a no-op
+// otherwise: guardedTool cannot know at compile time whether the tool it
+// wraps has this method, so it always offers it.
+func (g *guardedTool) Initialize(ctx context.Context) error {
+	if inner, ok := g.FuncTool.(interface {
+		Initialize(context.Context) error
+	}); ok {
+		return inner.Initialize(ctx)
+	}
+	return nil
+}
+
+// Close forwards to the wrapped tool when it has one. shelltool.Local owns a
+// shell subprocess, and dropping its Close would leak that process for the
+// life of the program. A no-op when the wrapped tool has no Close.
+func (g *guardedTool) Close() error {
+	if inner, ok := g.FuncTool.(interface{ Close() error }); ok {
+		return inner.Close()
+	}
+	return nil
 }
 
 // alreadyGuarded reports whether t was produced by GuardTool.

@@ -186,6 +186,20 @@ Agent-level middleware runs before the framework's tool loop, and tools from
 options, so `MiddlewareConfig.Tools` reaches all of them. A tool already
 wrapped by `GuardTool` is not wrapped again.
 
+That last point has one exception worth knowing. The check relies on a marker
+only a `GuardTool` result carries, and a wrapper that embeds `tool.FuncTool`
+hides it, because Go promotes only that interface's own methods. So
+`tool.ApprovalRequiredFunc(guarded)` reads as unguarded and is guarded a
+second time: one model call then spends two Guard evaluations and two
+rate-limit tokens. Apply `GuardTool` outermost:
+
+```go
+guarded := agentframework.MustGuardTool(client, tool.ApprovalRequiredFunc(t), policy)
+```
+
+`GuardTool` forwards the approval requirement, so wrapping in that order
+keeps the human gate.
+
 Two sources are out of reach, because both add tools after the agent
 middleware chain has run:
 

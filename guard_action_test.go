@@ -75,7 +75,7 @@ func flushedEvents(client *GuardClient, handler *testGuardHandler) []*decidev2.C
 
 func newGuardActionTestClient(t *testing.T, handler *testGuardHandler) *GuardClient {
 	t.Helper()
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.captureBatchDelay = time.Hour // hold events until Flush
 	return client
 }

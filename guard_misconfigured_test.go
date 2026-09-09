@@ -34,7 +34,7 @@ func TestGuardMarksMisconfiguredRequests(t *testing.T) {
 			var client *GuardClient
 			if !tc.nilCl {
 				handler := &testGuardHandler{resp: guardActionAllowResponse()}
-				client, _ = newGuardTestClient(t, handler)
+				client = newGuardTestClient(t, handler)
 			}
 			decision, err := client.Guard(context.Background(), tc.req)
 			if !errors.Is(err, ErrGuardMisconfigured) {
@@ -85,7 +85,7 @@ func TestGuardActionDeniesEveryMisconfiguredClassUnderAllow(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := &testGuardHandler{resp: guardActionAllowResponse()}
-			client, _ := newGuardTestClient(t, handler)
+			client := newGuardTestClient(t, handler)
 			ran := false
 			_, err := GuardAction(context.Background(), client, tc.policy,
 				func(context.Context) (struct{}, error) { ran = true; return struct{}{}, nil })
@@ -107,7 +107,7 @@ func TestGuardActionDeniesEveryMisconfiguredClassUnderAllow(t *testing.T) {
 // marker would have made the helper fail closed on every outage.
 func TestGuardActionStillAllowsOnDegradation(t *testing.T) {
 	handler := &testGuardHandler{errToReturn: errors.New("transport boom")}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	ran := false
 	_, err := GuardAction(context.Background(), client,
 		GuardActionPolicy{Action: "a.b", OnGuardError: OnGuardErrorAllow},

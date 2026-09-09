@@ -1424,6 +1424,10 @@ a remote policy configured for the label still applies. The helper records one
 capture event per call whose metadata `outcome` is `success`, `degraded`,
 `denied`, `error`, or `unavailable`.
 
+`GuardAction` bounds its Guard call with a two second deadline when the
+context carries none, matching `Protect`. A `Resolve` hook runs before that
+deadline is applied, so a hook that blocks is the caller's to bound.
+
 **Fail closed by default.** When policy cannot be evaluated, `GuardAction`
 returns `*GuardUnavailableError` without running the function. That covers a
 transport failure, a deadline, a rule error, a programmer error such as an
@@ -1823,7 +1827,12 @@ if errors.Is(err, arcjet.ErrMissingKey) {
 Available sentinels: `ErrMissingKey`, `ErrNilClient`, `ErrNilRequest`,
 `ErrNilRule`, `ErrInvalidMode`, `ErrAllowDenyConflict`, `ErrInvalidProxy`,
 `ErrInvalidLabel`, `ErrInvalidRateLimit`, `ErrEmptyKey`, `ErrMissingFunc`,
-`ErrInvalidWasm`, `ErrWasmClosed`, `ErrWasmExportNotFound`, `ErrEmptyResponse`.
+`ErrInvalidWasm`, `ErrWasmClosed`, `ErrWasmExportNotFound`, `ErrEmptyResponse`,
+`ErrGuardMisconfigured`, `ErrNilAction`.
+
+`ErrGuardMisconfigured` is joined to the specific cause on a Guard request
+that could not be used at all, so `errors.Is` finds either. `GuardAction`
+denies on that class whatever `OnGuardError` is set to.
 
 Remote and per-rule errors are surfaced as `ArcjetError` values with a `Code`
 field. Match a specific server error code with `errors.Is`:

@@ -1172,7 +1172,7 @@ func guardConclusion(c Conclusion) string {
 	return "GUARD_CONCLUSION_ALLOW"
 }
 
-// ValidateGuardLabel reports whether label is a usable Guard label. A label
+// ValidateGuardLabel returns nil when label is a usable Guard label. A label
 // may hold up to 256 bytes of lowercase letters, digits, dash and dot, and
 // must start and end with a lowercase letter or digit. Errors wrap
 // [ErrInvalidLabel].

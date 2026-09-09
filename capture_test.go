@@ -389,7 +389,7 @@ func TestCaptureDeliverySendFailureIsNotRetried(t *testing.T) {
 
 func TestCaptureInvalidActionNeverPosted(t *testing.T) {
 	handler := &testGuardHandler{}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.Capture(CaptureEvent{})
 	client.Flush(context.Background())
 	if events := handler.capturedEvents(); len(events) != 0 {
@@ -399,7 +399,7 @@ func TestCaptureInvalidActionNeverPosted(t *testing.T) {
 
 func TestGuardClientCaptureFlushDrains(t *testing.T) {
 	handler := &testGuardHandler{}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.captureBatchDelay = time.Hour // would otherwise sit until Flush
 	client.Capture(CaptureEvent{
 		Action:        "refund.issued",
@@ -478,7 +478,7 @@ func TestCapturePostsToCanonicalRoute(t *testing.T) {
 
 func TestCaptureDoesNotAffectGuardDecision(t *testing.T) {
 	handler := &testGuardHandler{captureErr: connect.NewError(connect.CodeUnavailable, errors.New("capture down"))}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.captureBatchDelay = time.Hour
 	client.Capture(CaptureEvent{Action: "refund.issued"})
 	client.Flush(context.Background())
@@ -512,7 +512,7 @@ func TestCaptureNilClientIsNoop(t *testing.T) {
 
 func TestFlushAndCloseNilContext(t *testing.T) {
 	handler := &testGuardHandler{}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.captureBatchDelay = time.Hour
 	client.Capture(CaptureEvent{Action: "refund.issued"})
 	client.Flush(nil) //nolint:staticcheck // nil ctx is the contract under test
@@ -526,7 +526,7 @@ func TestFlushAndCloseNilContext(t *testing.T) {
 
 func TestEnsureDeliveryReusesAndAppliesDefaultDelay(t *testing.T) {
 	handler := &testGuardHandler{}
-	client, _ := newGuardTestClient(t, handler)
+	client := newGuardTestClient(t, handler)
 	client.Capture(CaptureEvent{Action: "refund.issued"})
 	first := client.delivery
 	if first == nil {
@@ -546,7 +546,7 @@ func TestEnsureDeliveryReusesAndAppliesDefaultDelay(t *testing.T) {
 }
 
 func TestSendCaptureEmptyIsNoop(t *testing.T) {
-	client, _ := newGuardTestClient(t, &testGuardHandler{})
+	client := newGuardTestClient(t, &testGuardHandler{})
 	if err := client.sendCapture(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +559,7 @@ func TestReportCaptureDiagnostic(t *testing.T) {
 	var client *GuardClient
 	client.reportCaptureDiagnostic(captureInputInvalidCode, 1)
 
-	live, _ := newGuardTestClient(t, &testGuardHandler{})
+	live := newGuardTestClient(t, &testGuardHandler{})
 	diag := &recordingDiagnose{}
 	live.diagnose = diag.report
 	live.Capture(CaptureEvent{})

@@ -55,8 +55,8 @@ release:
 | `tools/`                   | Pinned tooling (golangci-lint)                                                     | Tidy-checked                             |
 | `sensitiveinfo/rampart/`   | Optional on-device NER sensitive-info backend (~15 MB embedded model weights)      | Yes (build, test, lint, tidy)            |
 | `agentframework/`          | Microsoft Agent Framework for Go integration (Go 1.26; tracks a preview framework) | Yes (its own CI job on Go 1.26)          |
-| `examples/nethttp/`        | Runnable example server                                                            | Tidy-checked; build and lint it manually |
-| `examples/agentframework/` | Runnable Microsoft Agent Framework example                                         | Tidy-checked; build and lint it manually |
+| `examples/nethttp/`        | Runnable example server                                                            | Tidy-checked; compiled in the Lint job   |
+| `examples/agentframework/` | Runnable Microsoft Agent Framework example                                         | Tidy-checked; compiled in the 1.26 job   |
 
 The `agentframework` module needs Go 1.26 and has its own CI job; the `just`
 recipes cover it, and running them on a Go 1.25 machine downloads the 1.26

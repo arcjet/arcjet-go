@@ -86,9 +86,14 @@ func run() error {
 			return agentframework.ToolPolicy{
 				Action: "order.looked-up",
 				Actor:  actor,
-				Rules: agentframework.Args(func(context.Context, orderArgs) ([]arcjet.GuardRuleInput, error) {
+				// Keyed on the authenticated user, not on anything in the
+				// tool's arguments: a limit keyed on a value the model
+				// supplies is one the model can evade by varying it.
+				// agentframework.Args decodes the typed arguments when a
+				// policy does need them.
+				Rules: func(context.Context, json.RawMessage) ([]arcjet.GuardRuleInput, error) {
 					return []arcjet.GuardRuleInput{lookupLimit.Key(userID, 1)}, nil
-				}),
+				},
 				// A lookup is safe to allow if Arcjet cannot be reached.
 				OnGuardError: arcjet.OnGuardErrorAllow,
 				Metadata:     arcjet.SecurityMetadata{User: userID, Reversibility: "reversible"}.Metadata(),
@@ -97,9 +102,9 @@ func run() error {
 			return agentframework.ToolPolicy{
 				Action: "refund.issued",
 				Actor:  actor,
-				Rules: agentframework.Args(func(_ context.Context, in orderArgs) ([]arcjet.GuardRuleInput, error) {
+				Rules: func(context.Context, json.RawMessage) ([]arcjet.GuardRuleInput, error) {
 					return []arcjet.GuardRuleInput{refundLimit.Key(userID, 1)}, nil
-				}),
+				},
 				// Default: fail closed. A refund must not run unjudged.
 				Metadata: arcjet.SecurityMetadata{User: userID, Reversibility: "irreversible"}.Metadata(),
 			}, true

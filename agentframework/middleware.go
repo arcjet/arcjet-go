@@ -55,7 +55,9 @@ type MiddlewareConfig struct {
 	// Tools picks a policy for each tool the run can see, whether it came
 	// from agent.Config.Tools or from a per-run agent.WithTool option. It is
 	// applied through GuardTools, so tools it declines, non-function tools,
-	// and tools already wrapped by GuardTool pass through unchanged.
+	// and tools already wrapped by GuardTool pass through unchanged, unless
+	// a wrapper such as tool.ApprovalRequiredFunc hides the marker; see
+	// GuardTools.
 	Tools func(tool.Tool) (ToolPolicy, bool)
 	// Inbound screens the run's user text before the provider is called.
 	Inbound *InboundPolicy
@@ -75,6 +77,11 @@ type guardMiddleware struct {
 // the context has none; screens the user text when Inbound is set, ending
 // the run with one assistant update on a denial or an unavailable guard;
 // and replaces each tool option with its guarded form when Tools is set.
+//
+// A blocked inbound turn returns without calling next, so the agent's
+// history and context providers do not see that turn or the refusal: they
+// run inside the invoke this middleware wraps. Screening cannot both stop
+// the provider being called and still run the work that happens beneath it.
 //
 // Two sources of tools are out of its reach. A ContextProvider may append
 // agent.WithTool from its Invoking hook, which runs inside the agent's own
@@ -97,25 +104,32 @@ func GuardMiddleware(client *arcjet.GuardClient, cfg MiddlewareConfig) (agent.Mi
 }
 
 func (m *guardMiddleware) Run(next agent.RunFunc, ctx context.Context, messages []*message.Message, opts ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
-	ctx = withSessionCorrelation(ctx, opts)
-	if m.cfg.Inbound != nil {
-		if update, blocked := m.screenInbound(ctx, messages); blocked {
-			return singleUpdate(update, nil)
-		}
-	}
-	if m.cfg.Tools != nil {
-		guarded, err := guardToolOptions(m.client, opts, m.cfg.Tools)
-		if err != nil {
-			return singleUpdate(nil, err)
-		}
-		opts = guarded
-	}
-	return next(ctx, messages, opts...)
-}
-
-func singleUpdate(update *agent.ResponseUpdate, err error) iter.Seq2[*agent.ResponseUpdate, error] {
+	// Everything happens inside the returned sequence, as the framework's own
+	// middleware does. Screening eagerly would spend a Guard decision when a
+	// caller builds a stream and never reads it, and would move where the
+	// call blocks depending on which middleware sit either side.
 	return func(yield func(*agent.ResponseUpdate, error) bool) {
-		yield(update, err)
+		ctx := withSessionCorrelation(ctx, opts)
+		if m.cfg.Inbound != nil {
+			if update, blocked := m.screenInbound(ctx, messages); blocked {
+				yield(update, nil)
+				return
+			}
+		}
+		opts := opts
+		if m.cfg.Tools != nil {
+			guarded, err := guardToolOptions(m.client, opts, m.cfg.Tools)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			opts = guarded
+		}
+		for update, err := range next(ctx, messages, opts...) {
+			if !yield(update, err) {
+				return
+			}
+		}
 	}
 }
 
