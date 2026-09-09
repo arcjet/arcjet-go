@@ -81,7 +81,17 @@ type GuardActionPolicy struct {
 type GuardDeniedError struct {
 	Action   string
 	Decision GuardDecision
+	// Err is set when the decision was reached but something around it
+	// failed, such as a locally enforced denial whose report to the server
+	// did not send. The denial stands; Err says what else went wrong, so a
+	// caller can alert on the lost telemetry rather than never learning of
+	// it. Nil in the ordinary case.
+	Err error
 }
+
+// Unwrap returns [GuardDeniedError.Err], so errors.Is and errors.As reach a
+// failure that accompanied the denial.
+func (e *GuardDeniedError) Unwrap() error { return e.Err }
 
 // Error implements error.
 func (e *GuardDeniedError) Error() string {
@@ -131,7 +141,7 @@ func captureGuardOutcome(client *GuardClient, policy GuardActionPolicy, correlat
 	client.Capture(CaptureEvent{
 		Action:        policy.Action,
 		CorrelationID: correlationID,
-		DecisionId:    decisionID,
+		DecisionID:    decisionID,
 		Metadata:      md,
 	})
 }
@@ -195,7 +205,7 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 	// (a locally enforced denial whose reporting failed), so it wins.
 	if decision.IsDenied() {
 		captureGuardOutcome(client, policy, correlationID, decision.ID, guardOutcomeDenied)
-		return zero, &GuardDeniedError{Action: policy.Action, Decision: decision}
+		return zero, &GuardDeniedError{Action: policy.Action, Decision: decision, Err: guardErr}
 	}
 
 	// Guard marks a request it could not use with ErrGuardMisconfigured, and

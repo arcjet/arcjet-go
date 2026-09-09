@@ -63,9 +63,9 @@ type CaptureEvent struct {
 	// with other Guard, Protect, and Capture calls in the same workflow.
 	// Never inherited from ambient context.
 	CorrelationID string
-	// DecisionId is an optional join key referencing the decision this
+	// DecisionID is an optional join key referencing the decision this
 	// action relates to (for example a [GuardDecision.ID]).
-	DecisionId string
+	DecisionID string
 	// Metadata is optional nested-JSON metadata. The same shape and limits
 	// as [GuardRequest.Metadata] apply. Encoding failures drop individual
 	// keys and travel with the event as local_warnings.
@@ -208,7 +208,7 @@ func normalizeCaptureEvent(event CaptureEvent, diagnose captureDiagnose) *decide
 	return &decidev2.CaptureEvent{
 		OccurredAtUnixMs: occurredAtUnixMs,
 		CorrelationId:    event.CorrelationID,
-		DecisionId:       event.DecisionId,
+		DecisionId:       event.DecisionID,
 		Action:           event.Action,
 		MetadataJson:     encoded,
 		LocalWarnings:    warningsToProtoV2(warnings),

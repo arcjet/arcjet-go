@@ -33,14 +33,24 @@ func NewGuardDenialResult(d GuardDecision) GuardDenialResult {
 
 func newGuardDenialResultAt(d GuardDecision, now time.Time) GuardDenialResult {
 	reason := string(d.Reason)
+	if reason == "" {
+		// A reason this SDK does not map, including the proto's UNSPECIFIED.
+		// The model is handed this verbatim inside a sentence, so it must
+		// never be blank.
+		reason = string(ReasonUnknownName)
+	}
 	result := GuardDenialResult{ArcjetDenied: true, Reason: reason}
-	if d.Reason != ReasonRateLimit {
+	// Retryability follows the results, not the decision's reason: a denying
+	// rate-limit result carries a reset even when the reason did not map, and
+	// telling the model not to retry a call it could make in thirty seconds
+	// is worse than saying nothing.
+	secs, hasReset := guardRetryAfterSeconds(d, now)
+	if d.Reason != ReasonRateLimit && !hasReset {
 		result.Message = fmt.Sprintf("Arcjet denied this call (%s). Do not retry; explain the denial to the user or try a different approach.", reason)
 		return result
 	}
 	result.Retryable = true
-	secs, ok := guardRetryAfterSeconds(d, now)
-	if !ok {
+	if !hasReset {
 		result.Message = fmt.Sprintf("Arcjet denied this call (%s). It may be retried later.", reason)
 		return result
 	}

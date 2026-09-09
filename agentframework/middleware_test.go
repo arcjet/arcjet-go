@@ -392,8 +392,13 @@ func TestGuardMiddlewareContextCorrelationWinsOverSession(t *testing.T) {
 	client := newTestClient(t, decide)
 	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: inboundPolicy(t)})
 	a := newAgent(&scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("ok")}}}, agent.Config{Middlewares: []agent.Middleware{mw}})
-	session, _ := a.CreateSession(t.Context())
-	session.SetServiceID("thread_123")
+	session, err := a.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The session must actually carry an ID, or this proves nothing: the
+	// middleware reads session state, not the service ID.
+	session.Set(CorrelationIDStateKey, "conversation_123")
 	ctx := arcjet.ContextWithCorrelationID(t.Context(), "req_9")
 	if _, err := a.RunText(ctx, "hi", agent.WithSession(session)).Collect(); err != nil {
 		t.Fatal(err)

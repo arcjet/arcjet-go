@@ -124,11 +124,12 @@ func singleUpdate(update *agent.ResponseUpdate, err error) iter.Seq2[*agent.Resp
 func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message.Message) (*agent.ResponseUpdate, bool) {
 	p := m.cfg.Inbound
 	text := userText(messages)
-	if text == "" {
-		// Nothing to screen. A turn can legitimately carry no user text, for
-		// example the approval response the toolapproval middleware builds,
-		// and guarding it would spend a decision on an empty string while
-		// letting an outage block a call a person has already approved.
+	if !hasUserContent(messages) {
+		// An approval turn carries only a person's answer to a call that was
+		// already screened, so guarding it again spends a decision and lets
+		// an outage block a call a person has approved. Any other turn is
+		// screened even when text is empty: the policy still runs, and a turn
+		// whose payload this cannot read as text must not pass unevaluated.
 		return nil, false
 	}
 	policy := arcjet.GuardActionPolicy{
@@ -163,6 +164,11 @@ func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message
 	if err == nil {
 		return nil, false
 	}
+	// Unavailable is tested first: its Err may hold a *GuardDeniedError from a
+	// nested guard on another action, and this action's policy never ran.
+	if unavailable, ok := errors.AsType[*arcjet.GuardUnavailableError](err); ok && unavailable != nil {
+		return assistantText(arcjet.NewGuardUnavailableResult().Message), true
+	}
 	if denied, ok := errors.AsType[*arcjet.GuardDeniedError](err); ok {
 		if p.OnDeny != nil {
 			if update := p.OnDeny(denied.Decision); update != nil {
@@ -173,6 +179,30 @@ func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message
 	}
 	// *arcjet.GuardUnavailableError, or any other failure: block.
 	return assistantText(arcjet.NewGuardUnavailableResult().Message), true
+}
+
+// hasUserContent reports whether the run's user-role messages carry anything
+// worth evaluating. A turn holding only tool-approval content is the
+// framework relaying a person's answer, not a new user message.
+//
+// Content this cannot read as text, such as a document carried as
+// message.DataContent, still counts: [userText] returns nothing for it, but
+// the policy must run so the turn is not admitted unevaluated.
+func hasUserContent(messages []*message.Message) bool {
+	for _, msg := range messages {
+		if msg == nil || msg.Role != message.RoleUser {
+			continue
+		}
+		for _, content := range msg.Contents {
+			switch content.(type) {
+			case *message.ToolApprovalRequestContent, *message.ToolApprovalResponseContent:
+				continue
+			default:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // userText joins the text of the run's user-role messages with newlines.

@@ -149,6 +149,11 @@ message as assistant text. Set `OnGuardError: arcjet.OnGuardErrorAllow` on a
 policy to run anyway; the capture outcome is then `degraded`. A `DENY` always
 blocks.
 
+`OnGuardErrorAllow` covers availability only. A request Arcjet could not use
+at all, such as an invalid `Action` or a rule whose key is empty, is denied
+whatever `OnGuardError` is set to: the alternative is running the tool under
+policy that never ran. Those errors wrap `arcjet.ErrGuardMisconfigured`.
+
 ## Correlation
 
 Put an ID you already have on the context before `Run`:

@@ -79,7 +79,7 @@ func TestNormalizeCaptureOptionalFields(t *testing.T) {
 	event := normalizeCaptureEvent(CaptureEvent{
 		Action:        "refund.issued",
 		CorrelationID: "workflow_123",
-		DecisionId:    "gdec_abc",
+		DecisionID:    "gdec_abc",
 		OccurredAt:    occurred,
 		Metadata: Metadata{
 			"invoice":  map[string]any{"id": "inv_123"},
@@ -404,7 +404,7 @@ func TestGuardClientCaptureFlushDrains(t *testing.T) {
 	client.Capture(CaptureEvent{
 		Action:        "refund.issued",
 		CorrelationID: "wf_1",
-		DecisionId:    "gdec_1",
+		DecisionID:    "gdec_1",
 		Metadata:      Metadata{"invoice": "inv_123"},
 	})
 	if events := handler.capturedEvents(); len(events) != 0 {

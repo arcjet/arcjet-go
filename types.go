@@ -101,6 +101,10 @@ func (c Conclusion) LogValue() slog.Value { return slog.StringValue(string(c)) }
 type ReasonType string
 
 const (
+	// ReasonUnknownName is what a denial payload renders when the decision's
+	// reason did not map to a known value. [ReasonUnknown] is the empty
+	// string, which must never reach a model inside a sentence.
+	ReasonUnknownName ReasonType = "UNKNOWN"
 	// ReasonUnknown is used when a response does not include a known reason.
 	ReasonUnknown ReasonType = ""
 	// ReasonRateLimit means a rate limit rule determined the result.

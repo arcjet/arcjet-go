@@ -45,6 +45,11 @@ func GuardTools(client *arcjet.GuardClient, tools []tool.Tool, policy func(tool.
 			out = append(out, t)
 			continue
 		}
+		// Reject before the policy function runs: it is documented as the
+		// place to switch on t.Name(), which panics on a typed nil.
+		if isNilValue(t) {
+			return nil, errNilTool
+		}
 		p, ok := policy(t)
 		if !ok {
 			out = append(out, t)

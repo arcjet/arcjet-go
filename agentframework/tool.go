@@ -78,12 +78,14 @@ func (g *guardedTool) ApprovalRequired() bool {
 // so the model reads it and the run is not aborted: NewGuardDenialResult for
 // a denial, or NewGuardUnavailableResult for an unavailable guard, unless
 // ToolPolicy.OnDeny is set, in which case a denial returns whatever OnDeny
-// produces instead. An error from the wrapped tool passes through unchanged,
-// unless the tool returns one of Arcjet's own denial or unavailable error
-// types, which a tool that calls arcjet.GuardAction in its own body can do;
-// such an error is converted into a result the same way. A tool already
-// wrapped by GuardTool never reaches this case, because it converts its own
-// denial to a result before returning.
+// produces instead.
+//
+// An error from the wrapped tool passes through unchanged, including one of
+// Arcjet's own error types, which a tool that calls arcjet.GuardAction in its
+// own body can return. Only this wrapper's own decision is converted: once
+// the tool has run, its effect has happened, and reporting a nested guard's
+// denial as this call being blocked would tell the model to retry something
+// that already took effect.
 func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 	raw := json.RawMessage(args)
 	p := g.policy
@@ -127,17 +129,36 @@ func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 	switch {
 	case ran:
 		return out, err
+	// Unavailable is tested first: its Err may hold a *GuardDeniedError from
+	// a nested guard on another action, and this action's policy never ran.
+	case errors.As(err, &unavailable):
+		return arcjet.NewGuardUnavailableResult(), nil
 	case errors.As(err, &denied):
 		if p.OnDeny != nil {
-			if out := p.OnDeny(denied.Decision); out != nil {
+			if out := p.OnDeny(denied.Decision); !isNilValue(out) {
 				return out, nil
 			}
 		}
 		return arcjet.NewGuardDenialResult(denied.Decision), nil
-	case errors.As(err, &unavailable):
-		return arcjet.NewGuardUnavailableResult(), nil
 	}
 	return out, err
+}
+
+// isNilValue reports whether v is nil or a nil pointer, map, slice, func or
+// channel held in a non-nil interface. A typed nil is not equal to nil, so
+// the plain comparison misses it, and letting one through turns a denial
+// into a null result or a wrapper around nothing.
+func isNilValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
 
 // alreadyGuarded reports whether t was produced by GuardTool.
@@ -164,9 +185,7 @@ func GuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolicy) (
 	if client == nil {
 		return nil, errNilClient
 	}
-	// A typed nil, such as (*myTool)(nil) held in a tool.FuncTool, is not
-	// equal to nil, so compare the underlying value too.
-	if t == nil || reflect.ValueOf(t).Kind() == reflect.Pointer && reflect.ValueOf(t).IsNil() {
+	if isNilValue(t) {
 		return nil, errNilTool
 	}
 	if err := validateAction(policy.Action); err != nil {

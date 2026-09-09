@@ -1428,8 +1428,15 @@ capture event per call whose metadata `outcome` is `success`, `degraded`,
 returns `*GuardUnavailableError` without running the function. That covers a
 transport failure, a deadline, a rule error, a programmer error such as an
 invalid label, a decision that failed open, and any decision that is not a
-clean `ALLOW`, including a conclusion this SDK does not recognise. Set
-`OnGuardError: arcjet.OnGuardErrorAllow` to run it anyway; the capture
+clean `ALLOW`, including a conclusion this SDK does not recognise.
+
+`OnGuardError: arcjet.OnGuardErrorAllow` runs the function anyway, but it
+covers availability only. A request `Guard` could not use at all — a nil
+client, an invalid label, a nil or unbindable rule, an invalid policy input,
+or a request that cannot be encoded — is denied whatever `OnGuardError` is
+set to, because the action would otherwise run under policy that never ran.
+Those errors wrap `ErrGuardMisconfigured` alongside their specific cause. The
+capture
 outcome is then `degraded`. A `DENY` always blocks and returns
 `*GuardDeniedError`, whatever the setting. The two errors are distinct on
 purpose: a denial is a completed decision; an unavailable evaluation is one
@@ -1487,7 +1494,7 @@ visibility data, never security decisions — they do not affect `Guard` or
 guard.Capture(arcjet.CaptureEvent{
 	Action:        "refund.issued", // resource.verb, past tense
 	CorrelationID: runID,
-	DecisionId:    decision.ID,
+	DecisionID:    decision.ID,
 	Metadata: arcjet.Metadata{
 		"invoice":  map[string]any{"id": "inv_123", "amount": 4200},
 		"refunded": true,
@@ -1497,7 +1504,7 @@ guard.Capture(arcjet.CaptureEvent{
 
 `Action` is required. Convention is `"resource.verb"` in the past tense
 (for example `"refund.issued"`). An empty action drops the event. Optional
-fields: `CorrelationID`, `DecisionId`, `Metadata`, and `OccurredAt` (zero
+fields: `CorrelationID`, `DecisionID`, `Metadata`, and `OccurredAt` (zero
 means now). Every event is sent with source `"sdk"`.
 
 Capture is best-effort and never blocks or returns an error. The SDK keeps a
