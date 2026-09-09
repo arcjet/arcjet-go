@@ -63,7 +63,6 @@ jobs:
           go -C tools mod tidy
           go -C sensitiveinfo/rampart mod tidy
           go -C examples/nethttp mod tidy
-          go -C examples/agentframework mod tidy
           files=(
             go.mod
             go.sum
@@ -73,8 +72,6 @@ jobs:
             sensitiveinfo/rampart/go.sum
             examples/nethttp/go.mod
             examples/nethttp/go.sum
-            examples/agentframework/go.mod
-            examples/agentframework/go.sum
           )
           if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
             echo "::error::go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes."
@@ -100,13 +97,14 @@ jobs:
           go tool -modfile=tools/go.mod govulncheck ./...
           go -C sensitiveinfo/rampart tool -modfile="${{ github.workspace }}/tools/go.mod" govulncheck ./...
 
-      - name: Compile the examples
-        # The examples are their own modules and nothing else in CI builds
-        # them, so a rename in the SDK could break them with every other job
+      - name: Compile the nethttp example
+        # The examples are their own modules and nothing else in CI built
+        # them, so a rename in the SDK could break one with every other job
         # green. `test` compiles without leaving a binary in the worktree.
-        run: |
-          go -C examples/nethttp test ./...
-          go -C examples/agentframework test ./...
+        # The agentframework example needs Go 1.26 and is covered by that
+        # module's own job instead, because this job pins GOTOOLCHAIN=local
+        # at the 1.25 compatibility floor.
+        run: go -C examples/nethttp test ./...
 
   test:
     name: Test
@@ -207,9 +205,16 @@ jobs:
       - name: Verify go.mod is tidy
         run: |
           go -C agentframework mod tidy
-          if [[ -n "$(git status --porcelain -- agentframework/go.mod agentframework/go.sum)" ]]; then
-            echo "::error::agentframework/go.mod / go.sum are not tidy. Run 'go -C agentframework mod tidy' and commit the changes."
-            git --no-pager diff -- agentframework/go.mod agentframework/go.sum
+          go -C examples/agentframework mod tidy
+          files=(
+            agentframework/go.mod
+            agentframework/go.sum
+            examples/agentframework/go.mod
+            examples/agentframework/go.sum
+          )
+          if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
+            echo "::error::go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes."
+            git --no-pager diff -- "${files[@]}"
             exit 1
           fi
 
@@ -225,3 +230,8 @@ jobs:
 
       - name: Test
         run: go -C agentframework test -race -shuffle=on ./...
+
+      - name: Compile the agentframework example
+        # Its own module, on the same Go 1.26 floor as the module it
+        # exercises. `test` compiles without leaving a binary behind.
+        run: go -C examples/agentframework test ./...
