@@ -201,7 +201,7 @@ type lookupArgs struct {
 }
 
 // newLookupTool returns a typed function tool and a counter of its calls.
-// newLookupTool returns a tool and a counter of its calls. The counter is
+// The counter is
 // atomic because the handler runs on the MCP server's goroutine in the
 // round-trip test while the test goroutine reads it.
 func newLookupTool(t *testing.T) (tool.FuncTool, *atomic.Int64) {

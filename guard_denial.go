@@ -63,6 +63,8 @@ func newGuardDenialResultAt(d GuardDecision, now time.Time) GuardDenialResult {
 // any window the SDK offers.
 const maxRetryAfterSeconds = 24 * 60 * 60
 
+// guardRetryAfterSeconds returns whole seconds until the caller may retry,
+// and reports false when no denying result carries a reset.
 func guardRetryAfterSeconds(d GuardDecision, now time.Time) (int, bool) {
 	var latest int64
 	found := false

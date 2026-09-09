@@ -76,12 +76,14 @@ type guardMiddleware struct {
 // the run with one assistant update on a denial or an unavailable guard;
 // and replaces each tool option with its guarded form when Tools is set.
 //
-// Two sources of tools are out of its reach, because both arrive after the
-// agent middleware chain has run. A ContextProvider may append
-// agent.WithTool from its Invoking hook, and
+// Two sources of tools are out of its reach. A ContextProvider may append
+// agent.WithTool from its Invoking hook, which runs inside the agent's own
+// invoke, after this middleware; only a provider-level middleware would see
+// those, and the bundled provider constructors do not expose that seam.
 // toolautocall.Config.AdditionalTools are merged straight into the callable
-// set without ever becoming an option. Tools from either source run
-// unguarded unless the application wraps them with GuardTool itself.
+// set without ever becoming an option, so no middleware at any layer sees
+// them. Tools from either source run unguarded unless the application wraps
+// them with GuardTool itself.
 func GuardMiddleware(client *arcjet.GuardClient, cfg MiddlewareConfig) (agent.Middleware, error) {
 	if client == nil {
 		return nil, errNilClient
@@ -173,8 +175,8 @@ func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message
 	return assistantText(arcjet.NewGuardUnavailableResult().Message), true
 }
 
-// userText joins the text of the user-role messages with newlines.
-// userText concatenates the text of the run's user-role messages. Non-text
+// userText joins the text of the run's user-role messages with newlines.
+// Non-text
 // content, such as a document carried as message.DataContent, has no text
 // form and is not screened here.
 func userText(messages []*message.Message) string {

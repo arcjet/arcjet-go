@@ -26,7 +26,7 @@ func validateAction(action string) error {
 }
 
 var (
-	errNilClient     = errors.New("agentframework: guard client is nil")
+	errNilClient     = fmt.Errorf("agentframework: guard client: %w", arcjet.ErrNilClient)
 	errNilTool       = errors.New("agentframework: tool is nil")
 	errMissingAction = errors.New("agentframework: policy Action is required")
 	errNilPolicyFunc = errors.New("agentframework: policy function is nil")
@@ -52,13 +52,6 @@ type ToolPolicy struct {
 	OnDeny func(arcjet.GuardDecision) any
 }
 
-// ArcjetGuarded reports that a tool is already wrapped by GuardTool.
-// GuardTools and GuardMiddleware skip such a tool, so composing them costs
-// one evaluation per call. It is exported so the marker survives a wrapper
-// that embeds tool.FuncTool, such as tool.ApprovalRequiredFunc: an
-// unexported method is not promoted to another package's method set.
-type ArcjetGuarded interface{ ArcjetGuarded() bool }
-
 // guardedMarker identifies a tool already wrapped by GuardTool so a later
 // wrapping pass can tell it apart from a bare tool.
 type guardedMarker interface{ arcjetGuarded() }
@@ -70,9 +63,6 @@ type guardedTool struct {
 }
 
 func (g *guardedTool) arcjetGuarded() {}
-
-// ArcjetGuarded implements [ArcjetGuarded].
-func (g *guardedTool) ArcjetGuarded() bool { return true }
 
 // ApprovalRequired delegates to the wrapped tool so a human approval gate
 // survives wrapping. A tool without one reports false.
@@ -150,17 +140,16 @@ func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 	return out, err
 }
 
-// alreadyGuarded reports whether t is, or wraps, a tool GuardTool produced.
-// It accepts both the unexported marker and the exported one, so a tool
-// hidden behind an embedding wrapper is still recognised.
+// alreadyGuarded reports whether t was produced by GuardTool.
+//
+// A tool hidden inside a wrapper that embeds tool.FuncTool, such as
+// tool.ApprovalRequiredFunc, cannot be recognised: Go promotes only the
+// methods of the embedded field's own interface type, so no marker of any
+// visibility reaches the outer value. Apply GuardTool outermost, as its own
+// documentation says, or the tool is guarded twice.
 func alreadyGuarded(t tool.Tool) bool {
-	if _, ok := t.(guardedMarker); ok {
-		return true
-	}
-	if g, ok := t.(ArcjetGuarded); ok {
-		return g.ArcjetGuarded()
-	}
-	return false
+	_, ok := t.(guardedMarker)
+	return ok
 }
 
 // GuardTool wraps t so every call is evaluated by Arcjet first. The result
@@ -201,6 +190,12 @@ func MustGuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolic
 // arguments object itself; any other input type arrives wrapped in a
 // single-property object. The wrapped form must carry exactly one property;
 // zero or more than one fails the call closed.
+//
+// Decoding uses encoding/json, not the framework's own decoder, which is
+// unexported. Schema defaults are therefore not applied: a field the tool's
+// schema defaults arrives here as its zero value while the tool's handler
+// sees the default. Key a policy on a value the caller supplies rather than
+// one the schema fills in.
 func Args[In any](fn func(context.Context, In) ([]arcjet.GuardRuleInput, error)) func(context.Context, json.RawMessage) ([]arcjet.GuardRuleInput, error) {
 	return func(ctx context.Context, raw json.RawMessage) ([]arcjet.GuardRuleInput, error) {
 		in, err := decodeArgs[In](raw)

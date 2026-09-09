@@ -205,7 +205,8 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 	// Misconfiguration is not an availability
 	// problem, so OnGuardErrorAllow does not cover it: allowing there would
 	// run the action under policy that was never evaluated.
-	misconfigured := guardCalled && guardErr != nil && decision.ID == "" && decision.Conclusion == ""
+	hasDecision := decision.ID != "" || decision.Conclusion != ""
+	misconfigured := guardCalled && guardErr != nil && !hasDecision
 
 	degraded := false
 	if guardErr != nil || !decision.IsAllowed() || decision.HasFailedOpen() {
@@ -216,7 +217,7 @@ func GuardAction[T any](ctx context.Context, client *GuardClient, policy GuardAc
 			// invalid label) also reaches client.Guard but returns the
 			// zero-value decision, which is not a decision to report. Require
 			// the decision to carry an ID or a conclusion too.
-			if guardCalled && (decision.ID != "" || decision.Conclusion != "") {
+			if guardCalled && hasDecision {
 				d := decision
 				unavailable.Decision = &d
 			}
