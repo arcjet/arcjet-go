@@ -24,12 +24,15 @@ var (
 // the tool call's raw JSON arguments; a resolver error counts as unevaluated
 // policy and follows OnGuardError.
 type ToolPolicy struct {
-	Action       string
-	Actor        func(ctx context.Context, args json.RawMessage) (string, error)
-	Inputs       func(ctx context.Context, args json.RawMessage) (map[string]arcjet.GuardPolicyInput, error)
-	Rules        func(ctx context.Context, args json.RawMessage) ([]arcjet.GuardRuleInput, error)
-	Metadata     arcjet.Metadata
-	OnGuardError arcjet.OnGuardError
+	Action string
+	Actor  func(ctx context.Context, args json.RawMessage) (string, error)
+	Inputs func(ctx context.Context, args json.RawMessage) (map[string]arcjet.GuardPolicyInput, error)
+	Rules  func(ctx context.Context, args json.RawMessage) ([]arcjet.GuardRuleInput, error)
+	// CorrelationId, when set, wins over the ID carried by the context and
+	// over the session's stored ID.
+	CorrelationId string
+	Metadata      arcjet.Metadata
+	OnGuardError  arcjet.OnGuardError
 	// OnDeny, when set, replaces the arcjet.GuardDenialResult returned to the
 	// model on a DENY decision. It is not called when the guard is
 	// unavailable; that path always returns arcjet.NewGuardUnavailableResult.
@@ -72,9 +75,10 @@ func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 	raw := json.RawMessage(args)
 	p := g.policy
 	policy := arcjet.GuardActionPolicy{
-		Action:       p.Action,
-		Metadata:     p.Metadata,
-		OnGuardError: p.OnGuardError,
+		Action:        p.Action,
+		CorrelationId: p.CorrelationId,
+		Metadata:      p.Metadata,
+		OnGuardError:  p.OnGuardError,
 		Resolve: func(ctx context.Context) (arcjet.GuardActionInputs, error) {
 			var in arcjet.GuardActionInputs
 			var err error

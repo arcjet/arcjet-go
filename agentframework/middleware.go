@@ -14,15 +14,28 @@ import (
 	"github.com/arcjet/arcjet-go"
 )
 
+// CorrelationIdStateKey is the [agent.Session] state key GuardMiddleware
+// reads a correlation ID from when the context carries none. Set it once,
+// with an ID the application already has:
+//
+//	session.Set(agentframework.CorrelationIdStateKey, conversationID)
+//
+// Session state is serialized with the session, so the ID survives a session
+// that is persisted and restored. Nothing here generates an ID.
+const CorrelationIdStateKey = "arcjet.correlationId"
+
 // InboundPolicy screens the user text of a run before the provider is
 // called. Rules receives the concatenated text of the run's user-role
 // messages. Actor receives the messages themselves.
 type InboundPolicy struct {
-	Action       string
-	Rules        func(ctx context.Context, text string) ([]arcjet.GuardRuleInput, error)
-	Actor        func(ctx context.Context, messages []*message.Message) (string, error)
-	Metadata     arcjet.Metadata
-	OnGuardError arcjet.OnGuardError
+	Action string
+	Rules  func(ctx context.Context, text string) ([]arcjet.GuardRuleInput, error)
+	Actor  func(ctx context.Context, messages []*message.Message) (string, error)
+	// CorrelationId, when set, wins over the ID carried by the context and
+	// over the session's stored ID.
+	CorrelationId string
+	Metadata      arcjet.Metadata
+	OnGuardError  arcjet.OnGuardError
 	// OnDeny, when set, builds the single response update returned on a DENY
 	// decision. By default the update is assistant text carrying the
 	// arcjet.GuardDenialResult message. It is not called when the guard is
@@ -54,8 +67,8 @@ type guardMiddleware struct {
 // before the provider-owned tool loop, so it sees only the new turn's
 // messages and every tool as a run option.
 //
-// Per run it: puts the session's service ID on the context as the
-// correlation ID when the context has none; screens the user text when
+// Per run it: puts the session's stored correlation ID on the context when
+// the context has none; screens the user text when
 // Inbound is set, ending the run with one assistant update on a denial or an
 // unavailable guard; and replaces every tool option with its guarded form
 // when Tools is set.
@@ -98,9 +111,10 @@ func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message
 	p := m.cfg.Inbound
 	text := userText(messages)
 	policy := arcjet.GuardActionPolicy{
-		Action:       p.Action,
-		Metadata:     p.Metadata,
-		OnGuardError: p.OnGuardError,
+		Action:        p.Action,
+		CorrelationId: p.CorrelationId,
+		Metadata:      p.Metadata,
+		OnGuardError:  p.OnGuardError,
 		Resolve: func(ctx context.Context) (arcjet.GuardActionInputs, error) {
 			var in arcjet.GuardActionInputs
 			var err error
@@ -193,16 +207,26 @@ func guardToolOptions(client *arcjet.GuardClient, opts []agent.Option, policy fu
 	return rest, nil
 }
 
-// withSessionCorrelation puts the session's service ID on the
-// context when the context carries no correlation ID yet, so every guard and
-// capture in the run joins one Sequence. It never generates an ID.
+// withSessionCorrelation puts the session's stored correlation ID on the
+// context when the context carries none, so every guard and capture in the run
+// joins one Sequence. It never generates an ID.
+//
+// The ID is read from the session's own state under [CorrelationIdStateKey],
+// where the application put it. Session.ServiceID is deliberately not used: it
+// belongs to the provider, and the OpenAI Responses, AG-UI, A2A and Copilot
+// providers all rewrite it during a run.
 func withSessionCorrelation(ctx context.Context, opts []agent.Option) context.Context {
 	if _, ok := arcjet.CorrelationIdFromContext(ctx); ok {
 		return ctx
 	}
 	session, ok := agent.GetOption(opts, agent.WithSession)
-	if !ok || session == nil || session.ServiceID() == "" {
+	if !ok || session == nil {
 		return ctx
 	}
-	return arcjet.ContextWithCorrelationId(ctx, session.ServiceID())
+	var id string
+	found, err := session.Get(CorrelationIdStateKey, &id)
+	if err != nil || !found || id == "" {
+		return ctx
+	}
+	return arcjet.ContextWithCorrelationId(ctx, id)
 }

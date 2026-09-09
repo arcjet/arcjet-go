@@ -330,7 +330,7 @@ func TestGuardToolOptionsSelectsByOptionTypeNotShape(t *testing.T) {
 	}
 }
 
-func TestGuardMiddlewareUsesSessionServiceIDWhenContextHasNone(t *testing.T) {
+func TestGuardMiddlewareUsesSessionStateWhenContextHasNone(t *testing.T) {
 	decide := &fakeDecide{resp: allowResponse()}
 	client := newTestClient(t, decide)
 	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: inboundPolicy(t)})
@@ -340,12 +340,50 @@ func TestGuardMiddlewareUsesSessionServiceIDWhenContextHasNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.SetServiceID("thread_123")
+	session.Set(CorrelationIdStateKey, "conversation_123")
 	if _, err := a.RunText(t.Context(), "hi", agent.WithSession(session)).Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if got := decide.request(0).GetCorrelationId(); got != "thread_123" {
-		t.Fatalf("correlation = %q, want the session service ID", got)
+	if got := decide.request(0).GetCorrelationId(); got != "conversation_123" {
+		t.Fatalf("correlation = %q, want the session's stored ID", got)
+	}
+}
+
+// The service ID belongs to the provider, and several providers rewrite it
+// during a run, so it must never become a correlation ID.
+func TestGuardMiddlewareIgnoresSessionServiceID(t *testing.T) {
+	decide := &fakeDecide{resp: allowResponse()}
+	client := newTestClient(t, decide)
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: inboundPolicy(t)})
+	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("ok")}}}
+	a := newAgent(runner, agent.Config{Middlewares: []agent.Middleware{mw}})
+	session, err := a.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SetServiceID("resp_abc123")
+	if _, err := a.RunText(t.Context(), "hi", agent.WithSession(session)).Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := decide.request(0).GetCorrelationId(); got != "" {
+		t.Fatalf("correlation = %q, want none (the service ID is not a correlation ID)", got)
+	}
+}
+
+func TestGuardMiddlewareInboundPolicyCorrelationIdWinsOverContext(t *testing.T) {
+	decide := &fakeDecide{resp: allowResponse()}
+	client := newTestClient(t, decide)
+	inbound := inboundPolicy(t)
+	inbound.CorrelationId = "policy_1"
+	mw, _ := GuardMiddleware(client, MiddlewareConfig{Inbound: inbound})
+	runner := &scriptedRunner{turns: [][]*agent.ResponseUpdate{{assistantTextUpdate("ok")}}}
+	a := newAgent(runner, agent.Config{Middlewares: []agent.Middleware{mw}})
+	ctx := arcjet.ContextWithCorrelationId(t.Context(), "ctx_1")
+	if _, err := a.RunText(ctx, "hi").Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := decide.request(0).GetCorrelationId(); got != "policy_1" {
+		t.Fatalf("correlation = %q, want the policy ID", got)
 	}
 }
 

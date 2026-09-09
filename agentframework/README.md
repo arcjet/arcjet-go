@@ -155,10 +155,22 @@ Put an ID you already have on the context before `Run`:
 ctx = arcjet.ContextWithCorrelationId(ctx, conversationID)
 ```
 
-`GuardMiddleware` falls back to the session's service ID
-(`agent.Session.ServiceID`, the provider-specific identifier for the session)
-when the context has none. Nothing is generated: an uncorrelated run produces
-decisions that join no Sequence.
+For work that outlives one call, store the ID on the session instead, and
+`GuardMiddleware` uses it whenever the context carries none:
+
+```go
+session.Set(agentframework.CorrelationIdStateKey, conversationID)
+```
+
+Session state is serialized with the session, so the ID survives a session
+that is persisted and restored. A `ToolPolicy` or `InboundPolicy` may also set
+`CorrelationId` directly, which wins over both.
+
+`agent.Session.ServiceID` is deliberately not used. It belongs to the
+provider, and the OpenAI Responses, AG-UI, A2A and Copilot providers all
+rewrite it during a run, so a conversation keyed on it would scatter across
+many IDs. Nothing is generated: an uncorrelated run produces decisions that
+join no Sequence.
 
 ## Which tools the middleware sees
 
