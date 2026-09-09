@@ -36,6 +36,19 @@ var (
 	// ErrInvalidPlatform is returned when Config.Platform is not a recognized
 	// Platform value.
 	ErrInvalidPlatform = errors.New("invalid platform")
+	// ErrGuardMisconfigured marks a Guard call that failed because the
+	// request itself is not usable: a nil client, an invalid label, a nil or
+	// unbindable rule, an invalid policy input, or a request that cannot be
+	// encoded. It is joined to the specific cause, so errors.Is still finds
+	// that cause as well.
+	//
+	// The distinction is load bearing. Guard's other failure mode is runtime
+	// degradation, which is fail-open and carries a usable decision, whereas
+	// a misconfigured request was never evaluated at all. [GuardAction] denies
+	// on this class regardless of OnGuardError, because OnGuardErrorAllow is
+	// a statement about availability rather than a licence to run an action
+	// under policy that never ran.
+	ErrGuardMisconfigured = errors.New("guard request is not usable")
 	// ErrInvalidLabel is returned when a Guard label fails validation.
 	ErrInvalidLabel = errors.New("invalid guard label")
 	// ErrInvalidRateLimit is returned when rate-limit options are invalid.
@@ -45,6 +58,8 @@ var (
 	// ErrMissingFunc is returned when a custom rule has no evaluation
 	// function.
 	ErrMissingFunc = errors.New("custom rule function required")
+	// ErrNilAction is returned by GuardAction when fn is nil.
+	ErrNilAction = errors.New("guard action function required")
 	// ErrInvalidWasm is returned when a Wasm module is empty or invalid.
 	ErrInvalidWasm = errors.New("invalid wasm module")
 	// ErrWasmClosed is returned when a Wasm module method is called after

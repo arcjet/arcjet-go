@@ -215,7 +215,7 @@ func TestProtectUsesConnectAndBuildsRequest(t *testing.T) {
 		WithRequested(42),
 		WithCharacteristics(map[string]string{"userId": "user_123"}),
 		WithDetectPromptInjectionMessage("hello"),
-		WithCorrelationId("wf_abcdef"),
+		WithCorrelationID("wf_abcdef"),
 	)
 	if err != nil {
 		t.Fatal(err)

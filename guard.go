@@ -138,12 +138,12 @@ type GuardRequest struct {
 	// it on GuardDecision.Warnings. Nothing here can fail the call or change
 	// the decision.
 	Metadata Metadata
-	// CorrelationId is an optional, caller-supplied opaque identifier used to
+	// CorrelationID is an optional, caller-supplied opaque identifier used to
 	// correlate this Guard call with other Guard and Protect calls that belong
 	// to the same workflow, agent run, or multi-step task. Unlike Metadata it
 	// is a dedicated, indexable field; it does not affect the decision. Bounded
 	// server-side to 256 bytes of printable ASCII; invalid values are dropped.
-	CorrelationId string
+	CorrelationID string
 	// Rules are bound rule inputs evaluated by Guard.
 	Rules []GuardRuleInput
 }
@@ -151,9 +151,10 @@ type GuardRequest struct {
 // Guard evaluates bound guard rule inputs.
 //
 // Programmer errors (nil client, invalid label, nil rule, or a rule that
-// cannot be encoded) return the zero-value decision and a non-nil error —
-// callers must handle the error. These are not fail-open: they reflect misuse
-// or misconfiguration, not runtime degradation.
+// cannot be encoded) return the zero-value decision and a non-nil error that
+// wraps [ErrGuardMisconfigured] alongside its specific cause — callers must
+// handle the error. These are not fail-open: they reflect misuse or
+// misconfiguration, not runtime degradation.
 //
 // Runtime degradation — a transport failure reaching the Decide service — is
 // fail-open: the returned decision is a usable ALLOW carrying a synthetic
@@ -164,10 +165,10 @@ type GuardRequest struct {
 // fail-open (synthesized by guardDecisionFromProto), but returns a nil error.
 func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecision, error) {
 	if c == nil {
-		return GuardDecision{}, fmt.Errorf("arcjet: %w", ErrNilClient)
+		return GuardDecision{}, fmt.Errorf("arcjet: %w: %w", ErrGuardMisconfigured, ErrNilClient)
 	}
 	if err := validateGuardLabel(req.Label); err != nil {
-		return GuardDecision{}, err
+		return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 	}
 	start := time.Now()
 	// Metadata keys the SDK could not encode. These are reported to the server as
@@ -178,7 +179,7 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	prepared, err := c.policy.prepare(ctx, req.Label, req.Inputs, false)
 	if err != nil {
 		if errors.Is(err, ErrInvalidPolicyInput) {
-			return GuardDecision{}, err
+			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 		}
 		return withLocalWarnings(guardErrorDecision("REMOTE_POLICY_UNAVAILABLE", "remote Guard policy preparation failed"), warnings), err
 	}
@@ -191,11 +192,11 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	submissions := make([]*decidev2.GuardRuleSubmission, 0, len(req.Rules))
 	for ruleIndex, rule := range req.Rules {
 		if rule == nil {
-			return GuardDecision{}, fmt.Errorf("arcjet: guard request: %w", ErrNilRule)
+			return GuardDecision{}, fmt.Errorf("arcjet: guard request: %w: %w", ErrGuardMisconfigured, ErrNilRule)
 		}
 		wireSub, err := rule.guardSubmission(ctx, c.local)
 		if err != nil {
-			return GuardDecision{}, err
+			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 		}
 		if wireSub.Rule == nil {
 			// No-op rule input (e.g. an analyzer that isn't shipped yet).
@@ -212,11 +213,11 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 
 		data, err := jsonMarshal(wireSub)
 		if err != nil {
-			return GuardDecision{}, err
+			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 		}
 		var sub decidev2.GuardRuleSubmission
 		if err := protojson.Unmarshal(data, &sub); err != nil {
-			return GuardDecision{}, err
+			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
 		}
 		submissions = append(submissions, &sub)
 	}
@@ -229,7 +230,7 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		Label:               req.Label,
 		MetadataJson:        envelopeMetadata,
 		RuleSubmissions:     submissions,
-		CorrelationId:       req.CorrelationId,
+		CorrelationId:       req.CorrelationID,
 		PolicyInputs:        prepared.inputs,
 		LocalPolicyRevision: prepared.revision,
 		LocalPolicyResults:  prepared.results,
@@ -323,7 +324,7 @@ func localPolicyDenialRequest(req GuardRequest, userAgent string, start time.Tim
 		SentAtUnixMs:        &sentAt,
 		Label:               req.Label,
 		Actor:               req.Actor,
-		CorrelationId:       req.CorrelationId,
+		CorrelationId:       req.CorrelationID,
 		MetadataJson:        metadata,
 		PolicyInputs:        localOnlyPolicyInputs(prepared.inputs),
 		LocalPolicyRevision: prepared.revision,
@@ -1169,6 +1170,17 @@ func guardConclusion(c Conclusion) string {
 		return "GUARD_CONCLUSION_DENY"
 	}
 	return "GUARD_CONCLUSION_ALLOW"
+}
+
+// ValidateGuardLabel returns nil when label is a usable Guard label. A label
+// may hold up to 256 bytes of lowercase letters, digits, dash and dot, and
+// must start and end with a lowercase letter or digit. Errors wrap
+// [ErrInvalidLabel].
+//
+// Framework integrations use it to reject a policy at construction rather
+// than failing every call.
+func ValidateGuardLabel(label string) error {
+	return validateGuardLabel(label)
 }
 
 func validateGuardLabel(label string) error {

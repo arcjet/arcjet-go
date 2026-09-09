@@ -49,16 +49,22 @@ The repo is a multi-module workspace. Each sibling module has its own `go.mod`
 and a `replace` back to the repo root so local changes are picked up without a
 release:
 
-| Module                   | What it is                                                                    | In the gate?                             |
-| ------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------- |
-| `.` (root)               | The SDK                                                                       | Yes                                      |
-| `tools/`                 | Pinned tooling (golangci-lint)                                                | Tidy-checked                             |
-| `sensitiveinfo/rampart/` | Optional on-device NER sensitive-info backend (~15 MB embedded model weights) | Yes (build, test, lint, tidy)            |
-| `examples/nethttp/`      | Runnable example server                                                       | Tidy-checked; build and lint it manually |
+| Module                     | What it is                                                                         | In the gate?                             |
+| -------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------- |
+| `.` (root)                 | The SDK                                                                            | Yes                                      |
+| `tools/`                   | Pinned tooling (golangci-lint)                                                     | Tidy-checked                             |
+| `sensitiveinfo/rampart/`   | Optional on-device NER sensitive-info backend (~15 MB embedded model weights)      | Yes (build, test, lint, tidy)            |
+| `agentframework/`          | Microsoft Agent Framework for Go integration (Go 1.26; tracks a preview framework) | Yes (its own CI job on Go 1.26)          |
+| `examples/nethttp/`        | Runnable example server                                                            | Tidy-checked; compiled in the Lint job   |
+| `examples/agentframework/` | Runnable Microsoft Agent Framework example                                         | Tidy-checked; compiled in the 1.26 job   |
+
+The `agentframework` module needs Go 1.26 and has its own CI job; the `just`
+recipes cover it, and running them on a Go 1.25 machine downloads the 1.26
+toolchain on first use.
 
 The `just` recipes (`build`, `test`, `lint`, `tidy`) and CI fan out over the
-root **and** the rampart module, so `just check` covers both. The rampart tests
-run the embedded model. `-race` over that inference is slow, so the gate runs
+root, the rampart module, and the agentframework module, so `just check`
+covers all three. The rampart tests run the embedded model. `-race` over that inference is slow, so the gate runs
 the deterministic tests without it and only the concurrency test (which drives
 real `Detect` calls, covering both the pooled buffers and the internal
 `parallelFor` parallelism) under `-race`. To run just its checks:
@@ -71,11 +77,11 @@ go test -race -run '^TestAdversarialConcurrentDetect$' ./...          # concurre
 go tool -modfile=../../tools/go.mod golangci-lint run ./...           # inherits the repo-root .golangci.yml
 ```
 
-`examples/nethttp/` is not built or tested by the gate; compile it without
-leaving a binary in the worktree (`go -C examples/nethttp test ./...`) if you
-change it, and lint it with `just lint-examples`. Its `go.mod` and `go.sum` are
-covered by `just tidy` and `just tidy-check`, so a dependency bump in the root
-module cannot leave the example stale unnoticed.
+The example modules are not built or tested by the gate; compile one without
+leaving a binary in the worktree (`go -C examples/<name> test ./...`) if you
+change it, and lint them with `just lint-examples`. Their `go.mod` and `go.sum`
+are covered by `just tidy` and `just tidy-check`, so a dependency bump in the
+root module cannot leave an example stale unnoticed.
 
 The rampart module's `weights.bin` is a generated artifact (not the hand-written
 Go). It is repackaged from the upstream int4 ONNX by `internal/modelgen`; see the

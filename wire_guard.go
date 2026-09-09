@@ -624,6 +624,8 @@ func parseGuardReason(s string) ReasonType {
 		return ReasonError
 	case "GUARD_REASON_NOT_RUN":
 		return ReasonNotRun
+	case "GUARD_REASON_INPUT_CONSTRAINT":
+		return ReasonInputConstraint
 	default:
 		return ReasonUnknown
 	}

@@ -1051,10 +1051,10 @@ func GetWeather(ctx context.Context, userID, message string) error {
 > sea of distinct-looking entries instead of one bucket per operation.
 
 `Guard()` is the low-level API and fails **open** on runtime degradation: it
-returns an `ALLOW` decision for which `HasFailedOpen()` is `true`. Go has no
-agent helper that flips this default, so applications wrapping sensitive tool
-calls or actions must gate manually on `HasFailedOpen()`, as in the example
-above.
+returns an `ALLOW` decision for which `HasFailedOpen()` is `true`. For a
+sensitive tool call or action, wrap it in [`GuardAction`](#agent-helpers)
+instead, which fails **closed** by default and records the outcome. The
+example above shows the manual gate `GuardAction` replaces.
 
 Unavailability is broader than an Arcjet Cloud outage. `HasFailedOpen()` also
 covers an incomplete remote policy, a deadline or transport failure, a missing
@@ -1327,8 +1327,10 @@ zero decision and an error instead; handle those via `err`.)
 #### `HasFailedOpen()` — gate a fail-closed policy
 
 `HasFailedOpen()` is `true` only when the conclusion is `ALLOW` *because* a rule
-or the decision could not be processed. Use it when a degraded signal should
-block rather than allow for a sensitive operation:
+or the decision could not be processed. For a sensitive operation, prefer
+[`GuardAction`](#agent-helpers), which wraps this exact check and fails closed
+by default. Reach for `HasFailedOpen()` directly when calling `Guard` outside
+that helper and you need the same fail-closed gate by hand:
 
 ```go
 decision, err := guard.Guard(ctx, arcjet.GuardRequest{
@@ -1379,14 +1381,112 @@ for _, w := range decision.Warnings {
 }
 ```
 
+### Agent helpers
+
+`GuardAction` runs a function only if policy allows it. It is the Go
+counterpart of `guardAction` in `@arcjet/guard` and `guard_action` in
+`arcjet.guard`.
+
+```go
+out, err := arcjet.GuardAction(ctx, guard, arcjet.GuardActionPolicy{
+	Action: "refund.issued", // hardcoded label, also the capture name
+	Actor:  userID,
+	Rules:  []arcjet.GuardRuleInput{refundLimit.Key(userID, 1)},
+	Metadata: arcjet.SecurityMetadata{
+		User:          userID,
+		Reversibility: "irreversible",
+	}.Metadata(),
+}, func(ctx context.Context) (Receipt, error) {
+	return refundPayment(ctx, paymentID)
+})
+
+var denied *arcjet.GuardDeniedError
+var unavailable *arcjet.GuardUnavailableError
+switch {
+case errors.As(err, &denied):
+	// Policy evaluated and said no. Do not retry.
+	reportPolicyDenial(denied.Decision.Reason)
+case errors.As(err, &unavailable):
+	// Policy could not be evaluated and the helper failed closed.
+	alertOperator(unavailable)
+	queueForRetry(paymentID)
+case err != nil:
+	// The wrapped function itself failed.
+	return err
+default:
+	// Allowed, and the function ran.
+	recordReceipt(out)
+}
+```
+
+Guard is reached on every path that evaluates policy, even with no rules, so
+a remote policy configured for the label still applies. The helper records one
+capture event per call whose metadata `outcome` is `success`, `degraded`,
+`denied`, `error`, or `unavailable`.
+
+`GuardAction` bounds its Guard call with a two second deadline when the
+context carries none, matching `Protect`. A `Resolve` hook runs before that
+deadline is applied, so a hook that blocks is the caller's to bound.
+
+**Fail closed by default.** When policy cannot be evaluated, `GuardAction`
+returns `*GuardUnavailableError` without running the function. That covers a
+transport failure, a deadline, a rule error, a programmer error such as an
+invalid label, a decision that failed open, and any decision that is not a
+clean `ALLOW`, including a conclusion this SDK does not recognise.
+
+`OnGuardError: arcjet.OnGuardErrorAllow` runs the function anyway, but it
+covers availability only. A request `Guard` could not use at all — a nil
+client, an invalid label, a nil or unbindable rule, an invalid policy input,
+or a request that cannot be encoded — is denied whatever `OnGuardError` is
+set to, because the action would otherwise run under policy that never ran.
+Those errors wrap `ErrGuardMisconfigured` alongside their specific cause. The
+capture
+outcome is then `degraded`. A `DENY` always blocks and returns
+`*GuardDeniedError`, whatever the setting. The two errors are distinct on
+purpose: a denial is a completed decision; an unavailable evaluation is one
+the SDK will not act on, whether or not a degraded decision came back.
+
+**Correlation.** Put a request or job ID on the context once and every
+helper call in that context joins one Sequence in the Arcjet console:
+
+```go
+ctx = arcjet.ContextWithCorrelationID(ctx, requestID)
+```
+
+`GuardActionPolicy.CorrelationID` overrides the context. `Guard` and
+`Capture` never read the context; pass the ID to them explicitly. Nothing in
+the SDK generates a correlation ID: derive it from an ID you already have.
+
+**Model-facing denials.** When the caller is a model rather than your own
+code, return `arcjet.NewGuardDenialResult(denied.Decision)` as the tool's
+result. Its JSON fields (`arcjetDenied`, `reason`, `message`, `retryable`,
+`retryAfterSeconds`) match the JavaScript and Python SDKs. Use
+`arcjet.NewGuardUnavailableResult()` for the unavailable case; it always sets
+`retryAfterSeconds` to 5, since there is no decision to derive a hint from.
+For Microsoft Agent Framework tools, see the
+[`agentframework`](agentframework/README.md) module.
+
+#### `GuardActionPolicy` parameter reference
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Action` | `string` | Hardcoded label sent to Guard and used as the capture event name (required) |
+| `Actor` | `string` | Optional actor identity available to remote policies; empty means unset |
+| `Inputs` | `map[string]arcjet.GuardPolicyInput` | Typed values exposed to remote policies |
+| `Rules` | `[]arcjet.GuardRuleInput` | Bound rule inputs; may be empty, since Guard is still reached because remote policy is selected by `Action` |
+| `Resolve` | `func(context.Context) (arcjet.GuardActionInputs, error)` | Computes `Actor`, `Inputs`, and `Rules` per call, replacing the static fields above. An error here counts as unevaluated policy, so it fails the action closed by default |
+| `Metadata` | `arcjet.Metadata` | Attached to the Guard call and to the capture event; see [Metadata](#metadata). The capture event's `outcome` key is written by `GuardAction` and overrides any caller value of that name |
+| `CorrelationID` | `string` | Overrides the correlation ID carried by the context |
+| `OnGuardError` | `arcjet.OnGuardError` | Fail closed (`OnGuardErrorDeny`, the zero value) or fail open (`OnGuardErrorAllow`) when policy cannot be evaluated |
+
 ### `Guard` parameter reference
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `Rules` | `[]arcjet.GuardRuleInput` | Bound rule inputs (required) |
+| `Rules` | `[]arcjet.GuardRuleInput` | Bound rule inputs; may be empty, since Guard is still reached because remote policy is selected by `Label` |
 | `Label` | `string` | Hardcoded label identifying this guard call (required) |
 | `Metadata` | `arcjet.Metadata` | Optional structured metadata — see [Metadata](#metadata) |
-| `CorrelationId` | `string` | Opaque id correlating this call with other `Guard`/`Protect` calls |
+| `CorrelationID` | `string` | Opaque id correlating this call with other `Guard`/`Protect` calls |
 
 ### Capture
 
@@ -1397,8 +1497,8 @@ visibility data, never security decisions — they do not affect `Guard` or
 ```go
 guard.Capture(arcjet.CaptureEvent{
 	Action:        "refund.issued", // resource.verb, past tense
-	CorrelationId: runID,
-	DecisionId:    decision.ID,
+	CorrelationID: runID,
+	DecisionID:    decision.ID,
 	Metadata: arcjet.Metadata{
 		"invoice":  map[string]any{"id": "inv_123", "amount": 4200},
 		"refunded": true,
@@ -1408,7 +1508,7 @@ guard.Capture(arcjet.CaptureEvent{
 
 `Action` is required. Convention is `"resource.verb"` in the past tense
 (for example `"refund.issued"`). An empty action drops the event. Optional
-fields: `CorrelationId`, `DecisionId`, `Metadata`, and `OccurredAt` (zero
+fields: `CorrelationID`, `DecisionID`, `Metadata`, and `OccurredAt` (zero
 means now). Every event is sent with source `"sdk"`.
 
 Capture is best-effort and never blocks or returns an error. The SDK keeps a
@@ -1439,7 +1539,10 @@ no decision to carry a warning.
 `Guard`, `Protect`, and every guard rule accept `Metadata`: an
 `arcjet.Metadata` (a `map[string]any`) whose values may be **any
 JSON-serializable value**, including nested maps and slices. It is attached to
-the decision for correlation and analytics.
+the decision for correlation and analytics. `arcjet.SecurityMetadata` gives
+the actor/resource/reversibility fields a shared vocabulary across `Guard`,
+`GuardAction`, and `Capture`; call its `Metadata()` method to get an
+`arcjet.Metadata` with the non-empty fields.
 
 ```go
 decision, err := guard.Guard(ctx, arcjet.GuardRequest{
@@ -1724,7 +1827,12 @@ if errors.Is(err, arcjet.ErrMissingKey) {
 Available sentinels: `ErrMissingKey`, `ErrNilClient`, `ErrNilRequest`,
 `ErrNilRule`, `ErrInvalidMode`, `ErrAllowDenyConflict`, `ErrInvalidProxy`,
 `ErrInvalidLabel`, `ErrInvalidRateLimit`, `ErrEmptyKey`, `ErrMissingFunc`,
-`ErrInvalidWasm`, `ErrWasmClosed`, `ErrWasmExportNotFound`, `ErrEmptyResponse`.
+`ErrInvalidWasm`, `ErrWasmClosed`, `ErrWasmExportNotFound`, `ErrEmptyResponse`,
+`ErrGuardMisconfigured`, `ErrNilAction`.
+
+`ErrGuardMisconfigured` is joined to the specific cause on a Guard request
+that could not be used at all, so `errors.Is` finds either. `GuardAction`
+denies on that class whatever `OnGuardError` is set to.
 
 Remote and per-rule errors are surfaced as `ArcjetError` values with a `Code`
 field. Match a specific server error code with `errors.Is`:

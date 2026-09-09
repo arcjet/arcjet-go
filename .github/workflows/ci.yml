@@ -56,12 +56,14 @@ jobs:
             go.sum
             tools/go.sum
             sensitiveinfo/rampart/go.sum
+            examples/nethttp/go.sum
 
       - name: Verify go.mod is tidy
         run: |
           go mod tidy
           go -C tools mod tidy
           go -C sensitiveinfo/rampart mod tidy
+          go -C examples/nethttp mod tidy
           files=(
             go.mod
             go.sum
@@ -69,9 +71,11 @@ jobs:
             tools/go.sum
             sensitiveinfo/rampart/go.mod
             sensitiveinfo/rampart/go.sum
+            examples/nethttp/go.mod
+            examples/nethttp/go.sum
           )
           if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
-            echo "::error::go.mod / go.sum are not tidy. Run 'go mod tidy' in the root, tools/, and sensitiveinfo/rampart/ and commit the changes."
+            echo "::error::go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes."
             git --no-pager diff -- "${files[@]}"
             exit 1
           fi
@@ -93,6 +97,15 @@ jobs:
         run: |
           go tool -modfile=tools/go.mod govulncheck ./...
           go -C sensitiveinfo/rampart tool -modfile="${{ github.workspace }}/tools/go.mod" govulncheck ./...
+
+      - name: Compile the nethttp example
+        # The examples are their own modules and nothing else in CI built
+        # them, so a rename in the SDK could break one with every other job
+        # green. `test` compiles without leaving a binary in the worktree.
+        # The agentframework example needs Go 1.26 and is covered by that
+        # module's own job instead, because this job pins GOTOOLCHAIN=local
+        # at the 1.25 compatibility floor.
+        run: go -C examples/nethttp test ./...
 
   test:
     name: Test
@@ -151,3 +164,76 @@ jobs:
         # it covers both the pooled forward buffers and the internal matmul
         # parallelism (parallelFor) — the module's only concurrency.
         run: go -C sensitiveinfo/rampart test -race -run '^TestAdversarialConcurrentDetect$' ./...
+
+  agentframework:
+    name: agentframework module
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          disable-sudo: true
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            storage.googleapis.com:443
+            vuln.go.dev:443
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # golangci-lint's `new-from-rev: origin/main` needs full history
+          # to compute the diff between HEAD and main.
+          fetch-depth: 0
+
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # The agentframework module requires Go 1.26 because Microsoft
+          # Agent Framework does. The root stays on 1.25 in the other jobs.
+          go-version: 1.26.x
+          check-latest: true
+          cache-dependency-path: |
+            agentframework/go.sum
+            tools/go.sum
+            examples/agentframework/go.sum
+
+      - name: Verify go.mod is tidy
+        run: |
+          go -C agentframework mod tidy
+          go -C examples/agentframework mod tidy
+          files=(
+            agentframework/go.mod
+            agentframework/go.sum
+            examples/agentframework/go.mod
+            examples/agentframework/go.sum
+          )
+          if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
+            echo "::error::go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes."
+            git --no-pager diff -- "${files[@]}"
+            exit 1
+          fi
+
+      - name: Lint
+        working-directory: agentframework
+        run: go tool -modfile="${{ github.workspace }}/tools/go.mod" golangci-lint run ./...
+
+      - name: Check vulnerabilities
+        run: go -C agentframework tool -modfile="${{ github.workspace }}/tools/go.mod" govulncheck ./...
+
+      - name: Build
+        run: go -C agentframework build ./...
+
+      - name: Test
+        run: go -C agentframework test -race -shuffle=on ./...
+
+      - name: Compile the agentframework example
+        # Its own module, on the same Go 1.26 floor as the module it
+        # exercises. `test` compiles without leaving a binary behind.
+        run: go -C examples/agentframework test ./...
