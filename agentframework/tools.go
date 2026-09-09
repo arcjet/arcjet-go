@@ -20,13 +20,23 @@ import (
 //
 // policy is where a caller switches on tool.Name() to pick a hardcoded
 // Action for each tool.
+//
+// A guarded tool keeps the wrapped tool's ReturnSchema, so re-exporting one
+// through mcptool.AddTool publishes that schema as the MCP output schema
+// while a denial returns arcjet.GuardDenialResult instead. An MCP client that
+// validates structured output rejects such a denial. Give that tool a
+// ToolPolicy whose OnDeny shapes the denial to the tool's own schema, or
+// leave its output schema unset.
 func GuardTools(client *arcjet.GuardClient, tools []tool.Tool, policy func(tool.Tool) (ToolPolicy, bool)) ([]tool.Tool, error) {
+	if client == nil {
+		return nil, errNilClient
+	}
 	if policy == nil {
 		return nil, errNilPolicyFunc
 	}
 	out := make([]tool.Tool, 0, len(tools))
 	for _, t := range tools {
-		if _, already := t.(guardedMarker); already {
+		if alreadyGuarded(t) {
 			out = append(out, t)
 			continue
 		}

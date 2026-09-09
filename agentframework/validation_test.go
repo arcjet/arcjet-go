@@ -91,8 +91,8 @@ func TestGuardToolOnDenyReturningNilFallsBackToTheDenialResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call = %v; want no error", err)
 	}
-	if *calls != 0 {
-		t.Fatalf("tool ran %d times; want 0", *calls)
+	if calls.Load() != 0 {
+		t.Fatalf("tool ran %d times; want 0", calls.Load())
 	}
 	payload, ok := out.(arcjet.GuardDenialResult)
 	if !ok {

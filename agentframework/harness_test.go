@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,12 +201,15 @@ type lookupArgs struct {
 }
 
 // newLookupTool returns a typed function tool and a counter of its calls.
-func newLookupTool(t *testing.T) (tool.FuncTool, *int) {
+// newLookupTool returns a tool and a counter of its calls. The counter is
+// atomic because the handler runs on the MCP server's goroutine in the
+// round-trip test while the test goroutine reads it.
+func newLookupTool(t *testing.T) (tool.FuncTool, *atomic.Int64) {
 	t.Helper()
-	calls := 0
+	var calls atomic.Int64
 	tl, err := functool.New(functool.Config{Name: "lookup_order", Description: "Look up an order"},
 		func(_ context.Context, in lookupArgs) (string, error) {
-			calls++
+			calls.Add(1)
 			return in.OrderNumber + ": shipped", nil
 		})
 	if err != nil {

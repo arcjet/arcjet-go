@@ -6,8 +6,10 @@ tool calls and agent runs with [Arcjet Guard](../README.md#arcjet-guard).
 
 > Microsoft Agent Framework for Go is a public preview. This module tracks it
 > and may change with it. Its own version stays at `v0.x` until the
-> framework's API settles. The supported framework range is the requirement
-> in [`go.mod`](go.mod).
+> framework's API settles. The [`go.mod`](go.mod) requirement names the
+> version this module is built and tested against. Go treats a requirement as
+> a lower bound, so a build that already selects a newer framework compiles
+> against that one.
 
 ## Install
 
@@ -175,6 +177,18 @@ join no Sequence.
 ## Which tools the middleware sees
 
 Agent-level middleware runs before the framework's tool loop, and tools from
-`agent.Config.Tools` and from `agent.WithTool` both arrive as run options, so
-`MiddlewareConfig.Tools` reaches all of them. A tool already wrapped by
-`GuardTool` is not wrapped again.
+`agent.Config.Tools` and from a per-run `agent.WithTool` both arrive as run
+options, so `MiddlewareConfig.Tools` reaches all of them. A tool already
+wrapped by `GuardTool` is not wrapped again.
+
+Two sources are out of reach, because both add tools after the agent
+middleware chain has run:
+
+| Source | Why the middleware cannot see it |
+| --- | --- |
+| A `ContextProvider` appending `agent.WithTool` from its `Invoking` hook | The context providers run inside the agent's own invoke, after the middleware |
+| `toolautocall.Config.AdditionalTools` | Merged straight into the callable set, so it never becomes a run option |
+
+Wrap tools from either source with `GuardTool` where you create them. A tool
+wrapped there is guarded wherever it is later contributed from, and
+`GuardTools` and `GuardMiddleware` will not wrap it a second time.

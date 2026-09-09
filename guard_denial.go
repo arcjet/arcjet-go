@@ -57,6 +57,12 @@ func newGuardDenialResultAt(d GuardDecision, now time.Time) GuardDenialResult {
 // allowed beside one that denied, and the allowing rule's reset says nothing
 // about when this call may succeed. When several denied, the caller cannot
 // succeed until the last of them resets, so the latest wins.
+// maxRetryAfterSeconds bounds the hint a denial carries. A reset near the
+// uint32 ceiling is a server bug or a clock skew, not a real wait, and an
+// unbounded value narrows badly on a 32-bit consumer. One day is longer than
+// any window the SDK offers.
+const maxRetryAfterSeconds = 24 * 60 * 60
+
 func guardRetryAfterSeconds(d GuardDecision, now time.Time) (int, bool) {
 	var latest int64
 	found := false
@@ -76,6 +82,12 @@ func guardRetryAfterSeconds(d GuardDecision, now time.Time) (int, bool) {
 		if conclusion != ConclusionDeny {
 			continue
 		}
+		// A reset of zero is proto3's default for an omitted field, not a
+		// reset in 1970. Treating it as real would tell the model to retry
+		// immediately.
+		if reset <= 0 {
+			continue
+		}
 		if !found || reset > latest {
 			latest, found = reset, true
 		}
@@ -83,7 +95,11 @@ func guardRetryAfterSeconds(d GuardDecision, now time.Time) (int, bool) {
 	if !found {
 		return 0, false
 	}
-	return int(max(latest-now.Unix(), 0)), true
+	// The subtraction runs in int64, so clamp before narrowing: a reset near
+	// the uint32 ceiling would otherwise yield a nonsensical wait here and a
+	// negative one on a 32-bit consumer.
+	seconds := max(latest-now.Unix(), 0)
+	return int(min(seconds, maxRetryAfterSeconds)), true
 }
 
 // NewGuardUnavailableResult builds the payload returned when policy could not be

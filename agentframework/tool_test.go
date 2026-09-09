@@ -72,8 +72,8 @@ func TestGuardToolDenialIsASuccessfulResultThroughTheLoop(t *testing.T) {
 	if _, err := a.RunText(t.Context(), "where is my order?").Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if *calls != 0 {
-		t.Fatalf("tool ran %d times; want 0", *calls)
+	if calls.Load() != 0 {
+		t.Fatalf("tool ran %d times; want 0", calls.Load())
 	}
 	if runner.providerCalls() != 2 {
 		t.Fatalf("provider calls = %d; want 2 (the run must not abort)", runner.providerCalls())
@@ -117,7 +117,7 @@ func TestGuardToolDenialWithNonRateLimitReasonIsNotRetryable(t *testing.T) {
 	if !ok || payload.Reason != "PROMPT_INJECTION" || payload.Retryable || payload.RetryAfterSeconds != nil {
 		t.Fatalf("payload = %+v", payload)
 	}
-	if *calls != 0 {
+	if calls.Load() != 0 {
 		t.Fatal("tool ran on a denied call")
 	}
 }
@@ -135,7 +135,7 @@ func TestGuardToolUnavailableFailsClosedWithPayload(t *testing.T) {
 	if !ok || payload.Reason != "ERROR" || payload.RetryAfterSeconds == nil || *payload.RetryAfterSeconds != 5 {
 		t.Fatalf("out = %#v", out)
 	}
-	if *calls != 0 {
+	if calls.Load() != 0 {
 		t.Fatal("tool ran while the guard was unavailable")
 	}
 	client.Flush(t.Context())
@@ -150,8 +150,8 @@ func TestGuardToolUnavailableAllowRunsTool(t *testing.T) {
 	base, calls := newLookupTool(t)
 	guarded := MustGuardTool(client, base, ToolPolicy{Action: "order.looked-up", OnGuardError: arcjet.OnGuardErrorAllow})
 	out, err := guarded.Call(t.Context(), `{"orderNumber":"o-1"}`)
-	if err != nil || out != "o-1: shipped" || *calls != 1 {
-		t.Fatalf("out = %v, err = %v, calls = %d", out, err, *calls)
+	if err != nil || out != "o-1: shipped" || calls.Load() != 1 {
+		t.Fatalf("out = %v, err = %v, calls = %d", out, err, calls.Load())
 	}
 }
 

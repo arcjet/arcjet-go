@@ -62,6 +62,8 @@ jobs:
           go mod tidy
           go -C tools mod tidy
           go -C sensitiveinfo/rampart mod tidy
+          go -C examples/nethttp mod tidy
+          go -C examples/agentframework mod tidy
           files=(
             go.mod
             go.sum
@@ -69,9 +71,13 @@ jobs:
             tools/go.sum
             sensitiveinfo/rampart/go.mod
             sensitiveinfo/rampart/go.sum
+            examples/nethttp/go.mod
+            examples/nethttp/go.sum
+            examples/agentframework/go.mod
+            examples/agentframework/go.sum
           )
           if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
-            echo "::error::go.mod / go.sum are not tidy. Run 'go mod tidy' in the root, tools/, and sensitiveinfo/rampart/ and commit the changes."
+            echo "::error::go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes."
             git --no-pager diff -- "${files[@]}"
             exit 1
           fi
@@ -93,6 +99,14 @@ jobs:
         run: |
           go tool -modfile=tools/go.mod govulncheck ./...
           go -C sensitiveinfo/rampart tool -modfile="${{ github.workspace }}/tools/go.mod" govulncheck ./...
+
+      - name: Compile the examples
+        # The examples are their own modules and nothing else in CI builds
+        # them, so a rename in the SDK could break them with every other job
+        # green. `test` compiles without leaving a binary in the worktree.
+        run: |
+          go -C examples/nethttp test ./...
+          go -C examples/agentframework test ./...
 
   test:
     name: Test

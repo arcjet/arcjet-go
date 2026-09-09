@@ -207,8 +207,8 @@ func TestGuardMiddlewareGuardsAgentLevelTools(t *testing.T) {
 	if _, err := a.RunText(t.Context(), "where is my order?").Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if *calls != 0 {
-		t.Fatalf("unguarded tool ran %d times", *calls)
+	if calls.Load() != 0 {
+		t.Fatalf("unguarded tool ran %d times", calls.Load())
 	}
 	result := lastFunctionResult(t, runner.seen[1])
 	if _, ok := result.Result.(arcjet.GuardDenialResult); !ok || result.Error != nil {
@@ -229,8 +229,8 @@ func TestGuardMiddlewareGuardsPerRunTools(t *testing.T) {
 	if _, err := a.RunText(t.Context(), "where is my order?", agent.WithTool(lookup)).Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if *calls != 0 || decide.guardCalls() != 1 {
-		t.Fatalf("calls = %d, guard calls = %d", *calls, decide.guardCalls())
+	if calls.Load() != 0 || decide.guardCalls() != 1 {
+		t.Fatalf("calls = %d, guard calls = %d", calls.Load(), decide.guardCalls())
 	}
 }
 
@@ -248,8 +248,8 @@ func TestGuardMiddlewareDoesNotGuardTwice(t *testing.T) {
 	if _, err := a.RunText(t.Context(), "where is my order?").Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if *calls != 1 {
-		t.Fatalf("tool ran %d times, want 1", *calls)
+	if calls.Load() != 1 {
+		t.Fatalf("tool ran %d times, want 1", calls.Load())
 	}
 	if decide.guardCalls() != 1 {
 		t.Fatalf("guard evaluated %d times for one tool call, want 1", decide.guardCalls())

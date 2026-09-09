@@ -110,7 +110,21 @@ func run() error {
 		return fmt.Errorf("guarding tools: %w", err)
 	}
 
+	// Tools is set as well as Inbound so a tool added later, to
+	// agent.Config.Tools or as a per-run agent.WithTool, is guarded rather
+	// than silently running unevaluated. The two tools already wrapped above
+	// carry a marker, so they are not guarded twice.
 	inbound, err := agentframework.GuardMiddleware(guard, agentframework.MiddlewareConfig{
+		Tools: func(t tool.Tool) (agentframework.ToolPolicy, bool) {
+			if t.Name() == "issue_refund" {
+				return agentframework.ToolPolicy{
+					Action:   "refund.issued",
+					Actor:    actor,
+					Metadata: arcjet.SecurityMetadata{User: userID, Reversibility: "irreversible"}.Metadata(),
+				}, true
+			}
+			return agentframework.ToolPolicy{}, false
+		},
 		Inbound: &agentframework.InboundPolicy{
 			Action: "message.received",
 			Rules: func(_ context.Context, text string) ([]arcjet.GuardRuleInput, error) {

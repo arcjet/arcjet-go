@@ -32,6 +32,8 @@ func (o OnGuardError) String() string {
 	case OnGuardErrorAllow:
 		return "allow"
 	}
+	// A value outside the two constants, which a caller can produce by
+	// converting an integer.
 	return fmt.Sprintf("OnGuardError(%d)", int(o))
 }
 

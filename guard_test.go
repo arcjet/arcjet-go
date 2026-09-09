@@ -128,7 +128,11 @@ func newGuardTestClient(t *testing.T, handler *testGuardHandler) (*GuardClient, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return client, func() {}
+	return client, func() {
+		// Close flushes pending capture events and releases the locally
+		// compiled analyzer. Without it both outlive the test binary.
+		_ = client.Close(context.Background())
+	}
 }
 
 func TestGuardTokenBucketUsesConnectAndHashesKey(t *testing.T) {

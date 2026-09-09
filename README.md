@@ -1413,6 +1413,9 @@ case errors.As(err, &unavailable):
 case err != nil:
 	// The wrapped function itself failed.
 	return err
+default:
+	// Allowed, and the function ran.
+	recordReceipt(out)
 }
 ```
 

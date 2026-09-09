@@ -52,6 +52,13 @@ type ToolPolicy struct {
 	OnDeny func(arcjet.GuardDecision) any
 }
 
+// ArcjetGuarded reports that a tool is already wrapped by GuardTool.
+// GuardTools and GuardMiddleware skip such a tool, so composing them costs
+// one evaluation per call. It is exported so the marker survives a wrapper
+// that embeds tool.FuncTool, such as tool.ApprovalRequiredFunc: an
+// unexported method is not promoted to another package's method set.
+type ArcjetGuarded interface{ ArcjetGuarded() bool }
+
 // guardedMarker identifies a tool already wrapped by GuardTool so a later
 // wrapping pass can tell it apart from a bare tool.
 type guardedMarker interface{ arcjetGuarded() }
@@ -63,6 +70,9 @@ type guardedTool struct {
 }
 
 func (g *guardedTool) arcjetGuarded() {}
+
+// ArcjetGuarded implements [ArcjetGuarded].
+func (g *guardedTool) ArcjetGuarded() bool { return true }
 
 // ApprovalRequired delegates to the wrapped tool so a human approval gate
 // survives wrapping. A tool without one reports false.
@@ -113,12 +123,20 @@ func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 			return in, nil
 		},
 	}
+	// Whether the wrapped tool was entered. Once it has run, its effect has
+	// happened, so an Arcjet error coming back from it belongs to a nested
+	// guard on some other action and must not be reported as this call being
+	// blocked.
+	ran := false
 	out, err := arcjet.GuardAction(ctx, g.client, policy, func(ctx context.Context) (any, error) {
+		ran = true
 		return g.FuncTool.Call(ctx, args)
 	})
 	var denied *arcjet.GuardDeniedError
 	var unavailable *arcjet.GuardUnavailableError
 	switch {
+	case ran:
+		return out, err
 	case errors.As(err, &denied):
 		if p.OnDeny != nil {
 			if out := p.OnDeny(denied.Decision); out != nil {
@@ -130,6 +148,19 @@ func (g *guardedTool) Call(ctx context.Context, args string) (any, error) {
 		return arcjet.NewGuardUnavailableResult(), nil
 	}
 	return out, err
+}
+
+// alreadyGuarded reports whether t is, or wraps, a tool GuardTool produced.
+// It accepts both the unexported marker and the exported one, so a tool
+// hidden behind an embedding wrapper is still recognised.
+func alreadyGuarded(t tool.Tool) bool {
+	if _, ok := t.(guardedMarker); ok {
+		return true
+	}
+	if g, ok := t.(ArcjetGuarded); ok {
+		return g.ArcjetGuarded()
+	}
+	return false
 }
 
 // GuardTool wraps t so every call is evaluated by Arcjet first. The result
@@ -144,7 +175,9 @@ func GuardTool(client *arcjet.GuardClient, t tool.FuncTool, policy ToolPolicy) (
 	if client == nil {
 		return nil, errNilClient
 	}
-	if t == nil {
+	// A typed nil, such as (*myTool)(nil) held in a tool.FuncTool, is not
+	// equal to nil, so compare the underlying value too.
+	if t == nil || reflect.ValueOf(t).Kind() == reflect.Pointer && reflect.ValueOf(t).IsNil() {
 		return nil, errNilTool
 	}
 	if err := validateAction(policy.Action); err != nil {

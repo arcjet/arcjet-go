@@ -128,7 +128,7 @@ func TestGuardToolsGuardsMCPClientTools(t *testing.T) {
 	if payload, ok := out.(arcjet.GuardDenialResult); !ok || payload.Reason != "RATE_LIMIT" {
 		t.Fatalf("out = %#v", out)
 	}
-	if *calls != 0 {
+	if calls.Load() != 0 {
 		t.Fatal("the remote tool ran despite the denial")
 	}
 
@@ -202,7 +202,7 @@ func TestGuardToolsGuardsMCPClientTools(t *testing.T) {
 	if payload := envelope.StructuredContent; !payload.ArcjetDenied || payload.Reason != "RATE_LIMIT" {
 		t.Fatalf("denial payload over MCP = %+v, envelope text = %s", payload, text.Text)
 	}
-	if *calls != 0 {
+	if calls.Load() != 0 {
 		t.Fatal("the guarded tool behind the MCP server ran despite the denial")
 	}
 }

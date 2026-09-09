@@ -31,6 +31,10 @@ type InboundPolicy struct {
 	Action string
 	Rules  func(ctx context.Context, text string) ([]arcjet.GuardRuleInput, error)
 	Actor  func(ctx context.Context, messages []*message.Message) (string, error)
+	// Inputs are typed values exposed to remote policies configured for
+	// this label. Like Rules and Actor, an error counts as unevaluated
+	// policy.
+	Inputs func(ctx context.Context, text string) (map[string]arcjet.GuardPolicyInput, error)
 	// CorrelationID, when set, wins over the ID carried by the context and
 	// over the session's stored ID.
 	CorrelationID string
@@ -65,13 +69,19 @@ type guardMiddleware struct {
 // GuardMiddleware returns an agent.Middleware for agent.Config.Middlewares.
 // Agent-level middleware runs before history and context providers and
 // before the provider-owned tool loop, so it sees only the new turn's
-// messages and every tool as a run option.
+// messages, and it sees the tools the run carries as options.
 //
 // Per run it: puts the session's stored correlation ID on the context when
-// the context has none; screens the user text when
-// Inbound is set, ending the run with one assistant update on a denial or an
-// unavailable guard; and replaces every tool option with its guarded form
-// when Tools is set.
+// the context has none; screens the user text when Inbound is set, ending
+// the run with one assistant update on a denial or an unavailable guard;
+// and replaces each tool option with its guarded form when Tools is set.
+//
+// Two sources of tools are out of its reach, because both arrive after the
+// agent middleware chain has run. A ContextProvider may append
+// agent.WithTool from its Invoking hook, and
+// toolautocall.Config.AdditionalTools are merged straight into the callable
+// set without ever becoming an option. Tools from either source run
+// unguarded unless the application wraps them with GuardTool itself.
 func GuardMiddleware(client *arcjet.GuardClient, cfg MiddlewareConfig) (agent.Middleware, error) {
 	if client == nil {
 		return nil, errNilClient
@@ -112,6 +122,13 @@ func singleUpdate(update *agent.ResponseUpdate, err error) iter.Seq2[*agent.Resp
 func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message.Message) (*agent.ResponseUpdate, bool) {
 	p := m.cfg.Inbound
 	text := userText(messages)
+	if text == "" {
+		// Nothing to screen. A turn can legitimately carry no user text, for
+		// example the approval response the toolapproval middleware builds,
+		// and guarding it would spend a decision on an empty string while
+		// letting an outage block a call a person has already approved.
+		return nil, false
+	}
 	policy := arcjet.GuardActionPolicy{
 		Action:        p.Action,
 		CorrelationID: p.CorrelationID,
@@ -122,6 +139,11 @@ func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message
 			var err error
 			if p.Actor != nil {
 				if in.Actor, err = p.Actor(ctx, messages); err != nil {
+					return in, err
+				}
+			}
+			if p.Inputs != nil {
+				if in.Inputs, err = p.Inputs(ctx, text); err != nil {
 					return in, err
 				}
 			}
@@ -152,6 +174,9 @@ func (m *guardMiddleware) screenInbound(ctx context.Context, messages []*message
 }
 
 // userText joins the text of the user-role messages with newlines.
+// userText concatenates the text of the run's user-role messages. Non-text
+// content, such as a document carried as message.DataContent, has no text
+// form and is not screened here.
 func userText(messages []*message.Message) string {
 	parts := make([]string, 0, len(messages))
 	for _, msg := range messages {
