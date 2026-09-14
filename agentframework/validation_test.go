@@ -54,26 +54,35 @@ func TestGuardToolRejectsAnActionThatIsNotAValidLabel(t *testing.T) {
 	decide := &fakeDecide{resp: allowResponse()}
 	client := newTestClient(t, decide)
 	base, _ := newLookupTool(t)
-	for _, action := range []string{"issue_refund", "Refund.Issued", "-refund", "refund-"} {
+	for _, action := range []string{"Refund.Issued", "-refund", "refund-", "issue refund"} {
 		if _, err := GuardTool(client, base, ToolPolicy{Action: action}); err == nil {
 			t.Fatalf("GuardTool accepted Action %q; want an error", action)
 		} else if !errors.Is(err, arcjet.ErrInvalidLabel) {
 			t.Fatalf("GuardTool(%q) error = %v; want it to wrap ErrInvalidLabel", action, err)
 		}
 	}
-	if _, err := GuardTool(client, base, ToolPolicy{Action: "refund.issued"}); err != nil {
-		t.Fatalf("GuardTool rejected a valid Action: %v", err)
+	for _, action := range []string{"refund.issued", "issue_refund", "order.looked-up"} {
+		if _, err := GuardTool(client, base, ToolPolicy{Action: action}); err != nil {
+			t.Fatalf("GuardTool rejected a valid Action %q: %v", action, err)
+		}
 	}
 }
 
 func TestGuardMiddlewareRejectsAnInboundActionThatIsNotAValidLabel(t *testing.T) {
 	decide := &fakeDecide{resp: allowResponse()}
 	client := newTestClient(t, decide)
-	cfg := MiddlewareConfig{Inbound: &InboundPolicy{Action: "message_received"}}
+	cfg := MiddlewareConfig{Inbound: &InboundPolicy{Action: "Message Received"}}
 	if _, err := GuardMiddleware(client, cfg); err == nil {
 		t.Fatal("GuardMiddleware accepted an invalid inbound Action; want an error")
 	} else if !errors.Is(err, arcjet.ErrInvalidLabel) {
 		t.Fatalf("error = %v; want it to wrap ErrInvalidLabel", err)
+	}
+
+	// Tool names are snake_case in most MCP servers, so an Action derived from
+	// one has to be expressible.
+	ok := MiddlewareConfig{Inbound: &InboundPolicy{Action: "message_received"}}
+	if _, err := GuardMiddleware(client, ok); err != nil {
+		t.Fatalf("GuardMiddleware rejected a valid inbound Action: %v", err)
 	}
 }
 
