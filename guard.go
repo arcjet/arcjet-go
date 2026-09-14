@@ -1173,9 +1173,9 @@ func guardConclusion(c Conclusion) string {
 }
 
 // ValidateGuardLabel returns nil when label is a usable Guard label. A label
-// may hold up to 256 bytes of lowercase letters, digits, dash and dot, and
-// must start and end with a lowercase letter or digit. Errors wrap
-// [ErrInvalidLabel].
+// may hold up to 256 bytes of lowercase letters, digits, dash, dot and
+// underscore, and must start and end with a lowercase letter or digit. Errors
+// wrap [ErrInvalidLabel].
 //
 // Framework integrations use it to reject a policy at construction rather
 // than failing every call.
@@ -1195,10 +1195,10 @@ func validateGuardLabel(label string) error {
 	}
 	for i := range len(label) {
 		c := label[i]
-		if isLowerDigit(c) || c == '-' || c == '.' {
+		if isLowerDigit(c) || c == '-' || c == '.' || c == '_' {
 			continue
 		}
-		return fmt.Errorf("%w: may contain only lowercase letters, digits, dash, and dot", ErrInvalidLabel)
+		return fmt.Errorf("%w: may contain only lowercase letters, digits, dash, dot, and underscore", ErrInvalidLabel)
 	}
 	return nil
 }
