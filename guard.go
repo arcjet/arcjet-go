@@ -109,6 +109,8 @@ func NewGuardClient(cfg GuardConfig) (*GuardClient, error) {
 // locally-compiled wasm factory, if any. Safe to call even if no local
 // Guard rule was ever used and nothing was captured. A nil ctx is treated
 // as [context.Background] for the flush (one-second default deadline).
+//
+//nolint:contextcheck // nil ctx means the caller offered no parent to derive from.
 func (c *GuardClient) Close(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -146,6 +148,47 @@ type GuardRequest struct {
 	CorrelationID string
 	// Rules are bound rule inputs evaluated by Guard.
 	Rules []GuardRuleInput
+}
+
+// buildRuleSubmissions converts each rule input into its wire submission,
+// encoding per-rule metadata under an index-qualified prefix so a dropped key
+// names the rule it came from. A rule input that produces no wire rule is
+// skipped. The returned warnings are the metadata warnings from every rule.
+func (c *GuardClient) buildRuleSubmissions(ctx context.Context, rules []GuardRuleInput) ([]*decidev2.GuardRuleSubmission, []Warning, error) {
+	submissions := make([]*decidev2.GuardRuleSubmission, 0, len(rules))
+	var warnings []Warning
+	for ruleIndex, rule := range rules {
+		if rule == nil {
+			return nil, nil, fmt.Errorf("arcjet: guard request: %w: %w", ErrGuardMisconfigured, ErrNilRule)
+		}
+		wireSub, err := rule.guardSubmission(ctx, c.local)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
+		}
+		if wireSub.Rule == nil {
+			// No-op rule input (e.g. an analyzer that isn't shipped yet).
+			continue
+		}
+		// Encoded here rather than in submission() because the warning message
+		// names the rule by its index, which only this loop knows.
+		encoded, ruleWarnings := encodeMetadata(
+			wireSub.metadata,
+			fmt.Sprintf("rules[%d].", ruleIndex),
+		)
+		wireSub.MetadataJSON = encoded
+		warnings = append(warnings, ruleWarnings...)
+
+		data, err := jsonMarshal(wireSub)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
+		}
+		var sub decidev2.GuardRuleSubmission
+		if err := protojson.Unmarshal(data, &sub); err != nil {
+			return nil, nil, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
+		}
+		submissions = append(submissions, &sub)
+	}
+	return submissions, warnings, nil
 }
 
 // Guard evaluates bound guard rule inputs.
@@ -189,38 +232,11 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	}
 	sanitizeInputs := prepared.sanitizeInputs
 
-	submissions := make([]*decidev2.GuardRuleSubmission, 0, len(req.Rules))
-	for ruleIndex, rule := range req.Rules {
-		if rule == nil {
-			return GuardDecision{}, fmt.Errorf("arcjet: guard request: %w: %w", ErrGuardMisconfigured, ErrNilRule)
-		}
-		wireSub, err := rule.guardSubmission(ctx, c.local)
-		if err != nil {
-			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
-		}
-		if wireSub.Rule == nil {
-			// No-op rule input (e.g. an analyzer that isn't shipped yet).
-			continue
-		}
-		// Encoded here rather than in submission() because the warning message
-		// names the rule by its index, which only this loop knows.
-		encoded, ruleWarnings := encodeMetadata(
-			wireSub.metadata,
-			fmt.Sprintf("rules[%d].", ruleIndex),
-		)
-		wireSub.MetadataJSON = encoded
-		warnings = append(warnings, ruleWarnings...)
-
-		data, err := jsonMarshal(wireSub)
-		if err != nil {
-			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
-		}
-		var sub decidev2.GuardRuleSubmission
-		if err := protojson.Unmarshal(data, &sub); err != nil {
-			return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
-		}
-		submissions = append(submissions, &sub)
+	submissions, ruleWarnings, err := c.buildRuleSubmissions(ctx, req.Rules)
+	if err != nil {
+		return GuardDecision{}, err
 	}
+	warnings = append(warnings, ruleWarnings...)
 	elapsed := safeUint64FromInt64(time.Since(start).Milliseconds())
 	sentAt := safeUint64FromInt64(time.Now().UnixMilli())
 	wireReq := &decidev2.GuardRequest{
@@ -264,38 +280,71 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 		// ignores err.
 		return withLocalWarnings(guardErrorDecision("TRANSPORT_ERROR", err.Error()), warnings), err
 	}
-	// Keep the forced refresh and retry together so a newly projected local
-	// denial can sanitize the retry RPC before reporting it.
-	//nolint:nestif // the nested branches are the refresh/retry transaction
-	if prepared.hasLocal && resp.Msg.GetDecision() != nil && resp.Msg.GetDecision().GetPolicyEvaluation() != nil {
-		e := resp.Msg.GetDecision().GetPolicyEvaluation()
-		if e.GetRefreshRequired() || (prepared.revision != "" && e.GetRevision() != "" && prepared.revision != e.GetRevision()) {
-			prepared, err = c.policy.prepare(ctx, req.Label, req.Inputs, true)
-			if err != nil {
-				return withLocalWarnings(guardErrorDecision("REMOTE_POLICY_UNAVAILABLE", "remote Guard policy preparation failed"), warnings), err
-			}
-			sanitizeInputs = sanitizeInputs || prepared.sanitizeInputs
-			if prepared.decision != nil {
-				wireReq.PolicyInputs = localOnlyPolicyInputs(prepared.inputs)
-				wireReq.LocalPolicyRevision, wireReq.LocalPolicyResults = prepared.revision, prepared.results
-				resp, err = c.guardClient.Guard(ctx, connectReq)
-				if err != nil {
-					return withLocalWarnings(*prepared.decision, warnings), err
-				}
-				decision := localPolicyReportedDecision(resp.Msg, *prepared.decision)
-				return withLocalWarnings(decision, warnings), nil
-			}
-			wireReq.PolicyInputs, wireReq.LocalPolicyRevision, wireReq.LocalPolicyResults = prepared.inputs, prepared.revision, prepared.results
-			if sanitizeInputs {
-				wireReq.PolicyInputs = localOnlyPolicyInputs(wireReq.GetPolicyInputs())
-			}
-			resp, err = c.guardClient.Guard(ctx, connectReq)
-			if err != nil {
-				return withLocalWarnings(guardErrorDecision("TRANSPORT_ERROR", err.Error()), warnings), err
-			}
-		}
+	return c.refreshAndRetry(ctx, resp, guardRetry{
+		req:            req,
+		connectReq:     connectReq,
+		wireReq:        wireReq,
+		prepared:       prepared,
+		sanitizeInputs: sanitizeInputs,
+		warnings:       warnings,
+	})
+}
+
+// guardRetry is the state a Guard call needs to reissue its RPC after the
+// server reports that the local policy revision it evaluated is stale.
+type guardRetry struct {
+	req            GuardRequest
+	connectReq     *connect.Request[decidev2.GuardRequest]
+	wireReq        *decidev2.GuardRequest
+	prepared       preparedRemotePolicy
+	sanitizeInputs bool
+	warnings       []Warning
+}
+
+// refreshAndRetry returns the decision for a Guard response. When the server
+// reports the local policy revision it evaluated is stale, it re-prepares the
+// policy and reissues the RPC with the refreshed inputs; the refresh and the
+// retry stay together so a newly projected local denial sanitizes the retry
+// RPC before it is reported. Otherwise it returns the decision built from the
+// response it was given.
+func (c *GuardClient) refreshAndRetry(
+	ctx context.Context,
+	resp *connect.Response[decidev2.GuardResponse],
+	state guardRetry,
+) (GuardDecision, error) {
+	evaluation := resp.Msg.GetDecision().GetPolicyEvaluation()
+	staleRevision := state.prepared.revision != "" &&
+		evaluation.GetRevision() != "" &&
+		state.prepared.revision != evaluation.GetRevision()
+	if !state.prepared.hasLocal || evaluation == nil ||
+		(!evaluation.GetRefreshRequired() && !staleRevision) {
+		return withLocalWarnings(guardDecisionFromProto(resp.Msg), state.warnings), nil
 	}
-	return withLocalWarnings(guardDecisionFromProto(resp.Msg), warnings), nil
+
+	prepared, err := c.policy.prepare(ctx, state.req.Label, state.req.Inputs, true)
+	if err != nil {
+		return withLocalWarnings(guardErrorDecision("REMOTE_POLICY_UNAVAILABLE", "remote Guard policy preparation failed"), state.warnings), err
+	}
+	if prepared.decision != nil {
+		state.wireReq.PolicyInputs = localOnlyPolicyInputs(prepared.inputs)
+		state.wireReq.LocalPolicyRevision, state.wireReq.LocalPolicyResults = prepared.revision, prepared.results
+		resp, err = c.guardClient.Guard(ctx, state.connectReq)
+		if err != nil {
+			return withLocalWarnings(*prepared.decision, state.warnings), err
+		}
+		decision := localPolicyReportedDecision(resp.Msg, *prepared.decision)
+		return withLocalWarnings(decision, state.warnings), nil
+	}
+
+	state.wireReq.PolicyInputs, state.wireReq.LocalPolicyRevision, state.wireReq.LocalPolicyResults = prepared.inputs, prepared.revision, prepared.results
+	if state.sanitizeInputs || prepared.sanitizeInputs {
+		state.wireReq.PolicyInputs = localOnlyPolicyInputs(state.wireReq.GetPolicyInputs())
+	}
+	resp, err = c.guardClient.Guard(ctx, state.connectReq)
+	if err != nil {
+		return withLocalWarnings(guardErrorDecision("TRANSPORT_ERROR", err.Error()), state.warnings), err
+	}
+	return withLocalWarnings(guardDecisionFromProto(resp.Msg), state.warnings), nil
 }
 
 // reportLocalPolicyDenial makes a best-effort, privacy-safe Guard call so the

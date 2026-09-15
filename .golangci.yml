@@ -11,10 +11,6 @@ formatters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  # Only flag new issues vs main — makes strict linting adoptable on an
-  # existing codebase. Remove this once the baseline is clean.
-  new-from-rev: origin/main
-  whole-files: false
 
 run:
   modules-download-mode: readonly
@@ -282,6 +278,14 @@ linters:
 
     nestif:
       min-complexity: 6
+
+    recvcheck:
+      exclusions:
+        # slog calls LogValue on the value it is given, so a pointer receiver
+        # would make it invisible for a Conclusion or EmailType logged by
+        # value. The paired UnmarshalJSON has to stay on a pointer receiver for
+        # encoding/json, so these types mix the two by necessity.
+        - "*.LogValue"
 
     perfsprint:
       # strconcat suggestions hurt readability
