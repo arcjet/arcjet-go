@@ -66,6 +66,7 @@ jobs:
             go.sum
             tools/go.sum
             sensitiveinfo/rampart/go.sum
+            examples/nethttp/go.sum
 
       - name: Assert valid release request and matching versions
         id: release
@@ -109,9 +110,15 @@ jobs:
             fi
           }
 
+          # Every requirement that moves with a root release. The
+          # agentframework module is versioned independently at v0.x, so
+          # neither agentframework/go.mod's own SDK pin nor the agentframework
+          # pin in its example belongs here; both move with an agentframework
+          # release instead.
           check_requirement sensitiveinfo/rampart/go.mod github.com/arcjet/arcjet-go
           check_requirement examples/nethttp/go.mod github.com/arcjet/arcjet-go
           check_requirement examples/nethttp/go.mod github.com/arcjet/arcjet-go/sensitiveinfo/rampart
+          check_requirement examples/agentframework/go.mod github.com/arcjet/arcjet-go
           if [[ -n "$mismatched" ]]; then
             exit 1
           fi
@@ -149,6 +156,7 @@ jobs:
           go mod tidy
           go -C tools mod tidy
           go -C sensitiveinfo/rampart mod tidy
+          go -C examples/nethttp mod tidy
           files=(
             go.mod
             go.sum
@@ -156,6 +164,8 @@ jobs:
             tools/go.sum
             sensitiveinfo/rampart/go.mod
             sensitiveinfo/rampart/go.sum
+            examples/nethttp/go.mod
+            examples/nethttp/go.sum
           )
           if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
             echo "::error::Go modules are not tidy. Run 'just tidy' and commit the changes."
@@ -196,9 +206,74 @@ jobs:
             echo "All version, module, lint, vulnerability, build, and test checks passed."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # The agentframework module and its example require Go 1.26 because Microsoft
+  # Agent Framework does. setup-go pins GOTOOLCHAIN=local, so the Go 1.25
+  # preflight cannot tidy, build or test them.
+  preflight-agentframework:
+    name: Preflight (agentframework)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          disable-sudo: true
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            storage.googleapis.com:443
+            vuln.go.dev:443
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.x
+          check-latest: true
+          cache-dependency-path: |
+            tools/go.sum
+            agentframework/go.sum
+            examples/agentframework/go.sum
+
+      - name: Verify modules are tidy
+        run: |
+          set -euo pipefail
+          go -C agentframework mod tidy
+          go -C examples/agentframework mod tidy
+          files=(
+            agentframework/go.mod
+            agentframework/go.sum
+            examples/agentframework/go.mod
+            examples/agentframework/go.sum
+          )
+          if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
+            echo "::error::Go modules are not tidy. Run 'just tidy' and commit the changes."
+            git --no-pager diff -- "${files[@]}"
+            exit 1
+          fi
+
+      - name: Run release checks
+        run: |
+          set -euo pipefail
+          go -C agentframework tool -modfile="${GITHUB_WORKSPACE}/tools/go.mod" golangci-lint run ./...
+          go -C agentframework tool -modfile="${GITHUB_WORKSPACE}/tools/go.mod" govulncheck ./...
+          go -C agentframework build ./...
+          go -C agentframework test -race -shuffle=on ./...
+          go -C examples/agentframework test ./...
+
   release:
     name: Create ${{ needs.preflight.outputs.root-tag }} release tags
-    needs: preflight
+    needs: [preflight, preflight-agentframework]
     runs-on: ubuntu-24.04
     environment:
       name: release-tags

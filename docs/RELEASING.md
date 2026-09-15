@@ -57,9 +57,12 @@ Environment secrets are unavailable to the workflow until the protection rules
 pass. Keeping the App key here, rather than as a repository secret, is what
 makes approval a credential boundary.
 
-### 3. Release-tag ruleset
+### 3. Tag rulesets
 
-Open **Settings -> Rules -> Rulesets**, create a new **tag ruleset**, and use:
+Two tag rulesets, because the two families of tag are created by different
+actors.
+
+Open **Settings -> Rules -> Rulesets** and create a **tag ruleset**:
 
 - Name: `release-tags`
 - Enforcement status: **Active**
@@ -75,14 +78,37 @@ Open **Settings -> Rules -> Rulesets**, create a new **tag ruleset**, and use:
 
 Do not add administrators, organization owners, roles, teams, users, or
 `github-actions` to the bypass list. The two explicit patterns protect the
-published modules without accidentally treating every tag containing a `v` as
-a release. If another submodule is published later, add its exact
-`<module-path>/v*` pattern.
+modules this workflow tags without accidentally treating every tag containing
+a `v` as a release.
 
 The GitHub App is allowed to bypass every rule in this ruleset because GitHub
 does not offer per-rule bypasses. The workflow only creates new tags and refuses
 to proceed when either tag already exists; the App key remains behind the
 environment approval gate.
+
+Then create a second **tag ruleset**:
+
+- Name: `agentframework-tags`
+- Enforcement status: **Active**
+- Target tags, included by pattern: `agentframework/v*`
+- Bypass list: empty
+- Tag protections:
+  - **Restrict updates**
+  - **Restrict deletions**
+  - **Block force pushes**
+
+The `agentframework` module is versioned independently at `v0.x`, and no
+workflow tags it: a maintainer pushes `agentframework/v<version>` by hand,
+following the agentframework steps in
+[CONTRIBUTING.md](../CONTRIBUTING.md#releasing). Adding that pattern to
+`release-tags` instead would leave a tag nobody can create, because the only
+bypass there is the GitHub App. Leaving **Restrict creations** off keeps the
+manual push working while updates, deletions and force pushes stay blocked.
+Once the agentframework tag is automated, move the pattern into `release-tags`
+and delete this ruleset.
+
+If another submodule is published later, add its exact `<module-path>/v*`
+pattern to whichever ruleset matches how its tag is created.
 
 ## Running a release
 

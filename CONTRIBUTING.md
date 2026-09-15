@@ -157,7 +157,6 @@ module in a repository subdirectory needs that subdirectory in its tag.
    so pkg.go.dev discovers them. See the
    [release automation runbook](docs/RELEASING.md) for the one-time App,
    environment, and tag-ruleset configuration.
-
 8. Verify the public module graph from a fresh temporary module. Do not add
    local `replace` directives to this smoke test:
 
