@@ -110,6 +110,20 @@ and delete this ruleset.
 If another submodule is published later, add its exact `<module-path>/v*`
 pattern to whichever ruleset matches how its tag is created.
 
+Read both rulesets back once they exist. With **Restrict creations** on and an
+empty bypass list, nothing can create `v*` at all, and because a dry-run push
+sends no ref update there is nothing for the ruleset to reject — so the
+misconfiguration first appears during a real release, after approval.
+
+```sh
+gh api repos/arcjet/arcjet-go/rulesets --jq \
+  '.[] | select(.target == "tag") | {name, rules: [.rules[].type], bypass: .bypass_actors}'
+```
+
+`release-tags` lists `creation` among its rules and names the release App in
+`bypass_actors`. `agentframework-tags` does not list `creation` and its
+`bypass_actors` is empty.
+
 ## Running a release
 
 1. Merge the release preparation PR to `main`. `Version` in `types.go`, the
