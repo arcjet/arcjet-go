@@ -149,8 +149,8 @@ module in a repository subdirectory needs that subdirectory in its tag.
 6. Merge the release PR to `main`, then run the
    [Release tags workflow](.github/workflows/release.yml) from `main`. The
    workflow infers the version from `types.go`, verifies every lockstep version,
-   and creates both annotated module tags on the exact commit. Use its dry-run
-   mode for a rehearsal.
+   and creates an annotated tag for each selected module on the exact commit.
+   Use its dry-run mode for a rehearsal.
 7. Review the completed preflight summary, then approve the protected
    `release-tags` environment. The gated job pushes both tags atomically using
    the release GitHub App and requests both versions from the Go module proxy
@@ -174,14 +174,18 @@ module in a repository subdirectory needs that subdirectory in its tag.
    backend was released in lockstep; do not create a second GitHub release for
    its module-qualified tag.
 
-The `agentframework` module is versioned independently at `v0.x` because it
-tracks a preview framework. Release it by bumping the SDK requirement in
-`agentframework/go.mod` to the current root tag and the `agentframework`
-requirement in `examples/agentframework/go.mod` to the new agentframework
-version, running `just tidy` and `just check`, merging, and tagging the
-merge commit:
+The `agentframework` module keeps its own `v0.x` version line because it
+tracks a preview framework, but the workflow tags it in the same run as the
+root module and from the same commit, so the SDK version it requires is
+published alongside it. To include it in a release, add to step 3:
 
-```sh
-git tag -a agentframework/v0.1.0 -m agentframework/v0.1.0
-git push origin agentframework/v0.1.0
-```
+- set `Version` in `agentframework/version.go` to the agentframework release
+  version, without the leading `v`;
+- set the `arcjet-go` requirement in `agentframework/go.mod` to the root
+  release version;
+- set the `agentframework` requirement in `examples/agentframework/go.mod` to
+  the agentframework release version.
+
+Then run the workflow in step 6 with **components** set to
+`root-and-agentframework`. Its preflight refuses the release if those three
+disagree with each other or with `types.go`.

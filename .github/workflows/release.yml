@@ -1,13 +1,20 @@
 name: Release tags
 
-# Surface the selected ref and dry-run state in the run list and in the
-# protected-environment approval notification. The version is inferred from
-# types.go and shown in the preflight summary before approval.
-run-name: "Release tags from ${{ github.ref_name }}${{ inputs.dry-run && ' (dry run)' || '' }}"
+# Surface the selected ref, modules and dry-run state in the run list and in
+# the protected-environment approval notification. Each version is inferred
+# from its module and shown in the preflight summary before approval.
+run-name: "Release ${{ inputs.components }} from ${{ github.ref_name }}${{ inputs.dry-run && ' (dry run)' || '' }}"
 
 on:
   workflow_dispatch:
     inputs:
+      components:
+        default: root
+        description: Which modules to tag. The root module and the Rampart module always release together.
+        options:
+          - root
+          - root-and-agentframework
+        type: choice
       dry-run:
         default: true
         description: Validate the release and run git push --dry-run without creating remote tags.
@@ -33,6 +40,8 @@ jobs:
     permissions:
       contents: read
     outputs:
+      agentframework-tag: ${{ steps.release.outputs.agentframework-tag }}
+      agentframework-version: ${{ steps.release.outputs.agentframework-version }}
       rampart-tag: ${{ steps.release.outputs.rampart-tag }}
       root-tag: ${{ steps.release.outputs.root-tag }}
       version: ${{ steps.release.outputs.version }}
@@ -71,6 +80,7 @@ jobs:
       - name: Assert valid release request and matching versions
         id: release
         env:
+          COMPONENTS: ${{ inputs.components }}
           DRY_RUN: ${{ inputs.dry-run }}
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
@@ -81,6 +91,16 @@ jobs:
             true|false) ;;
             *)
               echo "::error::Invalid dry-run value; expected 'true' or 'false'."
+              exit 1
+              ;;
+          esac
+
+          # The choice type constrains the web form only. An API or CLI
+          # dispatch can send any string, including an empty one.
+          case "$COMPONENTS" in
+            root|root-and-agentframework) ;;
+            *)
+              echo "::error::Invalid components value '${COMPONENTS:-<empty>}'; expected 'root' or 'root-and-agentframework'."
               exit 1
               ;;
           esac
@@ -102,10 +122,11 @@ jobs:
           check_requirement() {
             local file="$1"
             local module="$2"
+            local want="${3:-$expected}"
             local actual
             actual="$(go mod edit -json "$file" | jq -r --arg module "$module" '.Require[] | select(.Path == $module) | .Version')"
-            if [[ "$actual" != "$expected" ]]; then
-              echo "::error file=$file::$module is '${actual:-<missing>}', expected '$expected'."
+            if [[ "$actual" != "$want" ]]; then
+              echo "::error file=$file::$module is '${actual:-<missing>}', expected '$want'."
               mismatched="true"
             fi
           }
@@ -119,6 +140,26 @@ jobs:
           check_requirement examples/nethttp/go.mod github.com/arcjet/arcjet-go
           check_requirement examples/nethttp/go.mod github.com/arcjet/arcjet-go/sensitiveinfo/rampart
           check_requirement examples/agentframework/go.mod github.com/arcjet/arcjet-go
+
+          agentframework_version=""
+          agentframework_tag=""
+          if [[ "$COMPONENTS" == "root-and-agentframework" ]]; then
+            agentframework_version="$(sed -nE 's/^const Version = "([^"]+)"$/\1/p' agentframework/version.go)"
+            if ! [[ "$agentframework_version" =~ $semver_pattern ]]; then
+              echo "::error file=agentframework/version.go::Version '$agentframework_version' must be canonical SemVer without a leading 'v' or build metadata."
+              exit 1
+            fi
+            agentframework_tag="agentframework/v$agentframework_version"
+
+            # agentframework is tagged from this commit, so the root version it
+            # requires is the one this run publishes. That equality is what
+            # lets the replace directive in agentframework/go.mod stand in for
+            # a consumer's view: the root source being tagged is the source
+            # every check in this repository already built against.
+            check_requirement agentframework/go.mod github.com/arcjet/arcjet-go
+            check_requirement examples/agentframework/go.mod github.com/arcjet/arcjet-go/agentframework "v$agentframework_version"
+          fi
+
           if [[ -n "$mismatched" ]]; then
             exit 1
           fi
@@ -127,15 +168,22 @@ jobs:
             echo "version=$version"
             echo "root-tag=v$version"
             echo "rampart-tag=sensitiveinfo/rampart/v$version"
+            echo "agentframework-version=$agentframework_version"
+            echo "agentframework-tag=$agentframework_tag"
           } >> "$GITHUB_OUTPUT"
 
       - name: Assert release tags do not exist
         env:
+          AGENTFRAMEWORK_TAG: ${{ steps.release.outputs.agentframework-tag }}
           RAMPART_TAG: ${{ steps.release.outputs.rampart-tag }}
           ROOT_TAG: ${{ steps.release.outputs.root-tag }}
         run: |
           set -euo pipefail
-          for tag in "$ROOT_TAG" "$RAMPART_TAG"; do
+          tags=("$ROOT_TAG" "$RAMPART_TAG")
+          if [[ -n "$AGENTFRAMEWORK_TAG" ]]; then
+            tags+=("$AGENTFRAMEWORK_TAG")
+          fi
+          for tag in "${tags[@]}"; do
             if output="$(git ls-remote --exit-code --tags origin "refs/tags/$tag" 2>&1)"; then
               echo "$output"
               echo "::error::Tag '$tag' already exists. Release tags must never be moved."
@@ -189,6 +237,7 @@ jobs:
 
       - name: Summarize the release request
         env:
+          AGENTFRAMEWORK_TAG: ${{ steps.release.outputs.agentframework-tag }}
           DRY_RUN: ${{ inputs.dry-run }}
           RAMPART_TAG: ${{ steps.release.outputs.rampart-tag }}
           ROOT_TAG: ${{ steps.release.outputs.root-tag }}
@@ -200,6 +249,11 @@ jobs:
             echo "- version: \`$VERSION\`"
             echo "- root module tag: \`$ROOT_TAG\`"
             echo "- Rampart module tag: \`$RAMPART_TAG\`"
+            if [[ -n "$AGENTFRAMEWORK_TAG" ]]; then
+              echo "- agentframework module tag: \`$AGENTFRAMEWORK_TAG\`"
+            else
+              echo "- agentframework module: not tagged by this run"
+            fi
             echo "- ref: \`$GITHUB_REF_NAME\` (\`$GITHUB_SHA\`)"
             echo "- dry run: \`$DRY_RUN\`"
             echo
@@ -307,6 +361,7 @@ jobs:
 
       - name: Create and push annotated tags
         env:
+          AGENTFRAMEWORK_TAG: ${{ needs.preflight.outputs.agentframework-tag }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           DRY_RUN: ${{ inputs.dry-run }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -322,24 +377,31 @@ jobs:
 
           git tag --annotate "$ROOT_TAG" --message "$ROOT_TAG" "$TARGET_SHA"
           git tag --annotate "$RAMPART_TAG" --message "$RAMPART_TAG" "$TARGET_SHA"
+          refspecs=(
+            "refs/tags/$ROOT_TAG:refs/tags/$ROOT_TAG"
+            "refs/tags/$RAMPART_TAG:refs/tags/$RAMPART_TAG"
+          )
+          if [[ -n "$AGENTFRAMEWORK_TAG" ]]; then
+            git tag --annotate "$AGENTFRAMEWORK_TAG" --message "$AGENTFRAMEWORK_TAG" "$TARGET_SHA"
+            refspecs+=("refs/tags/$AGENTFRAMEWORK_TAG:refs/tags/$AGENTFRAMEWORK_TAG")
+          fi
 
           push_args=(--atomic)
           if [[ "$DRY_RUN" == "true" ]]; then
             push_args+=(--dry-run)
           fi
-          git push "${push_args[@]}" origin \
-            "refs/tags/$ROOT_TAG:refs/tags/$ROOT_TAG" \
-            "refs/tags/$RAMPART_TAG:refs/tags/$RAMPART_TAG"
+          git push "${push_args[@]}" origin "${refspecs[@]}"
 
       - name: Warm Go module proxy and request pkg.go.dev indexing
         if: ${{ !inputs.dry-run }}
         env:
+          AGENTFRAMEWORK_VERSION: ${{ needs.preflight.outputs.agentframework-version }}
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
-          expected="v$VERSION"
           check_module() {
             local module="$1"
+            local expected="$2"
             local info
             if ! info="$(curl \
                 --fail \
@@ -362,11 +424,16 @@ jobs:
             echo "Available from proxy.golang.org: $module@$expected"
           }
 
-          check_module github.com/arcjet/arcjet-go
-          check_module github.com/arcjet/arcjet-go/sensitiveinfo/rampart
+          check_module github.com/arcjet/arcjet-go "v$VERSION"
+          check_module github.com/arcjet/arcjet-go/sensitiveinfo/rampart "v$VERSION"
+          if [[ -n "$AGENTFRAMEWORK_VERSION" ]]; then
+            check_module github.com/arcjet/arcjet-go/agentframework "v$AGENTFRAMEWORK_VERSION"
+          fi
 
       - name: Summarize the result
         env:
+          AGENTFRAMEWORK_TAG: ${{ needs.preflight.outputs.agentframework-tag }}
+          AGENTFRAMEWORK_VERSION: ${{ needs.preflight.outputs.agentframework-version }}
           DRY_RUN: ${{ inputs.dry-run }}
           RAMPART_TAG: ${{ needs.preflight.outputs.rampart-tag }}
           ROOT_TAG: ${{ needs.preflight.outputs.root-tag }}
@@ -376,7 +443,7 @@ jobs:
           if [[ "$DRY_RUN" == "true" ]]; then
             result="Dry run completed; no remote tags were created."
           else
-            result="Created both remote tags atomically and made both versions available from proxy.golang.org."
+            result="Created every tag atomically and made each version available from proxy.golang.org."
           fi
           {
             echo "## Release result"
@@ -384,9 +451,15 @@ jobs:
             echo
             echo "- \`$ROOT_TAG\`"
             echo "- \`$RAMPART_TAG\`"
+            if [[ -n "$AGENTFRAMEWORK_TAG" ]]; then
+              echo "- \`$AGENTFRAMEWORK_TAG\`"
+            fi
             echo "- commit: \`$GITHUB_SHA\`"
             if [[ "$DRY_RUN" == "false" ]]; then
               echo "- pkg.go.dev: https://pkg.go.dev/github.com/arcjet/arcjet-go@v$VERSION"
               echo "- Rampart docs: https://pkg.go.dev/github.com/arcjet/arcjet-go/sensitiveinfo/rampart@v$VERSION"
+              if [[ -n "$AGENTFRAMEWORK_VERSION" ]]; then
+                echo "- agentframework docs: https://pkg.go.dev/github.com/arcjet/arcjet-go/agentframework@v$AGENTFRAMEWORK_VERSION"
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
