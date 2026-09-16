@@ -27,6 +27,4 @@ file into each SDK checkout beside it.
 Nothing enforces that this copy is current. The monorepo is private and this
 repository is public, so no CI job here can read the source. A change to the
 grammar updates every copy in the same change and bumps `revision` in the
-source file. See
-`docs/adrs/2026-09-15-each-sdk-checks-a-guard-label-before-sending-it.md` in
-the monorepo.
+source file.
