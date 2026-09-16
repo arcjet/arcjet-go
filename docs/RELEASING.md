@@ -46,11 +46,10 @@ environment named `release-tags`:
 
 1. Add the release approvers under **Required reviewers**.
 2. Enable **Prevent self-review**.
-3. Disable **Allow administrators to bypass configured protection rules**.
-4. Under **Deployment branches and tags**, select **Selected branches and
+3. Under **Deployment branches and tags**, select **Selected branches and
    tags**, then allow only the `main` branch.
-5. Add environment variable `RELEASE_APP_CLIENT_ID` with the App client ID.
-6. Add environment secret `RELEASE_APP_PRIVATE_KEY` with the complete PEM
+4. Add environment variable `RELEASE_APP_CLIENT_ID` with the App client ID.
+5. Add environment secret `RELEASE_APP_PRIVATE_KEY` with the complete PEM
    private key.
 
 Environment secrets are unavailable to the workflow until the protection rules
