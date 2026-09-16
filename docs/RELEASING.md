@@ -1,13 +1,27 @@
 # Release automation
 
-The [Release tags workflow](../.github/workflows/release.yml) creates the two
-tags that publish arcjet-go through the Go module proxy:
+The [Release tags workflow](../.github/workflows/release.yml) creates the tags
+that publish arcjet-go through the Go module proxy:
 
 - `v<version>` for `github.com/arcjet/arcjet-go`
 - `sensitiveinfo/rampart/v<version>` for the optional Rampart module
+- `agentframework/v<agentframework version>` for the Microsoft Agent Framework
+  module, on a run that selects it
 
-Both are annotated tags on the same commit. The workflow pushes them atomically,
-so a release cannot leave only one of the two module tags behind.
+Every tag is annotated and points at the same commit. The workflow pushes them
+atomically, so a release cannot leave only some of the module tags behind.
+
+The `components` input chooses what a run publishes. `root` publishes the root
+and Rampart modules, which always move together at the same version.
+`root-and-agentframework` publishes those and agentframework as well.
+
+agentframework keeps its own `v0.x` version line, so it is versioned
+independently, but it is never tagged on its own. Tagging it from the commit
+that the root tag also points at is what makes the SDK version it requires
+exist at the moment agentframework is published. `agentframework/go.mod`
+replaces the SDK with the working tree, and consumers ignore that replace
+directive, so releasing the two from one commit is also what lets every check
+in this repository stand in for a consumer's view of the module.
 
 The workflow has two jobs. The ungated preflight validates `main`, checks every
 version and dependency pin, confirms both tags are unused, runs the release
@@ -56,18 +70,16 @@ Environment secrets are unavailable to the workflow until the protection rules
 pass. Keeping the App key here, rather than as a repository secret, is what
 makes approval a credential boundary.
 
-### 3. Tag rulesets
+### 3. Release-tag ruleset
 
-Two tag rulesets, because the two families of tag are created by different
-actors.
-
-Open **Settings -> Rules -> Rulesets** and create a **tag ruleset**:
+Open **Settings -> Rules -> Rulesets**, create a **tag ruleset**, and use:
 
 - Name: `release-tags`
 - Enforcement status: **Active**
 - Target tags, included by pattern:
   - `v*`
   - `sensitiveinfo/rampart/v*`
+  - `agentframework/v*`
 - Bypass list: only the release GitHub App, set to **Always allow**
 - Tag protections:
   - **Restrict creations**
@@ -76,40 +88,23 @@ Open **Settings -> Rules -> Rulesets** and create a **tag ruleset**:
   - **Block force pushes**
 
 Do not add administrators, organization owners, roles, teams, users, or
-`github-actions` to the bypass list. The two explicit patterns protect the
+`github-actions` to the bypass list. The three explicit patterns protect the
 modules this workflow tags without accidentally treating every tag containing
-a `v` as a release.
+a `v` as a release. If another submodule is published later, add its exact
+`<module-path>/v*` pattern.
 
 The GitHub App is allowed to bypass every rule in this ruleset because GitHub
 does not offer per-rule bypasses. The workflow only creates new tags and refuses
-to proceed when either tag already exists; the App key remains behind the
-environment approval gate.
+to proceed when any tag it would create already exists; the App key remains
+behind the environment approval gate.
 
-Then create a second **tag ruleset**:
+A repository configured before the workflow tagged agentframework also has an
+`agentframework-tags` ruleset covering `agentframework/v*` for a manual push.
+It is redundant once the pattern appears above, and deleting it keeps the tag
+protections in one place. Leaving it does not block a release: it never
+restricted creations.
 
-- Name: `agentframework-tags`
-- Enforcement status: **Active**
-- Target tags, included by pattern: `agentframework/v*`
-- Bypass list: empty
-- Tag protections:
-  - **Restrict updates**
-  - **Restrict deletions**
-  - **Block force pushes**
-
-The `agentframework` module is versioned independently at `v0.x`, and no
-workflow tags it: a maintainer pushes `agentframework/v<version>` by hand,
-following the agentframework steps in
-[CONTRIBUTING.md](../CONTRIBUTING.md#releasing). Adding that pattern to
-`release-tags` instead would leave a tag nobody can create, because the only
-bypass there is the GitHub App. Leaving **Restrict creations** off keeps the
-manual push working while updates, deletions and force pushes stay blocked.
-Once the agentframework tag is automated, move the pattern into `release-tags`
-and delete this ruleset.
-
-If another submodule is published later, add its exact `<module-path>/v*`
-pattern to whichever ruleset matches how its tag is created.
-
-Read both rulesets back once they exist. With **Restrict creations** on and an
+Read the ruleset back once it exists. With **Restrict creations** on and an
 empty bypass list, nothing can create `v*` at all, and because a dry-run push
 sends no ref update there is nothing for the ruleset to reject — so the
 misconfiguration would first appear during a real release, after approval.
@@ -127,8 +122,7 @@ gh api repos/arcjet/arcjet-go/rulesets --jq \
 ```
 
 `release-tags` lists `creation` among its rules and names the release App in
-`bypass_actors`. `agentframework-tags` does not list `creation` and its
-`bypass_actors` is empty.
+`bypass_actors`.
 
 ## Running a release
 
