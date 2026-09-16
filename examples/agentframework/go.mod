@@ -10,8 +10,8 @@ replace github.com/arcjet/arcjet-go/agentframework => ../../agentframework
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.68.0
-	github.com/arcjet/arcjet-go v1.0.0-rc.3
-	github.com/arcjet/arcjet-go/agentframework v0.1.0-rc.1
+	github.com/arcjet/arcjet-go v1.0.0
+	github.com/arcjet/arcjet-go/agentframework v0.1.0
 	github.com/microsoft/agent-framework-go v0.1.0
 )
 
