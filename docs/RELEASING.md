@@ -113,7 +113,14 @@ pattern to whichever ruleset matches how its tag is created.
 Read both rulesets back once they exist. With **Restrict creations** on and an
 empty bypass list, nothing can create `v*` at all, and because a dry-run push
 sends no ref update there is nothing for the ruleset to reject — so the
-misconfiguration first appears during a real release, after approval.
+misconfiguration would first appear during a real release, after approval.
+
+Check the bypass entry in **Settings -> Rules -> Rulesets**, or from an account
+that administers the repository. GitHub returns `bypass_actors` only to a token
+allowed to edit rulesets and omits the field entirely otherwise, so `maintain`
+cannot distinguish a configured bypass list from an empty one, and reading the
+absent field as empty reports a working ruleset as broken. The substitute field
+`current_user_can_bypass` describes the caller, not the App.
 
 ```sh
 gh api repos/arcjet/arcjet-go/rulesets --jq \
