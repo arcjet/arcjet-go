@@ -343,7 +343,6 @@ jobs:
             github.com:443
             api.github.com:443
             objects.githubusercontent.com:443
-            proxy.golang.org:443
 
       - name: Checkout the preflighted commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -392,44 +391,6 @@ jobs:
           fi
           git push "${push_args[@]}" origin "${refspecs[@]}"
 
-      - name: Warm Go module proxy and request pkg.go.dev indexing
-        if: ${{ !inputs.dry-run }}
-        env:
-          AGENTFRAMEWORK_VERSION: ${{ needs.preflight.outputs.agentframework-version }}
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          set -euo pipefail
-          check_module() {
-            local module="$1"
-            local expected="$2"
-            local info
-            if ! info="$(curl \
-                --fail \
-                --retry 12 \
-                --retry-all-errors \
-                --retry-delay 10 \
-                --show-error \
-                --silent \
-                "https://proxy.golang.org/$module/@v/$expected.info")"; then
-              echo "::error::The tags were published, but proxy.golang.org did not resolve '$module@$expected'."
-              echo "::notice::Do not delete or repoint either tag. Retry with: GOPROXY=https://proxy.golang.org go list -m '$module@$expected'"
-              return 1
-            fi
-            if ! jq -e --arg expected "$expected" '.Version == $expected' <<< "$info" > /dev/null; then
-              echo "$info"
-              echo "::error::The tags were published, but the Go module proxy returned an unexpected version for '$module'."
-              echo "::notice::Do not delete or repoint either tag. Retry with: GOPROXY=https://proxy.golang.org go list -m '$module@$expected'"
-              return 1
-            fi
-            echo "Available from proxy.golang.org: $module@$expected"
-          }
-
-          check_module github.com/arcjet/arcjet-go "v$VERSION"
-          check_module github.com/arcjet/arcjet-go/sensitiveinfo/rampart "v$VERSION"
-          if [[ -n "$AGENTFRAMEWORK_VERSION" ]]; then
-            check_module github.com/arcjet/arcjet-go/agentframework "v$AGENTFRAMEWORK_VERSION"
-          fi
-
       - name: Summarize the result
         env:
           AGENTFRAMEWORK_TAG: ${{ needs.preflight.outputs.agentframework-tag }}
@@ -443,7 +404,7 @@ jobs:
           if [[ "$DRY_RUN" == "true" ]]; then
             result="Dry run completed; no remote tags were created."
           else
-            result="Created every tag atomically and made each version available from proxy.golang.org."
+            result="Created every tag atomically. The Verify published modules workflow confirms each version on proxy.golang.org."
           fi
           {
             echo "## Release result"
