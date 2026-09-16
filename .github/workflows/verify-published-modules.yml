@@ -1,0 +1,150 @@
+name: Verify published modules
+
+# proxy.golang.org caches a failed fetch. A request made before the pushed ref
+# has propagated caches "unknown revision" for that version, which then blocks
+# it for up to the 30 minutes described at https://proxy.golang.org/#faq. The
+# release workflow must therefore not ask about a version it has just tagged.
+# This runs after the push instead, waits, and then polls past that window.
+run-name: "Verify ${{ github.ref_name }} on proxy.golang.org"
+
+on:
+  push:
+    tags:
+      - v*
+      - sensitiveinfo/rampart/v*
+      - agentframework/v*
+
+permissions:
+  contents: read
+
+# A release pushes several tags at once. Queue the runs rather than cancel
+# them: each verifies every release tag on the commit, so a later run confirms
+# what an earlier one already saw, against a warm cache.
+concurrency:
+  group: verify-published-modules-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify modules on proxy.golang.org
+    runs-on: ubuntu-24.04
+    # The poll below runs for at most 40 minutes. Leave room for it.
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          disable-sudo: true
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Every release tag on this commit is verified, not just the one that
+          # triggered the run, so the result is the same whether GitHub sends
+          # one push event per ref or one for the whole push.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Wait for the refs to propagate
+        # The first request decides what gets cached. Give the push time to
+        # reach the proxy's view of the repository before asking anything.
+        run: sleep 120
+
+      - name: Verify every release tag on this commit
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Release tags are "v<version>" for the root module and
+          # "<module path>/v<version>" for a submodule.
+          tags="$(git tag --points-at "$TARGET_SHA" \
+            | grep -E '^(v|sensitiveinfo/rampart/v|agentframework/v)[0-9]' \
+            | sort)"
+          if [[ -z "$tags" ]]; then
+            echo "::error::No release tag points at $TARGET_SHA."
+            exit 1
+          fi
+
+          module_for() {
+            local tag="$1"
+            case "$tag" in
+              */v*) echo "github.com/arcjet/arcjet-go/${tag%/v*}" ;;
+              *)    echo "github.com/arcjet/arcjet-go" ;;
+            esac
+          }
+
+          version_for() {
+            local tag="$1"
+            case "$tag" in
+              */v*) echo "v${tag##*/v}" ;;
+              *)    echo "$tag" ;;
+            esac
+          }
+
+          # Poll for at most 40 minutes, past the window in the proxy FAQ. A
+          # long interval keeps the number of requests low while a negative
+          # result is still cached.
+          deadline=$(( SECONDS + 2400 ))
+          unresolved=""
+
+          for tag in $tags; do
+            module="$(module_for "$tag")"
+            version="$(version_for "$tag")"
+            echo "::group::$module@$version"
+            resolved=""
+            while true; do
+              if info="$(curl --fail --silent --show-error \
+                  "https://proxy.golang.org/$module/@v/$version.info")"; then
+                if jq -e --arg want "$version" '.Version == $want' <<< "$info" > /dev/null; then
+                  echo "resolved: $info"
+                  resolved="true"
+                  break
+                fi
+                echo "$info"
+                echo "::error::proxy.golang.org returned a different version for $module@$version."
+                break
+              fi
+              if (( SECONDS >= deadline )); then
+                break
+              fi
+              echo "not resolved yet; waiting"
+              sleep 60
+            done
+            echo "::endgroup::"
+            if [[ -z "$resolved" ]]; then
+              echo "::error::proxy.golang.org did not resolve $module@$version."
+              unresolved="true"
+            fi
+          done
+
+          if [[ -n "$unresolved" ]]; then
+            echo "::notice::The tags are published and correct. Do not delete or repoint them. Retry with: GOPROXY=https://proxy.golang.org go list -m <module>@<version>"
+            exit 1
+          fi
+
+      - name: Summarize
+        if: ${{ always() }}
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Published modules"
+            echo "- commit: \`$TARGET_SHA\`"
+            echo
+            git tag --points-at "$TARGET_SHA" \
+              | grep -E '^(v|sensitiveinfo/rampart/v|agentframework/v)[0-9]' \
+              | sort \
+              | while IFS= read -r tag; do echo "- \`$tag\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -145,18 +145,27 @@ update, so it cannot exercise the tag ruleset or prove that the App has bypass
 permission. Review the active ruleset before the first real release; that push
 is the first end-to-end test of the bypass configuration.
 
-The real run creates both remote tags atomically, then requests each exact
-version from `proxy.golang.org`. That request warms the Go module mirror and
-causes the version to be added to the index that pkg.go.dev monitors. New
-documentation normally appears on pkg.go.dev within a few minutes. Do not
+The real run creates every remote tag atomically and stops there. Do not
 delete or repoint a published release tag; fix the problem and release a new
 version instead.
 
-If the tag push succeeds but the proxy step fails, the release tags are already
-published and correct even though the workflow is red. Do not delete or repoint
-them, and do not rerun the workflow (preflight will correctly reject the
-existing tags). Run the smoke test below; its `go get` requests retry discovery
-through `proxy.golang.org` and complete the pkg.go.dev indexing trigger.
+The push then starts the
+[Verify published modules workflow](../.github/workflows/verify-published-modules.yml),
+which waits, asks `proxy.golang.org` for each module at its exact version, and
+polls for up to 40 minutes. That request also adds the version to the index
+that pkg.go.dev monitors, so documentation normally appears within a few
+minutes of the module resolving.
+
+The release job does not ask about a version it has just tagged, because
+`proxy.golang.org` caches a failed fetch. A request that arrives before the ref
+has propagated caches `unknown revision` for that version and blocks it for up
+to the 30 minutes described in the [proxy FAQ](https://proxy.golang.org/#faq).
+Asking early does not only fail; it creates the failure.
+
+If the verification workflow is red, the tags are still published and correct.
+Do not delete or repoint them, and do not rerun the release workflow, because
+its preflight correctly rejects the existing tags. Wait for the window in the
+FAQ to pass and rerun the verification workflow, then run the smoke test below.
 
 ## After tagging
 
