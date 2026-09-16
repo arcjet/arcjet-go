@@ -1,0 +1,77 @@
+name: Lint workflows
+
+on:
+  merge_group:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/**
+  pull_request:
+    # Recommended by Graphite: https://graphite.dev/docs/github-configuration-guidelines#github-actions
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: actionlint + zizmor
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          disable-sudo: true
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            raw.githubusercontent.com:443
+            astral.sh:443
+            pypi.org:443
+            files.pythonhosted.org:443
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Docker container actions cannot start in this repository: a workflow
+      # that references one fails before any job runs, emitting no check run.
+      # actionlint therefore comes from its release archive, checked against
+      # the published digest so the version stays pinned.
+      - name: actionlint
+        env:
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"
+          curl --fail --location --show-error --silent \
+            --output "$dir/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $dir/actionlint.tar.gz" | sha256sum --check --strict -
+          tar --extract --gzip --file "$dir/actionlint.tar.gz" --directory "$dir" actionlint
+          "$dir/actionlint" -color
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      # Gate on medium-and-higher findings at every confidence level.
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uvx zizmor==1.26.1 --min-severity=medium .github/workflows/
