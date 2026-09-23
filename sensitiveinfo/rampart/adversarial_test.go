@@ -138,8 +138,8 @@ func TestAdversarialNonMonotonicOffsetsDoNotPanic(t *testing.T) {
 
 // TestAdversarialLongInputDoesNotOverflowModel feeds inputs far longer than one
 // window, including dense-token scripts where one character expands to several
-// tokens, to confirm the model's position budget is never overrun (the
-// tokenizer caps the sequence at maxPositions).
+// tokens, to confirm the model's position budget is never overrun (a window
+// that does not fit is scanned in token windows that do).
 func TestAdversarialLongInputDoesNotOverflowModel(t *testing.T) {
 	b := testBackend(t)
 	all := arcjet.SensitiveInfoEntities{Deny: true, Entities: Entities()}

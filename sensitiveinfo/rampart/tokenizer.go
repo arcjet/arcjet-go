@@ -49,39 +49,40 @@ type encoding struct {
 	ids     []int
 	offsets [][2]int // byte [start,end) into the original text; {0,0} for specials
 	special []bool
+	words   []int // index of the pre-token each token came from; -1 for specials
 }
 
-// encode tokenizes text into ids wrapped with [CLS] .. [SEP], tracking the
-// original byte span of every non-special token.
+// tokenize tokenizes all of text into content tokens, without [CLS]/[SEP] and
+// without truncation, tracking the original byte span of every token. Several
+// tokens can share one span (a Hangul syllable decomposes into three Jamo).
+func (t *tokenizer) tokenize(text string) encoding {
+	var enc encoding
+	for i, w := range normalizePretokenize(text) {
+		t.wordpiece(w, i, &enc)
+	}
+	return enc
+}
+
+// encode tokenizes text into ids wrapped with [CLS] .. [SEP], truncated to the
+// model's position budget, mirroring the reference tokenizer's
+// truncation=True/max_length=maxPositions. The model runner does not use it:
+// it windows the output of tokenize instead, so no token is dropped.
 func (t *tokenizer) encode(text string) encoding {
-	words := normalizePretokenize(text)
+	content := t.tokenize(text)
+	n := min(len(content.ids), maxPositions-2)
 
 	enc := encoding{
-		ids:     []int{clsID},
-		offsets: [][2]int{{0, 0}},
-		special: []bool{true},
+		ids:     make([]int, 0, n+2),
+		offsets: make([][2]int, 0, n+2),
+		special: make([]bool, 0, n+2),
+		words:   make([]int, 0, n+2),
 	}
-	for _, w := range words {
-		t.wordpiece(w, &enc)
-		// Stop once the position budget (less the trailing [SEP]) is full.
-		// One character can expand to several tokens (NFD decomposition, CJK
-		// isolation), so a fixed character window does not bound the token
-		// count; the model has only maxPositions positions.
-		if len(enc.ids) >= maxPositions-1 {
-			break
-		}
-	}
-	// Truncate to the model's position budget, mirroring the reference
-	// tokenizer's truncation=True/max_length=maxPositions. A word can push the
-	// count past the budget in one step, so clamp before appending [SEP].
-	if len(enc.ids) > maxPositions-1 {
-		enc.ids = enc.ids[:maxPositions-1]
-		enc.offsets = enc.offsets[:maxPositions-1]
-		enc.special = enc.special[:maxPositions-1]
-	}
-	enc.ids = append(enc.ids, sepID)
-	enc.offsets = append(enc.offsets, [2]int{0, 0})
-	enc.special = append(enc.special, true)
+	enc.appendSpecial(clsID)
+	enc.ids = append(enc.ids, content.ids[:n]...)
+	enc.offsets = append(enc.offsets, content.offsets[:n]...)
+	enc.special = append(enc.special, content.special[:n]...)
+	enc.words = append(enc.words, content.words[:n]...)
+	enc.appendSpecial(sepID)
 	return enc
 }
 
@@ -169,12 +170,12 @@ func normalizePretokenize(text string) []pretoken {
 // wordpiece greedily splits one pre-token into WordPiece subtokens, appending
 // each to enc with its reconstructed byte offset. Unknown words (or words that
 // fail to segment) become a single [UNK] spanning the whole word.
-func (t *tokenizer) wordpiece(w pretoken, enc *encoding) {
+func (t *tokenizer) wordpiece(w pretoken, word int, enc *encoding) {
 	if len(w.runes) == 0 {
 		return
 	}
 	if len(w.runes) > maxInputCharsPerWord {
-		enc.append(unkID, w.offsets[0][0], w.offsets[len(w.offsets)-1][1])
+		enc.append(unkID, word, w.offsets[0][0], w.offsets[len(w.offsets)-1][1])
 		return
 	}
 
@@ -200,7 +201,7 @@ func (t *tokenizer) wordpiece(w pretoken, enc *encoding) {
 		}
 		if curID < 0 {
 			// Unmatchable: the whole word is [UNK].
-			enc.append(unkID, w.offsets[0][0], w.offsets[len(w.offsets)-1][1])
+			enc.append(unkID, word, w.offsets[0][0], w.offsets[len(w.offsets)-1][1])
 			return
 		}
 		subtokens = append(subtokens, curID)
@@ -208,14 +209,22 @@ func (t *tokenizer) wordpiece(w pretoken, enc *encoding) {
 		start = end
 	}
 	for i, id := range subtokens {
-		enc.append(id, subOffsets[i][0], subOffsets[i][1])
+		enc.append(id, word, subOffsets[i][0], subOffsets[i][1])
 	}
 }
 
-func (e *encoding) append(id, start, end int) {
+func (e *encoding) append(id, word, start, end int) {
 	e.ids = append(e.ids, id)
 	e.offsets = append(e.offsets, [2]int{start, end})
 	e.special = append(e.special, false)
+	e.words = append(e.words, word)
+}
+
+func (e *encoding) appendSpecial(id int) {
+	e.ids = append(e.ids, id)
+	e.offsets = append(e.offsets, [2]int{0, 0})
+	e.special = append(e.special, true)
+	e.words = append(e.words, -1)
 }
 
 // isWhitespaceRune mirrors BERT's _is_whitespace: space/tab/newline/carriage

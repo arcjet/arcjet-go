@@ -2,20 +2,25 @@ package rampart
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"unicode/utf8"
 )
 
-// The model has a 512-token window. Inputs are scanned in overlapping windows
-// of at most modelMaxInputChars characters (Unicode code points, not bytes),
-// leaving headroom for [CLS]/[SEP]. A single character can expand to several
-// tokens (NFD decomposition, CJK isolation), so the tokenizer additionally
-// caps each window's token count at the model's position budget (see
-// tokenizer.encode). The overlap keeps an entity that straddles a boundary
-// intact. Matches arcjet-py's _model.py, which windows by code point.
+// The model has a 512-token window, including [CLS] and [SEP]. Inputs are
+// scanned in overlapping windows of at most modelMaxInputChars characters
+// (Unicode code points, not bytes), the context the model detects best in: its
+// phone recall drops in windows closer to the full 512 tokens. A character can
+// expand to several tokens (NFD decomposes a Hangul syllable into three Jamo
+// sharing one offset), so a character window that does not fit is itself
+// scanned in overlapping token windows that do; no token is dropped. The
+// overlaps keep an entity that straddles a boundary intact. Matches arcjet-py's
+// _model.py.
 const (
 	modelMaxInputChars = 480
 	chunkOverlap       = 64
+	windowTokenBudget  = maxPositions - 2
+	chunkOverlapTokens = 64
 )
 
 // modelRunner runs the Rampart NER model over text and returns detected spans.
@@ -32,70 +37,134 @@ type modelRunner struct {
 // spans found so far and ctx.Err().
 func (r *modelRunner) run(ctx context.Context, value string) ([]DetectedSpan, error) {
 	if utf8.RuneCountInString(value) <= modelMaxInputChars {
-		return aggregateTokens(value, r.classifyChunk(value), r.threshold), nil
+		spans, windows, err := r.scan(ctx, value, 0, nil)
+		if err != nil || windows > 1 {
+			return mergeWindowedSpans(spans), err
+		}
+		return spans, nil
 	}
 
+	var spans []DetectedSpan
+	for _, window := range charWindows(value) {
+		if err := ctx.Err(); err != nil {
+			return mergeWindowedSpans(spans), err
+		}
+		var err error
+		spans, _, err = r.scan(ctx, value[window[0]:window[1]], window[0], spans)
+		if err != nil {
+			return mergeWindowedSpans(spans), err
+		}
+	}
+	return mergeWindowedSpans(spans), nil
+}
+
+// charWindows returns the byte bounds of the overlapping character windows
+// that cover value: modelMaxInputChars runes each, advancing by
+// modelMaxInputChars-chunkOverlap, never splitting a rune.
+func charWindows(value string) [][2]int {
 	// Byte offset of every rune start, plus len(value) as a sentinel end, so
 	// window boundaries always fall between runes and never split one.
-	runeStarts := make([]int, 0, len(value))
+	runeStarts := make([]int, 0, len(value)+1)
 	for i := range value {
 		runeStarts = append(runeStarts, i)
 	}
 	runeStarts = append(runeStarts, len(value))
 	numRunes := len(runeStarts) - 1
 
-	var spans []DetectedSpan
+	var windows [][2]int
 	step := modelMaxInputChars - chunkOverlap
 	for startRune := 0; ; startRune += step {
-		if err := ctx.Err(); err != nil {
-			return mergeWindowedSpans(spans), err
-		}
 		endRune := min(startRune+modelMaxInputChars, numRunes)
-		startByte, endByte := runeStarts[startRune], runeStarts[endRune]
-		chunk := value[startByte:endByte]
-		for _, span := range aggregateTokens(chunk, r.classifyChunk(chunk), r.threshold) {
-			spans = append(spans, DetectedSpan{
-				Start: span.Start + startByte,
-				End:   span.End + startByte,
-				Type:  span.Type,
-			})
-		}
+		windows = append(windows, [2]int{runeStarts[startRune], runeStarts[endRune]})
 		// Once a window reaches the end the whole input is covered; advancing
 		// would only re-scan an already-covered tail.
 		if endRune >= numRunes {
 			break
 		}
 	}
-	return mergeWindowedSpans(spans), nil
+	return windows
 }
 
-// classifyChunk tokenizes and classifies a single chunk into raw tokens with
-// offsets. Special ([CLS]/[SEP]) and zero-width tokens are skipped.
-func (r *modelRunner) classifyChunk(chunk string) []rawToken {
-	enc := r.tokenizer.encode(chunk)
-	if len(enc.ids) == 0 {
-		return nil
+// scan classifies one character window, in token windows when it does not fit
+// the model, appending its spans to spans rebased by offset. It returns the
+// spans and how many model invocations the chunk took, and honors ctx between
+// token windows.
+func (r *modelRunner) scan(ctx context.Context, chunk string, offset int, spans []DetectedSpan) ([]DetectedSpan, int, error) {
+	enc := r.tokenizer.tokenize(chunk)
+	windows := planWindows(enc.words, windowTokenBudget, chunkOverlapTokens)
+	for i, window := range windows {
+		if i > 0 {
+			if err := ctx.Err(); err != nil {
+				return spans, i, err
+			}
+		}
+		tokens, err := r.classifyWindow(enc, window)
+		if err != nil {
+			return spans, i, err
+		}
+		for _, span := range aggregateTokens(chunk, tokens, r.threshold) {
+			spans = append(spans, DetectedSpan{
+				Start: span.Start + offset,
+				End:   span.End + offset,
+				Type:  span.Type,
+			})
+		}
 	}
-	logits := r.model.forward(enc.ids)
+	return spans, len(windows), nil
+}
+
+// planWindows splits a token sequence into overlapping [start, end) windows of
+// at most budget tokens that together cover every token. Each window after the
+// first starts overlap tokens before the previous one ended, moved back to the
+// start of the word there so a window does not open on a sub-word
+// continuation. It always starts after the previous window's start, so
+// planning progresses even when one word spans more tokens than the overlap.
+func planWindows(words []int, budget, overlap int) [][2]int {
+	var windows [][2]int
+	for start := 0; start < len(words); {
+		end := min(start+budget, len(words))
+		windows = append(windows, [2]int{start, end})
+		if end == len(words) {
+			break
+		}
+		next := end - overlap
+		for next-1 > start && words[next] == words[next-1] {
+			next--
+		}
+		start = next
+	}
+	return windows
+}
+
+// classifyWindow classifies tokens [window[0], window[1]) of enc, wrapped in
+// [CLS] .. [SEP], into raw tokens. Zero-width tokens are skipped.
+func (r *modelRunner) classifyWindow(enc encoding, window [2]int) ([]rawToken, error) {
+	start, end := window[0], window[1]
+	ids := make([]int, 0, end-start+2)
+	ids = append(ids, clsID)
+	ids = append(ids, enc.ids[start:end]...)
+	ids = append(ids, sepID)
+	if len(ids) > maxPositions {
+		return nil, fmt.Errorf("rampart: window of %d tokens exceeds the model's %d positions", len(ids), maxPositions)
+	}
+	logits := r.model.forward(ids)
 
 	var tokens []rawToken
-	for i := range enc.ids {
-		if enc.special[i] {
+	// Position 0 is [CLS]; the window's tokens follow it, then [SEP].
+	for i, offset := range enc.offsets[start:end] {
+		if offset[1] <= offset[0] {
 			continue
 		}
-		start, end := enc.offsets[i][0], enc.offsets[i][1]
-		if end <= start {
-			continue
-		}
-		label, score := argmaxSoftmax(logits[i*numLabels : (i+1)*numLabels])
+		pos := i + 1
+		label, score := argmaxSoftmax(logits[pos*numLabels : (pos+1)*numLabels])
 		tokens = append(tokens, rawToken{
 			entity: id2label[label],
 			score:  score,
-			start:  start,
-			end:    end,
+			start:  offset[0],
+			end:    offset[1],
 		})
 	}
-	return tokens
+	return tokens, nil
 }
 
 // argmaxSoftmax returns the argmax label id and its softmax probability (the
