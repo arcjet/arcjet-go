@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	arcjet "github.com/arcjet/arcjet-go"
@@ -105,6 +106,22 @@ func TestPlanWindowsProgressThroughOneWord(t *testing.T) {
 	ids := make([]int, 2000)
 	assertValidPlan(t, ids, windowTokenBudget, chunkOverlapTokens,
 		planWindows(ids, windowTokenBudget, chunkOverlapTokens))
+}
+
+// TestPlanWindowsCapsAnOverlapAtTheBudget passes an overlap that would start
+// each window at or before the previous one. Uncapped, planning never ends.
+func TestPlanWindowsCapsAnOverlapAtTheBudget(t *testing.T) {
+	ids := words(slices.Repeat([]int{3}, 50)...)
+	for _, overlap := range []int{9, 10, 50} {
+		done := make(chan [][2]int, 1)
+		go func() { done <- planWindows(ids, 10, overlap) }()
+		select {
+		case windows := <-done:
+			assertValidPlan(t, ids, 10, 9, windows)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("planWindows did not finish with overlap %d and budget 10", overlap)
+		}
+	}
 }
 
 func TestPlanWindowsProperties(t *testing.T) {
