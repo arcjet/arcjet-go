@@ -155,6 +155,37 @@ type GuardPolicyResult struct {
 	PolicyExpression     *GuardPolicyExpressionResult     `json:"policyExpression,omitempty"`
 	Error                *ArcjetError                     `json:"error,omitempty"`
 	NotRun               bool                             `json:"notRun,omitempty"`
+	// SensitiveInfo is a sensitive-information detection Arcjet ran on the
+	// server, so Arcjet saw the value; Execution is [GuardRuleExecutionServer].
+	// LocalSensitiveInfo is the in-process detection, where the value never
+	// left the SDK.
+	SensitiveInfo *GuardSensitiveInfoResult `json:"sensitiveInfo,omitempty"`
+	// IPThreat is IP threat intelligence for the destinations a call would
+	// contact, evaluated by Arcjet.
+	IPThreat *GuardIPThreatResult `json:"ipThreat,omitempty"`
+}
+
+// GuardIPThreatResult is Arcjet's assessment of the destinations a call would
+// contact, from the same IP threat intelligence Protect uses for the caller of
+// an HTTP request. It describes the destination with the worst assessment.
+type GuardIPThreatResult struct {
+	Conclusion Conclusion `json:"conclusion"`
+	// Detected reports whether the worst destination scored high or critical.
+	Detected bool `json:"detected"`
+	// RiskLevel is the worst risk: "none", "low", "medium", "high" or
+	// "critical". Later servers may add values, so treat an unrecognized one
+	// as unknown rather than as an error.
+	RiskLevel string `json:"riskLevel"`
+	// Reputation is the reputation of the address that produced RiskLevel.
+	Reputation string `json:"reputation"`
+	// Activities are activities observed for that address, such as "malware"
+	// or "botnet".
+	Activities []string `json:"activities"`
+	// Host is the destination that produced the worst assessment. It is empty
+	// when nothing scored above "none".
+	Host string `json:"host"`
+	// IP is the address that was looked up for Host.
+	IP string `json:"ip"`
 }
 
 // GuardPolicyExpressionResult is the result of a remote policy rule decided by
@@ -334,6 +365,10 @@ type GuardSensitiveInfoResult struct {
 	Conclusion          Conclusion   `json:"conclusion"`
 	Detected            bool         `json:"detected"`
 	DetectedEntityTypes []EntityType `json:"detectedEntityTypes"`
+	// Billing is metered usage in text_units. It is set only for a detection
+	// Arcjet ran on the server, and can be nil there too; a local detection
+	// runs on your own hardware and is never billed.
+	Billing *GuardBillingUsage `json:"billing,omitempty"`
 }
 
 // GuardLocalCustomResult contains custom local Guard result details.
@@ -474,6 +509,10 @@ func policyRuleType(t decidev2.GuardRuleType) GuardRuleType {
 		return GuardRuleTypeLocalSensitiveInfo
 	case decidev2.GuardRuleType_GUARD_RULE_TYPE_POLICY_EXPRESSION:
 		return GuardRuleTypePolicyExpression
+	case decidev2.GuardRuleType_GUARD_RULE_TYPE_SENSITIVE_INFO:
+		return GuardRuleTypeSensitiveInfo
+	case decidev2.GuardRuleType_GUARD_RULE_TYPE_IP_THREAT:
+		return GuardRuleTypeIPThreat
 	default:
 		return GuardRuleTypeUnknown
 	}
@@ -536,13 +575,28 @@ func policyResultFromProto(p *decidev2.GuardPolicyRuleResult) GuardPolicyResult 
 		r.Reason = ReasonInputConstraint
 	case *decidev2.GuardPolicyRuleResult_LocalSensitiveInfo:
 		x := v.LocalSensitiveInfo
-		types := make([]EntityType, len(x.GetDetectedEntityTypes()))
-		for i, t := range x.GetDetectedEntityTypes() {
-			types[i] = EntityType(t)
-		}
-		r.LocalSensitiveInfo = &GuardSensitiveInfoResult{Conclusion: policyConclusion(x.GetConclusion()), Detected: x.GetDetected(), DetectedEntityTypes: types}
+		r.LocalSensitiveInfo = &GuardSensitiveInfoResult{Conclusion: policyConclusion(x.GetConclusion()), Detected: x.GetDetected(), DetectedEntityTypes: entityTypes(x.GetDetectedEntityTypes())}
 		r.Conclusion = r.LocalSensitiveInfo.Conclusion
 		r.Reason = ReasonSensitiveInfo
+	case *decidev2.GuardPolicyRuleResult_SensitiveInfo:
+		// Arcjet saw this value, so it never goes in LocalSensitiveInfo.
+		x := v.SensitiveInfo
+		r.SensitiveInfo = &GuardSensitiveInfoResult{Conclusion: policyConclusion(x.GetConclusion()), Detected: x.GetDetected(), DetectedEntityTypes: entityTypes(x.GetDetectedEntityTypes()), Billing: billingUsage(x.GetBilling())}
+		r.Conclusion = r.SensitiveInfo.Conclusion
+		r.Reason = ReasonSensitiveInfo
+	case *decidev2.GuardPolicyRuleResult_IpThreat:
+		x := v.IpThreat
+		r.IPThreat = &GuardIPThreatResult{
+			Conclusion: policyConclusion(x.GetConclusion()),
+			Detected:   x.GetDetected(),
+			RiskLevel:  x.GetRiskLevel(),
+			Reputation: x.GetReputation(),
+			Activities: append([]string{}, x.GetActivities()...),
+			Host:       x.GetHost(),
+			IP:         x.GetIp(),
+		}
+		r.Conclusion = r.IPThreat.Conclusion
+		r.Reason = ReasonIPThreat
 	case *decidev2.GuardPolicyRuleResult_PolicyExpression:
 		r.PolicyExpression = &GuardPolicyExpressionResult{Conclusion: policyConclusion(v.PolicyExpression.GetConclusion())}
 		r.Conclusion = r.PolicyExpression.Conclusion
@@ -555,6 +609,21 @@ func policyResultFromProto(p *decidev2.GuardPolicyRuleResult) GuardPolicyResult 
 		r.Reason = ReasonNotRun
 	}
 	return r
+}
+
+func entityTypes(in []string) []EntityType {
+	out := make([]EntityType, len(in))
+	for i, t := range in {
+		out[i] = EntityType(t)
+	}
+	return out
+}
+
+func billingUsage(b *decidev2.Billing) *GuardBillingUsage {
+	if b == nil {
+		return nil
+	}
+	return &GuardBillingUsage{Unit: b.GetUnit(), Count: b.GetCount()}
 }
 
 func (r guardRuleResultWire) toGuardRuleResult() GuardRuleResult {
@@ -626,6 +695,8 @@ func parseGuardReason(s string) ReasonType {
 		return ReasonNotRun
 	case "GUARD_REASON_INPUT_CONSTRAINT":
 		return ReasonInputConstraint
+	case "GUARD_REASON_IP_THREAT":
+		return ReasonIPThreat
 	default:
 		return ReasonUnknown
 	}
@@ -655,6 +726,10 @@ func parseGuardRuleType(s string) GuardRuleType {
 		return GuardRuleTypeLocalSensitiveInfo
 	case "GUARD_RULE_TYPE_LOCAL_CUSTOM":
 		return GuardRuleTypeLocalCustom
+	case "GUARD_RULE_TYPE_SENSITIVE_INFO":
+		return GuardRuleTypeSensitiveInfo
+	case "GUARD_RULE_TYPE_IP_THREAT":
+		return GuardRuleTypeIPThreat
 	default:
 		return GuardRuleType(s)
 	}

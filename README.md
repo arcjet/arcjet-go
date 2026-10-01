@@ -1102,6 +1102,34 @@ from positional SDK rule `decision.Results`. `Guard()` remains fail open when a
 remote policy is incomplete or unavailable; check `decision.HasFailedOpen()`
 when your application must fail closed.
 
+A policy that uses a server-side detector reports it on the `GuardPolicyResult`
+with `Execution` set to `arcjet.GuardRuleExecutionServer`:
+
+- `SensitiveInfo` (type `GuardRuleTypeSensitiveInfo`, reason
+  `ReasonSensitiveInfo`) is a sensitive-information detection that Arcjet ran,
+  so Arcjet received the value. It has the same shape as `LocalSensitiveInfo`,
+  which reports a detection that ran in your process, plus optional `Billing`
+  in `text_units`.
+- `IPThreat` (type `GuardRuleTypeIPThreat`, reason `ReasonIPThreat`) is the IP
+  threat assessment of the destinations the call would contact. It carries
+  `Detected` (the worst destination scored high or critical), `RiskLevel`,
+  `Reputation`, `Activities`, `Host` and `IP`. `Host` is empty when nothing
+  scored above `"none"`.
+
+```go
+for _, result := range decision.PolicyResults {
+	switch {
+	case result.SensitiveInfo != nil:
+		log.Printf("server sensitive info detected=%v types=%v",
+			result.SensitiveInfo.Detected,
+			result.SensitiveInfo.DetectedEntityTypes)
+	case result.IPThreat != nil:
+		log.Printf("destination %s (%s) risk=%s",
+			result.IPThreat.Host, result.IPThreat.IP, result.IPThreat.RiskLevel)
+	}
+}
+```
+
 ### Rate limiting
 
 Token bucket, fixed window, and sliding window algorithms are available.

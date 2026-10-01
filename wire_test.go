@@ -2,7 +2,9 @@ package arcjet
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -178,6 +180,8 @@ func TestParseGuardRuleType(t *testing.T) {
 		"GUARD_RULE_TYPE_MODERATE_CONTENT":     GuardRuleTypeModerateContent,
 		"GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO": GuardRuleTypeLocalSensitiveInfo,
 		"GUARD_RULE_TYPE_LOCAL_CUSTOM":         GuardRuleTypeLocalCustom,
+		"GUARD_RULE_TYPE_SENSITIVE_INFO":       GuardRuleTypeSensitiveInfo,
+		"GUARD_RULE_TYPE_IP_THREAT":            GuardRuleTypeIPThreat,
 		"UNRECOGNISED":                         GuardRuleType("UNRECOGNISED"),
 	}
 	for in, want := range cases {
@@ -201,6 +205,9 @@ func TestParseGuardReasonEdges(t *testing.T) {
 	}
 	if got := parseGuardReason("GUARD_REASON_NOT_RUN"); got != ReasonNotRun {
 		t.Errorf("not-run = %q", got)
+	}
+	if got := parseGuardReason("GUARD_REASON_IP_THREAT"); got != ReasonIPThreat {
+		t.Errorf("ip-threat = %q", got)
 	}
 }
 
@@ -457,6 +464,253 @@ func TestGuardPolicyExpressionResultConversion(t *testing.T) {
 				t.Errorf("identity = %#v", got)
 			}
 		})
+	}
+}
+
+// A server-side sensitive-information result means Arcjet saw the value, which
+// is the one thing the proto keeps it separate from the local variant to say.
+// Reporting it through LocalSensitiveInfo would tell a reader the value never
+// left the process, so the test asserts the local field stays nil, and stays
+// absent from the JSON form a caller might log.
+func TestGuardPolicySensitiveInfoResultConversion(t *testing.T) {
+	got := policyResultFromProto(&decidev2.GuardPolicyRuleResult{
+		ResultId:       "result-si",
+		PolicyId:       "policy-id",
+		PolicyRevision: "rev-1",
+		RuleId:         "no-pii",
+		Type:           decidev2.GuardRuleType_GUARD_RULE_TYPE_SENSITIVE_INFO,
+		Mode:           decidev2.GuardRuleMode_GUARD_RULE_MODE_LIVE,
+		Execution:      decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SERVER,
+		Source:         decidev2.GuardRuleSource_GUARD_RULE_SOURCE_REMOTE,
+		Result: &decidev2.GuardPolicyRuleResult_SensitiveInfo{SensitiveInfo: &decidev2.ResultSensitiveInfo{
+			Conclusion:          decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+			Detected:            true,
+			DetectedEntityTypes: []string{"EMAIL", "SURNAME"},
+			DetectedEntities: []*decidev2.GuardSensitiveInfoEntity{
+				{Type: "EMAIL", Start: 3, End: 20},
+				{Type: "SURNAME", Start: 25, End: 30},
+			},
+			Billing: &decidev2.Billing{Unit: "text_units", Count: 2},
+		}},
+	})
+
+	if got.Conclusion != ConclusionDeny || got.Reason != ReasonSensitiveInfo || got.Type != GuardRuleTypeSensitiveInfo {
+		t.Fatalf("conclusion/reason/type = %q/%q/%q", got.Conclusion, got.Reason, got.Type)
+	}
+	if got.Execution != GuardRuleExecutionServer || got.Source != GuardRuleSourceRemote || got.Mode != ModeLive {
+		t.Fatalf("execution/source/mode = %q/%q/%q", got.Execution, got.Source, got.Mode)
+	}
+	if got.LocalSensitiveInfo != nil {
+		t.Fatalf("server detection reported as local: %#v", got.LocalSensitiveInfo)
+	}
+	si := got.SensitiveInfo
+	if si == nil {
+		t.Fatal("SensitiveInfo detail is nil")
+	}
+	if si.Conclusion != ConclusionDeny || !si.Detected {
+		t.Errorf("detail = %#v", si)
+	}
+	if len(si.DetectedEntityTypes) != 2 || si.DetectedEntityTypes[0] != SensitiveInfoEmail || si.DetectedEntityTypes[1] != SensitiveInfoSurname {
+		t.Errorf("entity types = %v", si.DetectedEntityTypes)
+	}
+	if si.Billing == nil || si.Billing.Unit != "text_units" || si.Billing.Count != 2 {
+		t.Errorf("billing = %#v", si.Billing)
+	}
+	if got.RuleID != "no-pii" || got.PolicyRevision != "rev-1" || got.ResultID != "result-si" {
+		t.Errorf("identity = %#v", got)
+	}
+
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["localSensitiveInfo"]; ok {
+		t.Errorf("JSON carries localSensitiveInfo for a server detection: %s", data)
+	}
+	if _, ok := fields["sensitiveInfo"]; !ok {
+		t.Errorf("JSON lacks sensitiveInfo: %s", data)
+	}
+}
+
+// An empty variant still selects the server result: it fails open to ALLOW
+// with no detail invented.
+func TestGuardPolicySensitiveInfoResultMinimal(t *testing.T) {
+	got := policyResultFromProto(&decidev2.GuardPolicyRuleResult{
+		Type:   decidev2.GuardRuleType_GUARD_RULE_TYPE_SENSITIVE_INFO,
+		Result: &decidev2.GuardPolicyRuleResult_SensitiveInfo{SensitiveInfo: &decidev2.ResultSensitiveInfo{}},
+	})
+	if got.Conclusion != ConclusionAllow || got.Reason != ReasonSensitiveInfo || got.Type != GuardRuleTypeSensitiveInfo {
+		t.Fatalf("conclusion/reason/type = %q/%q/%q", got.Conclusion, got.Reason, got.Type)
+	}
+	if got.LocalSensitiveInfo != nil {
+		t.Fatalf("server detection reported as local: %#v", got.LocalSensitiveInfo)
+	}
+	si := got.SensitiveInfo
+	if si == nil {
+		t.Fatal("SensitiveInfo detail is nil")
+	}
+	if si.Conclusion != ConclusionAllow || si.Detected || len(si.DetectedEntityTypes) != 0 || si.Billing != nil {
+		t.Errorf("detail = %#v", si)
+	}
+}
+
+// The local variant must keep reporting through LocalSensitiveInfo, and never
+// gains billing.
+func TestGuardPolicyLocalSensitiveInfoStaysLocal(t *testing.T) {
+	got := policyResultFromProto(&decidev2.GuardPolicyRuleResult{
+		Type:      decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO,
+		Execution: decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SDK,
+		Result: &decidev2.GuardPolicyRuleResult_LocalSensitiveInfo{LocalSensitiveInfo: &decidev2.ResultLocalSensitiveInfo{
+			Conclusion:          decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+			Detected:            true,
+			DetectedEntityTypes: []string{"EMAIL"},
+		}},
+	})
+	if got.SensitiveInfo != nil {
+		t.Fatalf("local detection reported as server: %#v", got.SensitiveInfo)
+	}
+	if got.LocalSensitiveInfo == nil || got.LocalSensitiveInfo.Billing != nil || got.Execution != GuardRuleExecutionSDK || got.Type != GuardRuleTypeLocalSensitiveInfo {
+		t.Fatalf("local result = %#v", got)
+	}
+}
+
+func TestGuardPolicyIPThreatResultConversion(t *testing.T) {
+	activities := []string{"malware", "botnet"}
+	got := policyResultFromProto(&decidev2.GuardPolicyRuleResult{
+		ResultId:       "result-ip",
+		PolicyId:       "policy-id",
+		PolicyRevision: "rev-2",
+		RuleId:         "no-bad-destinations",
+		Type:           decidev2.GuardRuleType_GUARD_RULE_TYPE_IP_THREAT,
+		Mode:           decidev2.GuardRuleMode_GUARD_RULE_MODE_DRY_RUN,
+		Execution:      decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SERVER,
+		Source:         decidev2.GuardRuleSource_GUARD_RULE_SOURCE_REMOTE,
+		Result: &decidev2.GuardPolicyRuleResult_IpThreat{IpThreat: &decidev2.ResultIpThreat{
+			Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+			Detected:   true,
+			RiskLevel:  "critical",
+			Reputation: "malicious",
+			Activities: activities,
+			Host:       "evil.example",
+			Ip:         "203.0.113.7",
+		}},
+	})
+
+	if got.Conclusion != ConclusionDeny || got.Reason != ReasonIPThreat || got.Type != GuardRuleTypeIPThreat {
+		t.Fatalf("conclusion/reason/type = %q/%q/%q", got.Conclusion, got.Reason, got.Type)
+	}
+	if got.Execution != GuardRuleExecutionServer || got.Mode != ModeDryRun || got.RuleID != "no-bad-destinations" {
+		t.Fatalf("result = %#v", got)
+	}
+	want := GuardIPThreatResult{
+		Conclusion: ConclusionDeny,
+		Detected:   true,
+		RiskLevel:  "critical",
+		Reputation: "malicious",
+		Activities: []string{"malware", "botnet"},
+		Host:       "evil.example",
+		IP:         "203.0.113.7",
+	}
+	if got.IPThreat == nil {
+		t.Fatal("IPThreat detail is nil")
+	}
+	if !reflect.DeepEqual(*got.IPThreat, want) {
+		t.Errorf("IPThreat = %#v, want %#v", *got.IPThreat, want)
+	}
+	// The public result must not alias the protobuf message's slice.
+	activities[0] = "changed"
+	if got.IPThreat.Activities[0] != "malware" {
+		t.Errorf("activities alias the proto slice: %v", got.IPThreat.Activities)
+	}
+}
+
+// Nothing scored above none: no host, no activities, and an unset conclusion
+// that fails open. A risk level this SDK does not know passes through as the
+// string it is.
+func TestGuardPolicyIPThreatResultMinimal(t *testing.T) {
+	for _, risk := range []string{"", "none", "severe"} {
+		t.Run(risk, func(t *testing.T) {
+			got := policyResultFromProto(&decidev2.GuardPolicyRuleResult{
+				Type: decidev2.GuardRuleType_GUARD_RULE_TYPE_IP_THREAT,
+				Result: &decidev2.GuardPolicyRuleResult_IpThreat{IpThreat: &decidev2.ResultIpThreat{
+					RiskLevel: risk,
+				}},
+			})
+			if got.Conclusion != ConclusionAllow || got.Reason != ReasonIPThreat || got.Type != GuardRuleTypeIPThreat {
+				t.Fatalf("conclusion/reason/type = %q/%q/%q", got.Conclusion, got.Reason, got.Type)
+			}
+			x := got.IPThreat
+			if x == nil {
+				t.Fatal("IPThreat detail is nil")
+			}
+			if x.Conclusion != ConclusionAllow || x.Detected || x.RiskLevel != risk || x.Reputation != "" || x.Activities == nil || len(x.Activities) != 0 || x.Host != "" || x.IP != "" {
+				t.Errorf("detail = %#v", x)
+			}
+		})
+	}
+}
+
+// The new variants also arrive through the full response path, where the
+// decision reason is mapped from its proto name.
+func TestGuardDecisionFromProtoServerDetectorResults(t *testing.T) {
+	decision := guardDecisionFromProto(&decidev2.GuardResponse{Decision: &decidev2.GuardDecision{
+		Id:               "gdec_detectors",
+		Conclusion:       decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+		Reason:           decidev2.GuardReason_GUARD_REASON_IP_THREAT,
+		PolicyEvaluation: &decidev2.GuardPolicyEvaluation{Status: decidev2.GuardPolicyStatus_GUARD_POLICY_STATUS_APPLIED},
+		PolicyRuleResults: []*decidev2.GuardPolicyRuleResult{
+			{
+				Type:      decidev2.GuardRuleType_GUARD_RULE_TYPE_SENSITIVE_INFO,
+				Execution: decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SERVER,
+				Result: &decidev2.GuardPolicyRuleResult_SensitiveInfo{SensitiveInfo: &decidev2.ResultSensitiveInfo{
+					Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+				}},
+			},
+			{
+				Type:      decidev2.GuardRuleType_GUARD_RULE_TYPE_IP_THREAT,
+				Execution: decidev2.GuardRuleExecution_GUARD_RULE_EXECUTION_SERVER,
+				Result: &decidev2.GuardPolicyRuleResult_IpThreat{IpThreat: &decidev2.ResultIpThreat{
+					Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+					Detected:   true,
+					RiskLevel:  "high",
+				}},
+			},
+		},
+	}})
+	if decision.Reason != ReasonIPThreat || !decision.IsDenied() || decision.HasFailedOpen() {
+		t.Fatalf("decision = %#v", decision)
+	}
+	if len(decision.PolicyResults) != 2 || decision.PolicyResults[0].SensitiveInfo == nil || decision.PolicyResults[1].IPThreat == nil {
+		t.Fatalf("policy results = %#v", decision.PolicyResults)
+	}
+	denial := newGuardDenialResultAt(decision, time.Unix(0, 0))
+	if denial.Reason != "IP_THREAT" || denial.Retryable {
+		t.Fatalf("denial = %#v", denial)
+	}
+}
+
+func TestPolicyRuleType(t *testing.T) {
+	cases := map[decidev2.GuardRuleType]GuardRuleType{
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_PROMPT_INJECTION:       GuardRuleTypePromptInjection,
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_ALLOWED_STRING_VALUES:  GuardRuleTypeAllowedStringValues,
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_DENIED_STRING_VALUES:   GuardRuleTypeDeniedStringValues,
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_STRING_LENGTH:          GuardRuleTypeStringLength,
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_STRING_LIST_MEMBERSHIP: GuardRuleTypeStringListMembership,
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO:   GuardRuleTypeLocalSensitiveInfo,
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_POLICY_EXPRESSION:      GuardRuleTypePolicyExpression,
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_SENSITIVE_INFO:         GuardRuleTypeSensitiveInfo,
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_IP_THREAT:              GuardRuleTypeIPThreat,
+		decidev2.GuardRuleType_GUARD_RULE_TYPE_UNSPECIFIED:            GuardRuleTypeUnknown,
+		decidev2.GuardRuleType(99):                                    GuardRuleTypeUnknown,
+	}
+	for in, want := range cases {
+		if got := policyRuleType(in); got != want {
+			t.Errorf("policyRuleType(%v) = %q want %q", in, got, want)
+		}
 	}
 }
 
