@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/arcjet/arcjet-go/internal/local/jsreq"
 )
@@ -517,5 +518,49 @@ func TestSensitiveInfoEntityWireRoundtrip(t *testing.T) {
 		if back := identifiedEntityType(got); back != string(c.in) {
 			t.Errorf("identifiedEntityType(%#v) = %q, want %q", got, back, c.in)
 		}
+	}
+}
+
+// Protect computes a fingerprint on every call, inside a wasm call that the
+// context deadline cannot interrupt. Duplicate detection in the request parser
+// must stay subquadratic in the number of cookies and headers, or a large
+// Cookie header alone runs Protect past its deadline and it fails open.
+func TestLocalFingerprintScalesWithCookieAndHeaderCount(t *testing.T) {
+	ctx := context.Background()
+	evaluator, err := newLocalEvaluator(ctx, []Rule{Shield(ShieldOptions{})}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(ctx)
+
+	const n = 16000
+	cookies := make([]string, n)
+	headers := make(map[string]string, n+1)
+	headers["user-agent"] = "go-test"
+	for i := range n {
+		cookies[i] = fmt.Sprintf("c%d=1", i)
+		headers[fmt.Sprintf("x-h%d", i)] = "1"
+	}
+	details := ProtectDetails{
+		IP:       "203.0.113.10",
+		Method:   "GET",
+		Protocol: "HTTP/1.1",
+		Host:     "example.com",
+		Path:     "/",
+		Headers:  headers,
+		Cookies:  strings.Join(cookies, "; "),
+	}
+
+	start := time.Now()
+	fingerprint, err := evaluator.fingerprint(ctx, details, []string{"ip.src"})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint == "" {
+		t.Fatal("fingerprint is empty")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("fingerprint of %d cookies and %d headers took %v, want under 1s", n, n, elapsed)
 	}
 }
