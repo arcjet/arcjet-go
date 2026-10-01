@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	connectrpc.com/connect v1.20.0 // indirect
+	connectrpc.com/connect v1.21.0 // indirect
 	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	go.jetify.com/typeid v1.3.0 // indirect

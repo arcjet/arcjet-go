@@ -11,7 +11,7 @@ require github.com/arcjet/arcjet-go v1.0.0
 require golang.org/x/text v0.41.0 // indirect
 
 require (
-	connectrpc.com/connect v1.20.0 // indirect
+	connectrpc.com/connect v1.21.0 // indirect
 	github.com/arcjet/arcjet-go/sensitiveinfo/rampart v1.0.0
 	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
