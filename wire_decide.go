@@ -10,7 +10,7 @@ import (
 
 type decisionWire struct {
 	ID          string           `json:"id"`
-	Conclusion  string           `json:"conclusion"`
+	Conclusion  protoEnumName    `json:"conclusion"`
 	Reason      json.RawMessage  `json:"reason"`
 	RuleResults []ruleResultWire `json:"ruleResults"`
 	TTL         int              `json:"ttl"`
@@ -19,8 +19,8 @@ type decisionWire struct {
 
 type ruleResultWire struct {
 	RuleID      string          `json:"ruleId"`
-	State       string          `json:"state"`
-	Conclusion  string          `json:"conclusion"`
+	State       protoEnumName   `json:"state"`
+	Conclusion  protoEnumName   `json:"conclusion"`
 	Reason      json.RawMessage `json:"reason"`
 	TTL         int             `json:"ttl"`
 	Fingerprint string          `json:"fingerprint"`
@@ -32,7 +32,7 @@ func (d decisionWire) toDecision() Decision {
 		results = append(results, RuleResult{
 			RuleID:      r.RuleID,
 			State:       RuleState(r.State),
-			Conclusion:  parseConclusion(r.Conclusion),
+			Conclusion:  parseConclusion(string(r.Conclusion)),
 			Reason:      parseReason(r.Reason),
 			TTL:         r.TTL,
 			Fingerprint: r.Fingerprint,
@@ -40,7 +40,7 @@ func (d decisionWire) toDecision() Decision {
 	}
 	return Decision{
 		ID:         d.ID,
-		Conclusion: parseConclusion(d.Conclusion),
+		Conclusion: parseConclusion(string(d.Conclusion)),
 		Reason:     parseReason(d.Reason),
 		Results:    results,
 		TTL:        d.TTL,
@@ -63,6 +63,27 @@ func decisionFromProto(dec *decidev1.Decision) Decision {
 	}
 	wire.ID = dec.GetId()
 	return wire.toDecision()
+}
+
+// protoEnumName is a protobuf enum field decoded from protojson output.
+// protojson writes a known value as its name and a value missing from the
+// SDK's generated code as a JSON number, so a plain string field would fail
+// to decode, and the whole decision with it. A number decodes to its decimal
+// text, which no parser here recognizes.
+type protoEnumName string
+
+func (e *protoEnumName) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*e = protoEnumName(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*e = protoEnumName(n.String())
+	return nil
 }
 
 // parseConclusion normalizes a wire-format conclusion string (Decide or Guard

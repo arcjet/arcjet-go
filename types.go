@@ -84,13 +84,15 @@ const (
 )
 
 // UnmarshalJSON normalizes wire-format conclusion strings to canonical
-// Conclusion constants. Single source of truth is parseConclusion.
+// Conclusion constants. Single source of truth is parseConclusion. A JSON
+// number, which protojson writes for an enum value the SDK does not know,
+// decodes to its decimal text.
 func (c *Conclusion) UnmarshalJSON(data []byte) error {
-	var s string
+	var s protoEnumName
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
-	*c = parseConclusion(s)
+	*c = parseConclusion(string(s))
 	return nil
 }
 
