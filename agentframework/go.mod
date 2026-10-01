@@ -7,10 +7,10 @@ go 1.26.0
 replace github.com/arcjet/arcjet-go => ..
 
 require (
-	connectrpc.com/connect v1.20.0
+	connectrpc.com/connect v1.21.0
 	github.com/arcjet/arcjet-go v1.0.0
 	github.com/microsoft/agent-framework-go v0.1.0
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	google.golang.org/protobuf v1.36.12
 )
 

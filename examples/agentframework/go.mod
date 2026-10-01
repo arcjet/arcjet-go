@@ -9,14 +9,14 @@ replace github.com/arcjet/arcjet-go => ../..
 replace github.com/arcjet/arcjet-go/agentframework => ../../agentframework
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.68.0
+	github.com/anthropics/anthropic-sdk-go v1.75.0
 	github.com/arcjet/arcjet-go v1.0.0
 	github.com/arcjet/arcjet-go/agentframework v0.1.0
 	github.com/microsoft/agent-framework-go v0.1.0
 )
 
 require (
-	connectrpc.com/connect v1.20.0 // indirect
+	connectrpc.com/connect v1.21.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
