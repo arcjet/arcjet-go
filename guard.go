@@ -123,6 +123,11 @@ func (c *GuardClient) Close(ctx context.Context) error {
 }
 
 // GuardRequest is a single Guard evaluation request.
+//
+// Guard decodes Actor, CorrelationID and the string values of server policy
+// inputs as Latin-1 when they are not valid UTF-8, so each of their bytes
+// becomes one character. A policy input name that is not valid UTF-8 is an
+// ErrInvalidPolicyInput error.
 type GuardRequest struct {
 	// Label identifies this Guard call.
 	Label string
@@ -212,6 +217,13 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	}
 	if err := validateGuardLabel(req.Label); err != nil {
 		return GuardDecision{}, fmt.Errorf("%w: %w", ErrGuardMisconfigured, err)
+	}
+	// Actor and CorrelationID are protobuf strings; one that is not valid
+	// UTF-8 would fail the whole call to marshal, and it would fail open.
+	req.CorrelationID = latin1IfInvalidUTF8(req.CorrelationID)
+	if req.Actor != nil {
+		actor := latin1IfInvalidUTF8(*req.Actor)
+		req.Actor = &actor
 	}
 	start := time.Now()
 	// Metadata keys the SDK could not encode. These are reported to the server as

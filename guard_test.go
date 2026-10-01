@@ -1446,3 +1446,47 @@ func TestGuardRulesRejectEmptyMode(t *testing.T) {
 }
 
 func errOf[T any](_ T, err error) error { return err }
+
+// A server policy input carries caller data, such as tool output, so a byte
+// that is not valid UTF-8 must not fail the call: protobuf cannot marshal such
+// a string, and a failed Guard call fails open.
+func TestGuardSendsInvalidUTF8RequestStringsAsLatin1(t *testing.T) {
+	handler := &testGuardHandler{resp: &decidev2.GuardResponse{Decision: &decidev2.GuardDecision{
+		Id:         "gdec_deny",
+		Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+		Reason:     decidev2.GuardReason_GUARD_REASON_SENSITIVE_INFO,
+	}}}
+	client := newGuardTestClient(t, handler)
+
+	actor := "user\xff"
+	list := []string{"ok", "bad\xfe"}
+	decision, err := client.Guard(context.Background(), GuardRequest{
+		Label:         "email.sent",
+		Actor:         &actor,
+		CorrelationID: "wf_\xff",
+		Inputs: map[string]GuardPolicyInput{
+			"body":       GuardPolicyServerString("hello \xff"),
+			"recipients": GuardPolicyServerStringList(list),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.IsDenied() || decision.HasFailedOpen() {
+		t.Fatalf("decision = %#v, want the server's DENY", decision)
+	}
+	seen := handler.seen
+	for name, got := range map[string][2]string{
+		"actor":         {seen.GetActor(), "userÿ"},
+		"correlationId": {seen.GetCorrelationId(), "wf_ÿ"},
+		"body":          {seen.GetPolicyInputs()["body"].GetServer().GetStringValue(), "hello ÿ"},
+		"recipients[1]": {seen.GetPolicyInputs()["recipients"].GetServer().GetStringListValue().GetValues()[1], "badþ"},
+	} {
+		if got[0] != got[1] {
+			t.Errorf("%s = %q, want %q", name, got[0], got[1])
+		}
+	}
+	if actor != "user\xff" || list[1] != "bad\xfe" {
+		t.Fatalf("caller's values were modified: actor %q, list %q", actor, list)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 
@@ -194,6 +195,9 @@ func wirePolicyInputs(inputs map[string]GuardPolicyInput) (map[string]*decidev2.
 		if in == nil {
 			return nil, nil, false, fmt.Errorf("arcjet: guard policy input %q is nil: %w", name, ErrInvalidPolicyInput)
 		}
+		if !utf8.ValidString(name) {
+			return nil, nil, false, fmt.Errorf("arcjet: guard policy input name %q is not valid UTF-8: %w", name, ErrInvalidPolicyInput)
+		}
 		v := in.guardPolicyInput()
 		values[name] = v
 		if v.local {
@@ -208,6 +212,21 @@ func wirePolicyInputs(inputs map[string]GuardPolicyInput) (map[string]*decidev2.
 			wire[name] = &decidev2.GuardPolicyInput{Representation: &decidev2.GuardPolicyInput_Local{Local: &decidev2.GuardPolicyLocalInput{Kind: v.kind, ValueSha256: localPolicyDigest(value)}}}
 			continue
 		}
+		// A server value is sent as a protobuf string, which must be valid
+		// UTF-8 or the whole call fails to marshal and fails open. Decoding it
+		// as Latin-1 here, as Protect does for request strings, also keeps
+		// the value evaluated locally the same as the one sent.
+		switch x := v.value.(type) {
+		case string:
+			v.value = latin1IfInvalidUTF8(x)
+		case []string:
+			list := make([]string, len(x))
+			for i, item := range x {
+				list[i] = latin1IfInvalidUTF8(item)
+			}
+			v.value = list
+		}
+		values[name] = v
 		s := &decidev2.GuardPolicyServerInput{}
 		switch x := v.value.(type) {
 		case string:
@@ -222,7 +241,7 @@ func wirePolicyInputs(inputs map[string]GuardPolicyInput) (map[string]*decidev2.
 			}
 			s.Value = &decidev2.GuardPolicyServerInput_NumberValue{NumberValue: x}
 		case []string:
-			s.Value = &decidev2.GuardPolicyServerInput_StringListValue{StringListValue: &decidev2.GuardStringList{Values: append([]string(nil), x...)}}
+			s.Value = &decidev2.GuardPolicyServerInput_StringListValue{StringListValue: &decidev2.GuardStringList{Values: x}}
 		default:
 			return nil, nil, false, fmt.Errorf("arcjet: guard policy input %q has invalid value: %w", name, ErrInvalidPolicyInput)
 		}
