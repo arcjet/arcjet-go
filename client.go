@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -285,6 +286,10 @@ func (c *Client) Close(ctx context.Context) error {
 //
 // Use DetailsFromRequest or Client.Protect for ordinary HTTP handlers. Construct
 // ProtectDetails directly when protecting a non-standard request source.
+//
+// Protect decodes any string field, header or Extra entry that is not valid
+// UTF-8 as Latin-1 before evaluating it, so each of its bytes becomes one
+// character.
 type ProtectDetails struct {
 	// IP is the request source IP address.
 	IP string
@@ -552,6 +557,10 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	// sensitive-info rule runs locally in the SDK (see evaluateLocal ->
 	// detectSensitiveInfo), so the raw value never needs to reach Decide or
 	// Report and is kept in-process for privacy. See WithSensitiveInfoValue.
+
+	// Done before anything reads details, so the local rules, the cache key
+	// and the server all evaluate the same strings.
+	details = details.withValidUTF8()
 
 	rules := c.builtRules
 
@@ -1107,6 +1116,76 @@ func (d ProtectDetails) toProto() *decidev1.RequestDetails {
 		// cache key (ruleID, fingerprint); see ruleFingerprints.
 		CorrelationId: d.CorrelationID,
 	}
+}
+
+// withValidUTF8 returns d with every string that is not valid UTF-8 decoded as
+// Latin-1. Protobuf refuses to marshal a string field holding invalid UTF-8,
+// so one such byte in a header, the path or the query would otherwise fail
+// the Decide call, and Protect would fail open without the server seeing the
+// request. Go's net/http accepts those bytes in header values, the path and
+// the query.
+func (d ProtectDetails) withValidUTF8() ProtectDetails {
+	d.IP = latin1IfInvalidUTF8(d.IP)
+	d.Method = latin1IfInvalidUTF8(d.Method)
+	d.Protocol = latin1IfInvalidUTF8(d.Protocol)
+	d.Host = latin1IfInvalidUTF8(d.Host)
+	d.Path = latin1IfInvalidUTF8(d.Path)
+	d.Headers = latin1MapIfInvalidUTF8(d.Headers)
+	d.Email = latin1IfInvalidUTF8(d.Email)
+	d.Cookies = latin1IfInvalidUTF8(d.Cookies)
+	d.Query = latin1IfInvalidUTF8(d.Query)
+	d.Extra = latin1MapIfInvalidUTF8(d.Extra)
+	d.CorrelationID = latin1IfInvalidUTF8(d.CorrelationID)
+	return d
+}
+
+// latin1IfInvalidUTF8 returns s unchanged when it is valid UTF-8. Otherwise it
+// decodes the whole of s as Latin-1, so each byte becomes the code point of
+// the same value; arcjet-py decodes ASGI header and query bytes the same way.
+// Every byte string decodes, and distinct byte strings stay distinct.
+func latin1IfInvalidUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(2 * len(s))
+	for i := range len(s) {
+		b.WriteRune(rune(s[i]))
+	}
+	return b.String()
+}
+
+// latin1MapIfInvalidUTF8 applies latin1IfInvalidUTF8 to every key and value.
+// It returns m itself when nothing needs decoding, and a new map otherwise,
+// so the caller's map is never modified. A decoded key can equal a key that
+// was already valid; the valid key keeps its value.
+func latin1MapIfInvalidUTF8(m map[string]string) map[string]string {
+	valid := true
+	for k, v := range m {
+		if !utf8.ValidString(k) || !utf8.ValidString(v) {
+			valid = false
+			break
+		}
+	}
+	if valid {
+		return m
+	}
+	out := make(map[string]string, len(m))
+	var decodedKeys []string
+	for k, v := range m {
+		if utf8.ValidString(k) {
+			out[k] = latin1IfInvalidUTF8(v)
+		} else {
+			decodedKeys = append(decodedKeys, k)
+		}
+	}
+	for _, k := range decodedKeys {
+		decoded := latin1IfInvalidUTF8(k)
+		if _, ok := out[decoded]; !ok {
+			out[decoded] = latin1IfInvalidUTF8(m[k])
+		}
+	}
+	return out
 }
 
 func queryWithQuestion(q string) string {
