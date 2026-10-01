@@ -1697,3 +1697,134 @@ func TestProtectTimeoutHelper(t *testing.T) {
 		t.Errorf("email+pi = %s, want 4s (email doubling; PI floor already met)", got)
 	}
 }
+
+// One byte that is not valid UTF-8 must not stop the request reaching Decide:
+// protobuf cannot marshal such a string, and a failed Decide call fails open.
+func TestProtectSendsInvalidUTF8RequestStringsAsLatin1(t *testing.T) {
+	handler := &testDecideHandler{}
+	path, h := decidev1alpha1connect.NewDecideServiceHandler(handler)
+	mux := http.NewServeMux()
+	mux.Handle(path, h)
+
+	client, err := NewClient(Config{
+		Key:        "ajkey_test",
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+		Rules:      []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)
+	req.RemoteAddr = "203.0.113.10:4567"
+	req.URL.Path = "/a\xffb"
+	req.URL.RawQuery = "q=\xff"
+	req.Header.Set("User-Agent", "go-test\xff")
+	req.Header.Set("Cookie", "sid=\xfe")
+
+	decision, err := client.Protect(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.IsDenied() {
+		t.Fatalf("expected the server's deny, got %#v", decision)
+	}
+	details := handler.snapshot().seen.GetDetails()
+	if got, want := details.GetPath(), "/aÿb"; got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+	if got, want := details.GetQuery(), "?q=ÿ"; got != want {
+		t.Fatalf("query = %q, want %q", got, want)
+	}
+	if got, want := details.GetHeaders()["user-agent"], "go-testÿ"; got != want {
+		t.Fatalf("user-agent = %q, want %q", got, want)
+	}
+	if got, want := details.GetCookies(), "sid=þ"; got != want {
+		t.Fatalf("cookies = %q, want %q", got, want)
+	}
+}
+
+func TestProtectDetailsSendsInvalidUTF8FieldsAsLatin1(t *testing.T) {
+	handler := &testDecideHandler{}
+	path, h := decidev1alpha1connect.NewDecideServiceHandler(handler)
+	mux := http.NewServeMux()
+	mux.Handle(path, h)
+
+	client, err := NewClient(Config{
+		Key:        "ajkey_test",
+		BaseURL:    "http://arcjet.test",
+		HTTPClient: &http.Client{Transport: handlerTransport{handler: mux}},
+		Rules:      []Rule{Shield(ShieldOptions{Mode: ModeLive})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	headers := map[string]string{"x-\xff": "1", "accept": "text/\xff"}
+	decision, err := client.ProtectDetails(context.Background(), ProtectDetails{
+		IP:            "203.0.113.10",
+		Method:        "G\xffT",
+		Protocol:      "HTTP/1.1\xff",
+		Host:          "example\xff.com",
+		Path:          "/",
+		Headers:       headers,
+		Email:         "user\xff@example.com",
+		Extra:         map[string]string{"k\xff": "v\xff"},
+		CorrelationID: "wf_\xff",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.IsDenied() {
+		t.Fatalf("expected the server's deny, got %#v", decision)
+	}
+	details := handler.snapshot().seen.GetDetails()
+	for name, got := range map[string][2]string{
+		"method":        {details.GetMethod(), "GÿT"},
+		"protocol":      {details.GetProtocol(), "HTTP/1.1ÿ"},
+		"host":          {details.GetHost(), "exampleÿ.com"},
+		"email":         {details.GetEmail(), "userÿ@example.com"},
+		"correlationId": {details.GetCorrelationId(), "wf_ÿ"},
+		"header x-ÿ":    {details.GetHeaders()["x-ÿ"], "1"},
+		"header accept": {details.GetHeaders()["accept"], "text/ÿ"},
+		"extra kÿ":      {details.GetExtra()["kÿ"], "vÿ"},
+	} {
+		if got[0] != got[1] {
+			t.Errorf("%s = %q, want %q", name, got[0], got[1])
+		}
+	}
+	if _, ok := headers["x-ÿ"]; ok || headers["accept"] != "text/\xff" {
+		t.Fatalf("caller's headers map was modified: %q", headers)
+	}
+}
+
+func TestLatin1IfInvalidUTF8(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", ""},
+		{"plain", "plain"},
+		{"café", "café"},
+		{"\xff", "ÿ"},
+		// The whole string is decoded, including bytes that formed valid
+		// UTF-8 sequences.
+		{"caf\xc3\xa9\xff", "cafÃ©ÿ"},
+	} {
+		if got := latin1IfInvalidUTF8(tc.in); got != tc.want {
+			t.Errorf("latin1IfInvalidUTF8(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestLatin1MapIfInvalidUTF8KeepsValidKeyOnCollision(t *testing.T) {
+	// "\xff" decodes to "ÿ", which is also present as a valid key.
+	in := map[string]string{"ÿ": "valid", "\xff": "decoded"}
+	got := latin1MapIfInvalidUTF8(in)
+	if len(got) != 1 || got["ÿ"] != "valid" {
+		t.Fatalf("got %q, want only the valid key's value", got)
+	}
+
+	valid := map[string]string{"a": "b"}
+	if got := latin1MapIfInvalidUTF8(valid); len(got) != 1 || got["a"] != "b" {
+		t.Fatalf("valid map changed: %q", got)
+	}
+}
