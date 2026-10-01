@@ -135,6 +135,9 @@ const (
 	// result. A policy v2 states its rules as an expression over the inputs it
 	// declares, so this is the reason every such rule reports.
 	ReasonPolicyExpression ReasonType = "POLICY_EXPRESSION"
+	// ReasonIPThreat means IP threat intelligence about a destination the
+	// call would contact determined the result.
+	ReasonIPThreat ReasonType = "IP_THREAT"
 )
 
 // LogValue implements [slog.LogValuer] so ReasonType logs as its string form.
@@ -190,6 +193,13 @@ const (
 	// GuardRuleTypePolicyExpression identifies a remote policy rule decided by
 	// the policy's expression language.
 	GuardRuleTypePolicyExpression GuardRuleType = "POLICY_EXPRESSION"
+	// GuardRuleTypeSensitiveInfo identifies a sensitive info rule evaluated by
+	// Arcjet. Contrast [GuardRuleTypeLocalSensitiveInfo], which the SDK
+	// evaluates in process without sending the value.
+	GuardRuleTypeSensitiveInfo GuardRuleType = "SENSITIVE_INFO"
+	// GuardRuleTypeIPThreat identifies a rule evaluated by Arcjet against IP
+	// threat intelligence for the destinations a call would contact.
+	GuardRuleTypeIPThreat GuardRuleType = "IP_THREAT"
 )
 
 // LogValue implements [slog.LogValuer] so GuardRuleType logs as its string form.
