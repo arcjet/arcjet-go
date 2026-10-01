@@ -1,6 +1,9 @@
 package arcjet
 
 import (
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -91,19 +94,273 @@ func TestEncodeMetadataDropsUnencodable(t *testing.T) {
 	}
 }
 
+// invalidUTF8 is a string encoding/json cannot carry as-is: it substitutes
+// U+FFFD for each byte, quietly changing the value.
+var invalidUTF8 = string([]byte{0xff, 0xfe})
+
+// The types below exercise the methods encoding/json calls instead of encoding
+// a value by reflection.
+
+// rawJSONMarshaler returns its bytes from MarshalJSON unchanged.
+type rawJSONMarshaler struct{ out string }
+
+func (m rawJSONMarshaler) MarshalJSON() ([]byte, error) { return []byte(m.out), nil }
+
+// rawTextMarshaler returns its bytes from MarshalText unchanged.
+type rawTextMarshaler struct{ out string }
+
+func (m rawTextMarshaler) MarshalText() ([]byte, error) { return []byte(m.out), nil }
+
+// hexTextMarshaler holds arbitrary bytes and encodes them as hex, so invalid
+// UTF-8 in its field never reaches the output.
+type hexTextMarshaler struct{ raw string }
+
+func (m hexTextMarshaler) MarshalText() ([]byte, error) {
+	return []byte(hex.EncodeToString([]byte(m.raw))), nil
+}
+
+// textKey is a non-string map key, which encoding/json encodes through
+// MarshalText.
+type textKey int
+
+func (k textKey) MarshalText() ([]byte, error) {
+	if k == 0 {
+		return []byte(invalidUTF8), nil
+	}
+	return []byte("key"), nil
+}
+
+// textStringKey is a string-kinded map key that also implements MarshalText.
+// The legacy encoder emits the string itself; json/v2 calls MarshalText.
+type textStringKey string
+
+func (textStringKey) MarshalText() ([]byte, error) { return []byte("key"), nil }
+
+// pointerJSONMarshaler implements MarshalJSON on its pointer only, so
+// encoding/json calls it only where the value is addressable and otherwise
+// encodes the struct field by field.
+type pointerJSONMarshaler struct{ Raw string }
+
+func (*pointerJSONMarshaler) MarshalJSON() ([]byte, error) { return []byte(`"redacted"`), nil }
+
+// embeddedUTF8 is promoted into utf8Outer, so its field is encoded as one of
+// utf8Outer's own.
+type embeddedUTF8 struct{ Inner string }
+
+type utf8Outer struct {
+	embeddedUTF8
+	Outer string
+}
+
+// utf8OuterPtr embeds a pointer, which the encoder follows when it is non-nil.
+type utf8OuterPtr struct {
+	*embeddedUTF8
+}
+
+// utf8OuterTagged names its unexported embedded struct, so encoding/json writes
+// it as an object under that name instead of flattening it.
+type utf8OuterTagged struct {
+	embeddedUTF8 `json:"inner"`
+}
+
+// conflictA and conflictB both promote Name at the same depth, so
+// encoding/json omits it from conflictOuter altogether.
+type conflictA struct{ Name string }
+
+type conflictB struct{ Name string }
+
+type conflictOuter struct {
+	conflictA
+	conflictB
+}
+
+// shadowOuter's own Name hides the one shadowInner promotes, so encoding/json
+// writes only the shallower field.
+type shadowInner struct{ Name string }
+
+type shadowOuter struct {
+	shadowInner
+	Name string
+}
+
+// lazyJSONMarshaler dereferences its pointer, so calling MarshalJSON on its
+// zero value panics. A field tagged omitzero never gets that far.
+type lazyJSONMarshaler struct{ p *string }
+
+func (l lazyJSONMarshaler) MarshalJSON() ([]byte, error) { return json.Marshal(*l.p) }
+
+// optionalJSON is an optional value whose MarshalJSON refuses to encode it
+// while it is unset, and whose IsZero lets omitzero leave it out.
+type optionalJSON struct{ set bool }
+
+func (o optionalJSON) IsZero() bool { return !o.set }
+
+func (o optionalJSON) MarshalJSON() ([]byte, error) {
+	if !o.set {
+		return nil, errors.New("unset")
+	}
+	return []byte(`"set"`), nil
+}
+
+// nonEmptyJSON panics when asked to encode an empty string, which omitempty
+// leaves out.
+type nonEmptyJSON string
+
+func (s nonEmptyJSON) MarshalJSON() ([]byte, error) {
+	if s == "" {
+		panic("nonEmptyJSON: empty")
+	}
+	return json.Marshal(string(s))
+}
+
+// assertDropsKey checks that encodeMetadata drops the key holding value with
+// one MetadataEncodeFailedCode warning, and keeps its sibling.
+func assertDropsKey(t *testing.T, value any) {
+	t.Helper()
+	encoded, warnings := encodeMetadata(Metadata{"bad": value, "ok": 1}, "")
+	if len(encoded) != 1 || encoded["ok"] != "1" {
+		t.Fatalf("encoded = %#v", encoded)
+	}
+	if len(warnings) != 1 || warnings[0].Code != MetadataEncodeFailedCode {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if !strings.Contains(warnings[0].Message, `"bad"`) {
+		t.Fatalf("message = %q", warnings[0].Message)
+	}
+}
+
+func TestEncodeMetadataDropsNestedInvalidUTF8(t *testing.T) {
+	// A string anywhere in the value that encoding/json would rewrite must drop
+	// the key, at any depth and however the encoder reached it.
+	cases := map[string]any{
+		"map value":    map[string]any{"k": invalidUTF8},
+		"slice":        []any{"ok", invalidUTF8},
+		"typed slice":  []string{"ok", invalidUTF8},
+		"array":        [2]string{"ok", invalidUTF8},
+		"nested key":   map[string]any{"outer": map[string]any{invalidUTF8: 1}},
+		"struct field": struct{ Name string }{Name: invalidUTF8},
+		"struct ptr":   &struct{ Name string }{Name: invalidUTF8},
+		"tagged field": struct {
+			Name string `json:"name,omitempty"`
+		}{Name: invalidUTF8},
+		"embedded field":      utf8Outer{embeddedUTF8: embeddedUTF8{Inner: invalidUTF8}},
+		"embedded pointer":    utf8OuterPtr{embeddedUTF8: &embeddedUTF8{Inner: invalidUTF8}},
+		"tagged embedded":     utf8OuterTagged{embeddedUTF8: embeddedUTF8{Inner: invalidUTF8}},
+		"interface in struct": struct{ V any }{V: []any{invalidUTF8}},
+		// MarshalJSON output is embedded without re-encoding its strings.
+		"MarshalJSON": rawJSONMarshaler{out: `"` + invalidUTF8 + `"`},
+		"MarshalJSON nested": map[string]any{
+			"k": rawJSONMarshaler{out: `{"a":"` + invalidUTF8 + `"}`},
+		},
+		// MarshalText output is encoded as a JSON string.
+		"MarshalText":     rawTextMarshaler{out: invalidUTF8},
+		"MarshalText key": map[textKey]int{0: 1},
+		// Encoded field by field where it is not addressable, so its field is
+		// what reaches the output.
+		"pointer MarshalJSON by value": pointerJSONMarshaler{Raw: invalidUTF8},
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			assertDropsKey(t, value)
+		})
+	}
+}
+
 func TestEncodeMetadataKeepsLegitimateReplacementCharacters(t *testing.T) {
-	// encoding/json writes a genuine U+FFFD literally and an invalid byte as the
-	// escape \ufffd, so only the latter is a drop. A value whose own text is
-	// "\ufffd" must not be mistaken for one.
+	// A genuine U+FFFD is valid UTF-8 and must be kept wherever it appears, and
+	// so must a value whose own text is "\ufffd". json/v2 writes an invalid byte
+	// as a literal U+FFFD, so its output alone cannot tell the two apart.
 	encoded, warnings := encodeMetadata(Metadata{
-		"real":    "\ufffd",
-		"literal": `\ufffd not really`,
+		"real":        "\ufffd",
+		"literal":     `\ufffd not really`,
+		"nested":      map[string]any{"\ufffd": []any{"\ufffd", struct{ S string }{S: "\ufffd"}}},
+		"MarshalJSON": rawJSONMarshaler{out: `"` + "\ufffd" + `"`},
+		"MarshalText": rawTextMarshaler{out: "\ufffd"},
 	}, "")
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %#v", warnings)
 	}
-	if len(encoded) != 2 {
+	if len(encoded) != 5 {
 		t.Fatalf("encoded = %#v", encoded)
+	}
+	if encoded["real"] != "\"\ufffd\"" {
+		t.Fatalf("real = %q", encoded["real"])
+	}
+}
+
+func TestEncodeMetadataKeepsInvalidUTF8TheEncoderNeverEmits(t *testing.T) {
+	// Invalid UTF-8 that encoding/json does not write as a string cannot
+	// change the value on the wire, so it is no reason to drop the key. Nor
+	// may a marshaler the encoder would not call be called: it can fail or
+	// panic on a value the encoder leaves out.
+	lazy := struct {
+		Lazy lazyJSONMarshaler `json:"lazy,omitzero"`
+		N    int
+	}{N: 1}
+	cases := map[string]struct {
+		value any
+		want  string
+	}{
+		// []byte is encoded as base64.
+		"bytes": {[]byte(invalidUTF8), `"//4="`},
+		"skipped field": {struct {
+			Name string `json:"-"`
+			Kept int
+		}{Name: invalidUTF8, Kept: 1}, `{"Kept":1}`},
+		"unexported field": {struct {
+			name string
+			Kept int
+		}{name: invalidUTF8, Kept: 1}, `{"Kept":1}`},
+		// encoding/json omits a field promoted twice at one depth, and a
+		// promoted field that a shallower one shadows.
+		"conflicting promoted field": {conflictOuter{conflictA: conflictA{Name: invalidUTF8}}, `{}`},
+		"shadowed promoted field": {
+			shadowOuter{shadowInner: shadowInner{Name: invalidUTF8}, Name: "ok"},
+			`{"Name":"ok"}`,
+		},
+		// The marshaler's output replaces the value, so its fields are never
+		// encoded.
+		"MarshalText":                     {hexTextMarshaler{raw: invalidUTF8}, `"fffe"`},
+		"pointer MarshalJSON addressable": {&pointerJSONMarshaler{Raw: invalidUTF8}, `"redacted"`},
+		"pointer MarshalJSON in slice":    {[]pointerJSONMarshaler{{Raw: invalidUTF8}}, `["redacted"]`},
+		"nil marshaler":                   {(*rawJSONMarshaler)(nil), `null`},
+		"nil embedded pointer":            {utf8OuterPtr{}, `{}`},
+		"MarshalText key":                 {map[textKey]int{1: 1}, `{"key":1}`},
+		// Fields the encoder omits, whose marshalers it never calls.
+		"omitzero marshaler unsafe on zero": {lazy, `{"N":1}`},
+		"omitzero marshaler erroring when unset": {struct {
+			Region optionalJSON `json:"region,omitzero"`
+		}{}, `{}`},
+		"omitempty marshaler panicking when empty": {struct {
+			Name nonEmptyJSON `json:"name,omitempty"`
+			N    int
+		}{N: 1}, `{"N":1}`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			encoded, warnings := encodeMetadata(Metadata{"v": tc.value}, "")
+			if len(warnings) != 0 {
+				t.Fatalf("warnings = %#v", warnings)
+			}
+			if encoded["v"] != tc.want {
+				t.Fatalf("encoded = %q, want %q", encoded["v"], tc.want)
+			}
+		})
+	}
+}
+
+func TestEncodeMetadataStringKeyWithMarshalText(t *testing.T) {
+	// The legacy encoder names a string-kinded key by the string itself, which
+	// here is invalid, and json/v2 names it by its MarshalText. So the key is
+	// dropped by one and kept as "key" by the other, but neither sends the
+	// key with U+FFFD substituted.
+	encoded, warnings := encodeMetadata(Metadata{
+		"v": map[textStringKey]int{textStringKey(invalidUTF8): 1},
+	}, "")
+	dropped := len(encoded) == 0 && len(warnings) == 1
+	kept := len(warnings) == 0 && encoded["v"] == `{"key":1}`
+	if !dropped && !kept {
+		t.Fatalf("encoded = %#v, warnings = %#v", encoded, warnings)
 	}
 }
 

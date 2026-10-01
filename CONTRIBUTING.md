@@ -103,14 +103,19 @@ to `main`, and in the merge queue:
 
 - **Lint** (arm64) — verifies `go.mod` / `tools/go.mod` are tidy, then runs
   golangci-lint and `govulncheck` for the SDK and Rampart backend.
-- **Test** (arm64 + amd64 matrix) — `go build ./...` and `go test -race
-  -shuffle=on ./...`.
+- **Test** (arm64 + amd64, each on Go 1.25 and Go 1.27) — `go build ./...`
+  and `go test -race -shuffle=on ./...`. The Go 1.25 legs are named
+  `Test (<os>)` and the Go 1.27 legs `Test (<os>, Go 1.27.x)`.
 - **agentframework module** (arm64, Go 1.26) — verifies
   `agentframework/go.mod` is tidy, then runs golangci-lint, `govulncheck`,
   build, and race tests.
 
-The Lint and Test jobs use the latest security-patched Go 1.25 release while
-`go.mod` keeps the public compatibility floor at Go 1.25.0. The
+The Lint job and the Go 1.25 Test legs use the latest security-patched Go 1.25
+release while `go.mod` keeps the public compatibility floor at Go 1.25.0. The
+Go 1.27 Test legs use the latest Go 1.27 release, because Go 1.27 runs
+`encoding/json` on json/v2 and the SDK builds a different metadata encoder
+there (`metadata_jsonv2.go`). Lint stays on Go 1.25: the pinned golangci-lint
+panics inside staticcheck on the Go 1.27 standard library. The
 agentframework job uses the latest security-patched Go 1.26 release to match
 `agentframework/go.mod`'s floor of Go 1.26.0. Action versions are pinned by
 commit SHA and the runner is locked down with `step-security/harden-runner`
