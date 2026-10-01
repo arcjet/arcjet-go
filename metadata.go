@@ -1,9 +1,6 @@
 package arcjet
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -182,46 +179,13 @@ func encodeMetadata(metadata Metadata, prefix string) (map[string]string, []Warn
 // encoding/json would replace those bytes with U+FFFD, quietly changing the
 // value. Dropping the key instead matches arcjet-py and arcjet-js, which drop
 // their equivalent (a lone surrogate) because protobuf cannot carry it.
-func marshalMetadataValue(value any) (string, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(value); err != nil {
-		return "", err
-	}
-	// Encode appends a newline that Marshal would not.
-	out := strings.TrimSuffix(buf.String(), "\n")
-	if hasInvalidUTF8Escape(out) {
-		return "", errors.New("arcjet: metadata value contains invalid UTF-8")
-	}
-	return out, nil
-}
-
-// hasInvalidUTF8Escape reports whether JSON output contains a replacement
-// character that encoding/json substituted for an invalid UTF-8 byte.
 //
-// The encoder writes a genuine U+FFFD literally but an invalid byte as the
-// escape \ufffd, so the escape is an exact signal — at any nesting depth, with
-// no traversal of the value. Backslash runs are counted so a string whose own
-// text is "\ufffd" (encoded as "\\ufffd") is not mistaken for one.
-func hasInvalidUTF8Escape(s string) bool {
-	i := 0
-	for i < len(s) {
-		if s[i] != '\\' {
-			i++
-			continue
-		}
-		run := 0
-		for i < len(s) && s[i] == '\\' {
-			run++
-			i++
-		}
-		// An odd run leaves one backslash acting as an escape introducer.
-		if run%2 == 1 && strings.HasPrefix(s[i:], "ufffd") {
-			return true
-		}
-	}
-	return false
+// How that is detected depends on which encoding/json implementation the
+// program is built with, so marshalJSON has one version for each:
+// metadata_json.go for the legacy encoder (the default up to Go 1.26) and
+// metadata_jsonv2.go for json/v2 (the default from Go 1.27).
+func marshalMetadataValue(value any) (string, error) {
+	return marshalJSON(value)
 }
 
 // enforceMetadataBudget trims already-encoded metadata maps to MaxMetadataBytes

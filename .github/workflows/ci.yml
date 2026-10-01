@@ -47,7 +47,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # Keep the public compatibility floor in go.mod while testing with
-          # the latest security-patched release in that Go minor line.
+          # the latest security-patched release in that Go minor line. Lint
+          # stays here rather than on 1.27: the pinned golangci-lint (v2.12.2)
+          # panics in staticcheck's IR builder on the Go 1.27 standard library.
           go-version: 1.25.x
           check-latest: true
           # Cache the main module, the tools module (golangci-lint has a heavy
@@ -108,11 +110,22 @@ jobs:
         run: go -C examples/nethttp test ./...
 
   test:
-    name: Test
+    # The 1.25.x leg keeps the bare "Test (<os>)" name because the main
+    # branch ruleset requires those check names.
+    name: Test (${{ matrix.os }}${{ matrix.go-label }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04-arm, ubuntu-24.04]
+        # The oldest supported Go (the go.mod floor) and the newest release.
+        # Go 1.27 runs encoding/json on json/v2 by default, which changed its
+        # output for invalid UTF-8, so the SDK builds a different metadata
+        # encoder there (metadata_jsonv2.go rather than metadata_json.go).
+        # Passing on the floor is not proof of passing on the newest release.
+        go: [1.25.x, 1.27.x]
+        include:
+          - go: 1.27.x
+            go-label: ", Go 1.27.x"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Harden runner
@@ -134,12 +147,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Go
+      - name: Install Go ${{ matrix.go }}
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Keep the public compatibility floor in go.mod while testing with
-          # the latest security-patched release in that Go minor line.
-          go-version: 1.25.x
+          # The latest security-patched release in each Go minor line. The
+          # cache key includes the Go version, so the legs never share a cache.
+          go-version: ${{ matrix.go }}
           check-latest: true
           cache-dependency-path: |
             go.sum
