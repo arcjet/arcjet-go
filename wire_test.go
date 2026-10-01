@@ -801,3 +801,16 @@ func TestWarningsFromWirePreservesServerValues(t *testing.T) {
 		t.Error("nil input should produce nil warnings")
 	}
 }
+
+func TestPolicyResultFromProtoKeepsPromptInjectionBilling(t *testing.T) {
+	got := policyResultFromProto(&decidev2.GuardPolicyRuleResult{
+		Type: decidev2.GuardRuleType_GUARD_RULE_TYPE_PROMPT_INJECTION,
+		Result: &decidev2.GuardPolicyRuleResult_PromptInjection{PromptInjection: &decidev2.ResultPromptInjection{
+			Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+			Billing:    &decidev2.Billing{Unit: "tokens", Count: 42},
+		}},
+	})
+	if got.PromptInjection == nil || got.PromptInjection.Billing == nil || *got.PromptInjection.Billing != (GuardBillingUsage{Unit: "tokens", Count: 42}) {
+		t.Fatalf("prompt injection = %#v", got.PromptInjection)
+	}
+}
