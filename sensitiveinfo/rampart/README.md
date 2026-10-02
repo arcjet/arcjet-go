@@ -66,20 +66,22 @@ rule **without** a backend is a configuration error
 
 Detection runs on the request hot path. Inference is pure Go (no cgo, no SIMD
 assembly), parallelized across CPU cores. Cost scales with input length: input
-is scanned in 480-character windows and each window is a full forward pass.
+is scanned in 480-character windows, and each window is one full forward pass,
+or up to four when its text expands to more tokens than the model takes at once.
 
-On a 10-core machine, a single window is roughly 25–70 ms. Typical short request
+On a 10-core machine, a single forward pass is roughly 25–70 ms. Typical short request
 fields are a single window.
 
 Two mechanisms bound worst-case cost so large input cannot become a
 denial-of-service vector:
 
 - **`Options.MaxInputChars`** (default `4096`) is the hard character ceiling;
-  input beyond it is truncated. The default keeps the worst case to roughly ten
-  windows (well under a second) even with no caller timeout — deliberately lower
-  than the JavaScript/Python SDKs' `100_000`, whose ONNX-runtime inference is
-  much faster. Raise it if you need to scan larger payloads and can afford the
-  latency.
+  input beyond it is truncated. At the default a call scans at most ten
+  480-character windows: about ten model passes for most text, and at most
+  forty for text that expands to several tokens per character, such as spaced
+  Korean. The default is deliberately lower than the JavaScript/Python SDKs'
+  `100_000`, whose ONNX-runtime inference is much faster. Raise it if you need
+  to scan larger payloads and can afford the latency.
 - **Context cancellation** — `Detect` checks the context between windows, so a
   request deadline (`context.WithTimeout`, or the incoming `*http.Request`
   context) caps total inference regardless of input length. On cancellation the
