@@ -542,3 +542,29 @@ func mapKeys(m map[string]string) []string {
 	}
 	return out
 }
+
+// Raw JSON can carry a UTF-16 surrogate escape that is not half of a pair,
+// such as a string JavaScript cut inside an emoji. Every build drops it, and
+// keeps a complete pair and text that only looks like an escape.
+func TestEncodeMetadataRawSurrogateEscapesAgreeAcrossBuilds(t *testing.T) {
+	for raw, wantKept := range map[string]bool{
+		"\"\x5cud83d\x5cude00\"":      true,
+		"\"\x5c\x5cud83d\"":           true,
+		"\"\x5cud83d\"":               false,
+		"\"\x5cude00\"":               false,
+		"\"a\x5cud83dz\"":             false,
+		"\"\x5cud83d\x5cud83d\"":      false,
+		"\"\x5cud83d\x5cu0041\"":      false,
+		"\"\x5c\x5c\x5cud83d\"":       false,
+		"\"\x5cuD83D\"":               false,
+		"{\"\x5cud83d\":1}":           false,
+		"[\"ok\",\"\x5cud83d\x5cn\"]": false,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			encoded, warnings := encodeMetadata(Metadata{"k": json.RawMessage(raw)}, "")
+			if kept := encoded["k"] != ""; kept != wantKept {
+				t.Fatalf("kept = %v, want %v (encoded %q, warnings %#v)", kept, wantKept, encoded, warnings)
+			}
+		})
+	}
+}

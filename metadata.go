@@ -185,6 +185,11 @@ func encodeMetadata(metadata Metadata, prefix string) (map[string]string, []Warn
 // metadata_json.go for the legacy encoder (the default up to Go 1.26) and
 // metadata_jsonv2.go for json/v2 (the default from Go 1.27).
 //
+// One case is not detected on json/v2: a MarshalJSON that calls json.Marshal
+// on its own invalid string. That inner call has already written U+FFFD, which
+// json/v2 output cannot tell apart from a genuine U+FFFD, so the value is sent
+// with the substitution. The legacy encoder drops it.
+//
 // encoding/json does not recover a panic raised by a value's MarshalJSON or
 // MarshalText, or by a nil embedded pointer whose method it promotes, so it is
 // recovered here and the key is dropped, as arcjet-js does when encoding

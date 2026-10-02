@@ -164,6 +164,16 @@ jobs:
       - name: Test
         run: go test -race -shuffle=on ./...
 
+      - name: Test with GOEXPERIMENT=jsonv2
+        # On Go 1.25 and 1.26 this experiment runs encoding/json on json/v2
+        # and builds metadata_jsonv2_experiment.go, which no other leg
+        # compiles. Running it on the 1.25.x leg puts that file under a
+        # required check.
+        if: matrix.go == '1.25.x'
+        env:
+          GOEXPERIMENT: jsonv2
+        run: go test -shuffle=on ./...
+
       - name: Build rampart module
         run: go -C sensitiveinfo/rampart build ./...
 
