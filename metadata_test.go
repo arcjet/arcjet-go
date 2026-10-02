@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEncodeMetadataEmpty(t *testing.T) {
@@ -77,6 +78,12 @@ func TestEncodeMetadataDropsUnencodable(t *testing.T) {
 		"inf":      math.Inf(1),
 		"cycle":    cycle,
 		"bad-utf8": string([]byte{0xff, 0xfe}),
+		// encoding/json does not recover either panic.
+		"panicking MarshalJSON": panickingMarshaler{},
+		"nil embedded pointer": struct {
+			*time.Time
+			Name string
+		}{Name: "x"},
 	}
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -93,6 +100,10 @@ func TestEncodeMetadataDropsUnencodable(t *testing.T) {
 		})
 	}
 }
+
+type panickingMarshaler struct{}
+
+func (panickingMarshaler) MarshalJSON() ([]byte, error) { panic("boom") }
 
 // invalidUTF8 is a string encoding/json cannot carry as-is: it substitutes
 // U+FFFD for each byte, quietly changing the value.

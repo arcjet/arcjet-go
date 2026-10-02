@@ -184,7 +184,17 @@ func encodeMetadata(metadata Metadata, prefix string) (map[string]string, []Warn
 // program is built with, so marshalJSON has one version for each:
 // metadata_json.go for the legacy encoder (the default up to Go 1.26) and
 // metadata_jsonv2.go for json/v2 (the default from Go 1.27).
-func marshalMetadataValue(value any) (string, error) {
+//
+// encoding/json does not recover a panic raised by a value's MarshalJSON or
+// MarshalText, or by a nil embedded pointer whose method it promotes, so it is
+// recovered here and the key is dropped, as arcjet-js does when encoding
+// throws.
+func marshalMetadataValue(value any) (encoded string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			encoded, err = "", fmt.Errorf("arcjet: metadata value panicked while encoding: %v", r)
+		}
+	}()
 	return marshalJSON(value)
 }
 
