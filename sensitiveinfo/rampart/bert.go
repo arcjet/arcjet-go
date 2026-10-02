@@ -80,7 +80,7 @@ var forwardBufPool = sync.Pool{New: func() any { return newForwardBuffers() }}
 // fully overwritten before it is read, so a recycled (dirty) buffer is safe.
 // The returned logits slice is freshly allocated so the caller may read it
 // after the scratch buffers are recycled. seq must not exceed maxPositions;
-// the tokenizer enforces that (see tokenizer.encode).
+// classifyWindow enforces that for the model runner.
 func (m *model) forward(ids []int) []float32 {
 	seq := len(ids)
 	if seq == 0 {
