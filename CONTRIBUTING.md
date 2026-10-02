@@ -123,7 +123,9 @@ in egress-block mode.
 
 Changes under `.github/workflows/` also run
 [`.github/workflows/lint-workflows.yml`](.github/workflows/lint-workflows.yml),
-which gates on `actionlint` and medium-or-higher `zizmor` findings.
+which gates on `actionlint` and medium-or-higher `zizmor` findings. Run
+`just lint-workflows` for the same checks locally; it needs
+[uv](https://docs.astral.sh/uv/) for `zizmor`.
 
 ## Releasing
 
@@ -144,11 +146,14 @@ module in a repository subdirectory needs that subdirectory in its tag.
    `replace` directives; downstream consumers ignore them. Leave
    `examples/agentframework/go.mod`'s `agentframework` requirement alone; it
    moves only with an agentframework release.
-4. Run `just tidy`, then `just check`,
+4. Run `just tidy`. Then, with Go 1.25, run
+   `just fmt-check tidy-check lint build test`,
    `go -C examples/nethttp test ./...`, and
-   `go -C examples/agentframework test ./...`. `just check` includes lint,
-   race tests, and reachable-vulnerability checks for the root module, the
-   rampart module, and the agentframework module.
+   `go -C examples/agentframework test ./...`, and run `just vuln` with the
+   latest Go 1.26 release. The `just` recipes are the parts of `just check`,
+   split across two toolchains: the pinned golangci-lint panics on Go 1.27, and
+   on Go 1.25 the automatic toolchain switch builds the agentframework module
+   with go1.26.0, whose standard-library vulnerabilities fail `just vuln`.
 5. Review the exported API changes since the previous release. Once v1 is
    published, incompatible API changes require a new major module version.
 6. Merge the release PR to `main`, then run the
@@ -157,27 +162,16 @@ module in a repository subdirectory needs that subdirectory in its tag.
    and creates an annotated tag for each selected module on the exact commit.
    Use its dry-run mode for a rehearsal.
 7. Review the completed preflight summary, then approve the protected
-   `release-tags` environment. The gated job pushes both tags atomically using
-   the release GitHub App and requests both versions from the Go module proxy
-   so pkg.go.dev discovers them. See the
-   [release automation runbook](docs/RELEASING.md) for the one-time App,
+   `release-tags` environment. The gated job pushes every tag atomically using
+   the release GitHub App and does nothing else. The
+   [release automation runbook](docs/RELEASING.md) covers the one-time App,
    environment, and tag-ruleset configuration.
-8. Verify the public module graph from a fresh temporary module. Do not add
-   local `replace` directives to this smoke test:
-
-   ```sh
-   SMOKE_DIR="$(mktemp -d)"
-   cd "$SMOKE_DIR"
-   go mod init example.com/arcjet-release-smoke
-   GOPROXY=https://proxy.golang.org go get \
-     github.com/arcjet/arcjet-go@v1.2.3 \
-     github.com/arcjet/arcjet-go/sensitiveinfo/rampart@v1.2.3
-   go mod download all
-   ```
-
-9. Create one GitHub release for the root tag. Mention that the optional Rampart
-   backend was released in lockstep; do not create a second GitHub release for
-   its module-qualified tag.
+8. Wait for the Verify published modules workflow, which the tag push starts,
+   then follow [After tagging](docs/RELEASING.md#after-tagging) in the runbook
+   for the smoke test and the GitHub release. Do not request the new versions
+   from the Go module proxy before that workflow passes: the proxy caches a
+   failed fetch for up to 30 minutes, so an early request blocks the release
+   for that long.
 
 The `agentframework` module keeps its own `v0.x` version line because it
 tracks a preview framework, but the workflow tags it in the same run as the
