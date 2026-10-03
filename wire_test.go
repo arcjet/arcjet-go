@@ -802,6 +802,19 @@ func TestWarningsFromWirePreservesServerValues(t *testing.T) {
 	}
 }
 
+func TestPolicyResultFromProtoKeepsPromptInjectionBilling(t *testing.T) {
+	got := policyResultFromProto(&decidev2.GuardPolicyRuleResult{
+		Type: decidev2.GuardRuleType_GUARD_RULE_TYPE_PROMPT_INJECTION,
+		Result: &decidev2.GuardPolicyRuleResult_PromptInjection{PromptInjection: &decidev2.ResultPromptInjection{
+			Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_ALLOW,
+			Billing:    &decidev2.Billing{Unit: "tokens", Count: 42},
+		}},
+	})
+	if got.PromptInjection == nil || got.PromptInjection.Billing == nil || *got.PromptInjection.Billing != (GuardBillingUsage{Unit: "tokens", Count: 42}) {
+		t.Fatalf("prompt injection = %#v", got.PromptInjection)
+	}
+}
+
 // A server newer than the SDK can send enum values missing from its generated
 // code. protojson writes those as numbers, and the decision must survive them:
 // the conclusion still comes from the server, and only the unknown field reads

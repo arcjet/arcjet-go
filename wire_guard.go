@@ -554,7 +554,7 @@ func policyResultFromProto(p *decidev2.GuardPolicyRuleResult) GuardPolicyResult 
 	}
 	switch v := p.GetResult().(type) {
 	case *decidev2.GuardPolicyRuleResult_PromptInjection:
-		r.PromptInjection = &GuardPromptResult{Conclusion: policyConclusion(v.PromptInjection.GetConclusion()), Detected: v.PromptInjection.GetDetected()}
+		r.PromptInjection = &GuardPromptResult{Conclusion: policyConclusion(v.PromptInjection.GetConclusion()), Detected: v.PromptInjection.GetDetected(), Billing: billingUsage(v.PromptInjection.GetBilling())}
 		r.Conclusion = r.PromptInjection.Conclusion
 		r.Reason = ReasonPromptInjection
 	case *decidev2.GuardPolicyRuleResult_AllowedStringValues:

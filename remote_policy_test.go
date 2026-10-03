@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -264,5 +265,67 @@ func TestRemotePolicyAllowedOnlyDetectionProducesNoDeniedEvidence(t *testing.T) 
 	}
 	if len(computed.GetDetectedEntityTypes()) != 0 || len(computed.GetDetectedEntities()) != 0 {
 		t.Fatalf("allowed-only evidence = types:%#v entities:%#v", computed.GetDetectedEntityTypes(), computed.GetDetectedEntities())
+	}
+}
+
+type policyRecordingBackend struct{ entities *SensitiveInfoEntities }
+
+func (b policyRecordingBackend) Detect(
+	_ context.Context,
+	_ SensitiveInfoBackendContext,
+	_ string,
+	entities SensitiveInfoEntities,
+	_ *SensitiveInfoBackendOptions,
+) (SensitiveInfoResult, error) {
+	*b.entities = entities
+	return SensitiveInfoResult{}, nil
+}
+
+// The projected rule's entity list is what decides a local policy, so it must
+// reach the detector unchanged, for both an allow-list and a deny-list.
+func TestRemotePolicyLocalResultPassesTheRuleEntityList(t *testing.T) {
+	policy := &decidev2.GuardLocalPolicyProjection{PolicyId: "policy-id", Revision: "revision-1"}
+	for name, tc := range map[string]struct {
+		rule *decidev2.GuardLocalSensitiveInfoRule
+		want SensitiveInfoEntities
+	}{
+		"allow": {
+			rule: &decidev2.GuardLocalSensitiveInfoRule{EntityFilter: &decidev2.GuardLocalSensitiveInfoRule_EntitiesAllow{
+				EntitiesAllow: &decidev2.EntityList{Entities: []string{"EMAIL", "PHONE_NUMBER"}},
+			}},
+			want: SensitiveInfoEntities{Deny: false, Entities: []EntityType{SensitiveInfoEmail, SensitiveInfoPhoneNumber}},
+		},
+		"deny": {
+			rule: &decidev2.GuardLocalSensitiveInfoRule{EntityFilter: &decidev2.GuardLocalSensitiveInfoRule_EntitiesDeny{
+				EntitiesDeny: &decidev2.EntityList{Entities: []string{"EMAIL"}},
+			}},
+			want: SensitiveInfoEntities{Deny: true, Entities: []EntityType{SensitiveInfoEmail}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got SensitiveInfoEntities
+			runtime := newRemotePolicyRuntime(&blockingPolicyClient{}, "key", "ua", newLazyLocalEvaluator(nil), policyRecordingBackend{entities: &got})
+			runtime.localResult(context.Background(), policy, tc.rule, "text")
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("entities = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// With the built-in detector, a deny-EMAIL rule denies text containing an
+// email address.
+func TestRemotePolicyLocalResultDeniesAnEntityOnTheDenyList(t *testing.T) {
+	runtime := newRemotePolicyRuntime(&blockingPolicyClient{}, "key", "ua", newLazyLocalEvaluator(nil), nil)
+	policy := &decidev2.GuardLocalPolicyProjection{PolicyId: "policy-id", Revision: "revision-1"}
+	rule := &decidev2.GuardLocalSensitiveInfoRule{EntityFilter: &decidev2.GuardLocalSensitiveInfoRule_EntitiesDeny{
+		EntitiesDeny: &decidev2.EntityList{Entities: []string{"EMAIL"}},
+	}}
+	computed := runtime.localResult(context.Background(), policy, rule, "contact user@example.com").GetLocalSensitiveInfo()
+	if computed.GetConclusion() != decidev2.GuardConclusion_GUARD_CONCLUSION_DENY {
+		t.Fatalf("computed result = %#v", computed)
+	}
+	if got := computed.GetDetectedEntityTypes(); len(got) != 1 || got[0] != "EMAIL" {
+		t.Fatalf("detected types = %#v", got)
 	}
 }
