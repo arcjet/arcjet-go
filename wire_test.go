@@ -814,3 +814,76 @@ func TestPolicyResultFromProtoKeepsPromptInjectionBilling(t *testing.T) {
 		t.Fatalf("prompt injection = %#v", got.PromptInjection)
 	}
 }
+
+// A server newer than the SDK can send enum values missing from its generated
+// code. protojson writes those as numbers, and the decision must survive them:
+// the conclusion still comes from the server, and only the unknown field reads
+// as unknown.
+func TestGuardDecisionFromProtoKeepsDenyWithUnknownEnumValues(t *testing.T) {
+	const unknown = 999
+	decision := guardDecisionFromProto(&decidev2.GuardResponse{Decision: &decidev2.GuardDecision{
+		Id:         "gdec_unknown",
+		Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+		Reason:     decidev2.GuardReason(unknown),
+		RuleResults: []*decidev2.GuardRuleResult{
+			{
+				ResultId: "gres_1",
+				Type:     decidev2.GuardRuleType(unknown),
+				Result: &decidev2.GuardRuleResult_TokenBucket{TokenBucket: &decidev2.ResultTokenBucket{
+					Conclusion: decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+				}},
+			},
+			{
+				ResultId: "gres_2",
+				Type:     decidev2.GuardRuleType_GUARD_RULE_TYPE_PROMPT_INJECTION,
+				Result: &decidev2.GuardRuleResult_PromptInjection{PromptInjection: &decidev2.ResultPromptInjection{
+					Conclusion: decidev2.GuardConclusion(unknown),
+				}},
+			},
+		},
+	}})
+	if !decision.IsDenied() || decision.HasFailedOpen() {
+		t.Fatalf("decision = %#v, want the server's DENY", decision)
+	}
+	if decision.ID != "gdec_unknown" || decision.Reason != ReasonUnknown {
+		t.Fatalf("id = %q, reason = %q", decision.ID, decision.Reason)
+	}
+	if len(decision.Results) != 2 || decision.Results[0].Conclusion != ConclusionDeny || decision.Results[0].Type != GuardRuleType("999") {
+		t.Fatalf("results = %#v", decision.Results)
+	}
+	if got := decision.Results[1].Conclusion; got != Conclusion("999") {
+		t.Fatalf("unknown result conclusion = %q", got)
+	}
+}
+
+func TestDecisionFromProtoKeepsDenyWithUnknownEnumValues(t *testing.T) {
+	const unknown = 999
+	decision := decisionFromProto(&decidev1.Decision{
+		Id:         "req_unknown",
+		Conclusion: decidev1.Conclusion_CONCLUSION_DENY,
+		RuleResults: []*decidev1.RuleResult{{
+			RuleId:     "rule_1",
+			State:      decidev1.RuleState(unknown),
+			Conclusion: decidev1.Conclusion(unknown),
+		}},
+	})
+	if !decision.IsDenied() || decision.ID != "req_unknown" {
+		t.Fatalf("decision = %#v, want the server's DENY", decision)
+	}
+	if len(decision.Results) != 1 || decision.Results[0].State != RuleState("999") || decision.Results[0].Conclusion != Conclusion("999") {
+		t.Fatalf("results = %#v", decision.Results)
+	}
+}
+
+func TestConclusionUnmarshalJSONAcceptsAnEnumNumber(t *testing.T) {
+	var c Conclusion
+	if err := json.Unmarshal([]byte(`7`), &c); err != nil || c != Conclusion("7") {
+		t.Fatalf("Conclusion = %q, err = %v", c, err)
+	}
+	if err := json.Unmarshal([]byte(`"GUARD_CONCLUSION_DENY"`), &c); err != nil || c != ConclusionDeny {
+		t.Fatalf("Conclusion = %q, err = %v", c, err)
+	}
+	if err := json.Unmarshal([]byte(`{}`), &c); err == nil {
+		t.Fatal("an object decoded as a conclusion")
+	}
+}

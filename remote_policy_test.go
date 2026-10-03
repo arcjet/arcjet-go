@@ -73,6 +73,7 @@ func TestGuardPolicyInputsRejectInvalidValues(t *testing.T) {
 		"nil":      {"bad": nil},
 		"nan":      {"bad": GuardPolicyServerNumber(math.NaN())},
 		"infinity": {"bad": GuardPolicyServerNumber(math.Inf(1))},
+		"name":     {"bad\xff": GuardPolicyServerString("x")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, _, err := wirePolicyInputs(inputs); err == nil {

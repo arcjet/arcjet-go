@@ -36,8 +36,8 @@ type guardResponseWire struct {
 
 type guardDecisionWire struct {
 	ID          string                `json:"id"`
-	Conclusion  string                `json:"conclusion"`
-	Reason      string                `json:"reason"`
+	Conclusion  protoEnumName         `json:"conclusion"`
+	Reason      protoEnumName         `json:"reason"`
 	RuleResults []guardRuleResultWire `json:"ruleResults"`
 }
 
@@ -45,7 +45,7 @@ type guardRuleResultWire struct {
 	ResultID           string                      `json:"resultId"`
 	ConfigID           string                      `json:"configId"`
 	InputID            string                      `json:"inputId"`
-	Type               string                      `json:"type"`
+	Type               protoEnumName               `json:"type"`
 	TokenBucket        *GuardTokenBucketResult     `json:"tokenBucket,omitempty"`
 	FixedWindow        *GuardFixedWindowResult     `json:"fixedWindow,omitempty"`
 	SlidingWindow      *GuardSlidingWindowResult   `json:"slidingWindow,omitempty"`
@@ -394,8 +394,8 @@ func (resp guardResponseWire) toGuardDecision() GuardDecision {
 	}
 	return GuardDecision{
 		ID:         resp.Decision.ID,
-		Conclusion: parseConclusion(resp.Decision.Conclusion),
-		Reason:     parseGuardReason(resp.Decision.Reason),
+		Conclusion: parseConclusion(string(resp.Decision.Conclusion)),
+		Reason:     parseGuardReason(string(resp.Decision.Reason)),
 		Results:    results,
 		Warnings:   warningsFromWire(resp.Warnings),
 	}
@@ -631,7 +631,7 @@ func (r guardRuleResultWire) toGuardRuleResult() GuardRuleResult {
 		ResultID:           r.ResultID,
 		ConfigID:           r.ConfigID,
 		InputID:            r.InputID,
-		Type:               parseGuardRuleType(r.Type),
+		Type:               parseGuardRuleType(string(r.Type)),
 		TokenBucket:        r.TokenBucket,
 		FixedWindow:        r.FixedWindow,
 		SlidingWindow:      r.SlidingWindow,
