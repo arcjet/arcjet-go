@@ -74,7 +74,7 @@ func BenchmarkTokenize(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_ = tok.encode(value)
+		_ = tok.tokenize(value)
 	}
 }
 

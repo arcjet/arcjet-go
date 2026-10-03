@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	arcjet "github.com/arcjet/arcjet-go"
@@ -109,18 +108,26 @@ func TestPlanWindowsProgressThroughOneWord(t *testing.T) {
 }
 
 // TestPlanWindowsCapsAnOverlapAtTheBudget passes an overlap that would start
-// each window at or before the previous one. Uncapped, planning never ends.
+// each window at or before the previous one. Every window must still start
+// after the previous one and keep a budget-1 overlap.
 func TestPlanWindowsCapsAnOverlapAtTheBudget(t *testing.T) {
 	ids := words(slices.Repeat([]int{3}, 50)...)
 	for _, overlap := range []int{9, 10, 50} {
-		done := make(chan [][2]int, 1)
-		go func() { done <- planWindows(ids, 10, overlap) }()
-		select {
-		case windows := <-done:
-			assertValidPlan(t, ids, 10, 9, windows)
-		case <-time.After(5 * time.Second):
-			t.Fatalf("planWindows did not finish with overlap %d and budget 10", overlap)
-		}
+		assertValidPlan(t, ids, 10, 9, planWindows(ids, 10, overlap))
+	}
+}
+
+// TestPlanWindowsClampsAnUnsupportedBudgetOrOverlap passes a budget below 1 or
+// a negative overlap. Unclamped, the first gives empty windows and the second
+// leaves tokens between windows unscanned.
+func TestPlanWindowsClampsAnUnsupportedBudgetOrOverlap(t *testing.T) {
+	ids := words(3, 1, 4, 1, 5)
+	for _, tc := range []struct{ budget, overlap, wantBudget, wantOverlap int }{
+		{budget: 0, overlap: 0, wantBudget: 1, wantOverlap: 0},
+		{budget: -5, overlap: 3, wantBudget: 1, wantOverlap: 0},
+		{budget: 4, overlap: -3, wantBudget: 4, wantOverlap: 0},
+	} {
+		assertValidPlan(t, ids, tc.wantBudget, tc.wantOverlap, planWindows(ids, tc.budget, tc.overlap))
 	}
 }
 
@@ -153,8 +160,8 @@ func TestRunnerHangulReproduction(t *testing.T) {
 }
 
 // TestRunnerScansPastTheTokenCap places a phone number beyond the 512th token
-// of input shorter than a character window. Capping the tokens of a window
-// dropped it without an error.
+// of input shorter than a character window, so only a second token window can
+// detect it.
 func TestRunnerScansPastTheTokenCap(t *testing.T) {
 	r := testRunner(t)
 	phone := "415-555-2671"

@@ -117,12 +117,14 @@ func (r *modelRunner) scan(ctx context.Context, chunk string, offset int, spans 
 // at most budget tokens that together cover every token. Each window after the
 // first starts overlap tokens before the previous one ended, moved back to the
 // start of the word there so a window does not open on a sub-word
-// continuation. It always starts after the previous window's start, so
-// planning progresses even when one word spans more tokens than the overlap.
-// The overlap is capped at budget-1, as arcjet-py's runner caps it, so a window
-// always advances past the previous one.
+// continuation. A budget below 1 is raised to 1 and the overlap is clamped to
+// [0, budget-1], the upper bound as arcjet-py's runner caps it. Each window
+// starts at least one token after the previous one, so for any budget and
+// overlap the windows cover every token and planning ends, even when one word
+// spans more tokens than the overlap.
 func planWindows(words []int, budget, overlap int) [][2]int {
-	overlap = min(overlap, budget-1)
+	budget = max(budget, 1)
+	overlap = max(min(overlap, budget-1), 0)
 	var windows [][2]int
 	for start := 0; start < len(words); {
 		end := min(start+budget, len(words))
@@ -134,7 +136,7 @@ func planWindows(words []int, budget, overlap int) [][2]int {
 		for next-1 > start && words[next] == words[next-1] {
 			next--
 		}
-		start = next
+		start = max(next, start+1)
 	}
 	return windows
 }

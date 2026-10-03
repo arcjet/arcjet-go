@@ -152,11 +152,17 @@ func TestAdversarialLongInputDoesNotOverflowModel(t *testing.T) {
 		assertValidSpans(t, value, res)
 	}
 
-	// A single window that alone would exceed the token budget must still be
-	// classifiable without panicking.
-	enc := newTokenizer().encode(strings.Repeat("홍", modelMaxInputChars))
-	if len(enc.ids) > maxPositions {
-		t.Fatalf("encode produced %d tokens, exceeding the %d-position budget", len(enc.ids), maxPositions)
+	// A character window whose text alone exceeds the token budget is scanned
+	// in several token windows, each within the model's positions. Spaces keep
+	// each syllable its own word: one unbroken 480-character word is a single
+	// [UNK] token.
+	r := testRunner(t)
+	window := strings.Repeat("홍 ", modelMaxInputChars/2)
+	if n := len(r.tokenizer.tokenize(window).ids); n <= windowTokenBudget {
+		t.Fatalf("fixture has %d tokens; it must exceed the %d-token budget", n, windowTokenBudget)
+	}
+	if _, n, err := r.scan(context.Background(), window, 0, nil); err != nil || n < 2 {
+		t.Fatalf("scan took %d token windows, err %v; want at least 2 and no error", n, err)
 	}
 }
 

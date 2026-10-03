@@ -3,6 +3,7 @@ package rampart
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"testing"
 )
 
@@ -72,6 +73,52 @@ func TestGoldenForward(t *testing.T) {
 				t.Errorf("%q tok %d: score=%.5f, want %.5f (diff %.5f)",
 					rec.Text, i, gotScore, rec.Scores[i], diff)
 			}
+		}
+	}
+}
+
+// TestGoldenRunnerPath runs each golden text through the path the runner uses
+// (tokenize, planWindows, classifyWindow) and checks every token against the
+// reference ONNX Runtime output. classifyWindow adds [CLS] and [SEP] itself
+// and reads the logits for content token i at position i+1, so a mistake in
+// either shifts or perturbs every label and score.
+func TestGoldenRunnerPath(t *testing.T) {
+	r := testRunner(t)
+	const scoreTol = 1e-3
+	for _, rec := range loadGolden(t) {
+		enc := r.tokenizer.tokenize(rec.Text)
+		if !slices.Equal(enc.ids, rec.IDs[1:len(rec.IDs)-1]) {
+			t.Fatalf("%q: content ids %v, want %v", rec.Text, enc.ids, rec.IDs[1:len(rec.IDs)-1])
+		}
+		windows := planWindows(enc.words, windowTokenBudget, chunkOverlapTokens)
+		if len(windows) != 1 {
+			t.Fatalf("%q: planned %d windows, want 1", rec.Text, len(windows))
+		}
+		tokens, err := r.classifyWindow(enc, windows[0])
+		if err != nil {
+			t.Fatalf("%q: %v", rec.Text, err)
+		}
+		k := 0
+		for i, offset := range enc.offsets {
+			if offset[1] <= offset[0] {
+				continue
+			}
+			if k >= len(tokens) {
+				t.Fatalf("%q: %d tokens returned, want more", rec.Text, len(tokens))
+			}
+			got := tokens[k]
+			k++
+			want := rec.Labels[i+1]
+			if got.entity != id2label[want] || got.start != offset[0] || got.end != offset[1] {
+				t.Errorf("%q tok %d: %s at [%d,%d), want %s at [%d,%d)",
+					rec.Text, i, got.entity, got.start, got.end, id2label[want], offset[0], offset[1])
+			}
+			if diff := got.score - rec.Scores[i+1]; diff > scoreTol || diff < -scoreTol {
+				t.Errorf("%q tok %d: score=%.5f, want %.5f", rec.Text, i, got.score, rec.Scores[i+1])
+			}
+		}
+		if k != len(tokens) {
+			t.Fatalf("%q: %d tokens returned, want %d", rec.Text, len(tokens), k)
 		}
 	}
 }

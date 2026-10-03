@@ -38,17 +38,19 @@ const DefaultThreshold = 0.5
 
 // DefaultMaxInputChars bounds how many characters are scanned per call. Model
 // inference is synchronous and its cost grows with input length (each ~480-char
-// window is a full inference pass, tens of milliseconds each), so unbounded
-// input is a denial-of-service vector. Longer input is truncated to this many
+// window takes one or more full inference passes, tens of milliseconds each),
+// so unbounded input is a denial-of-service vector. Longer input is truncated to this many
 // characters before detection.
 //
 // This is deliberately lower than the 100,000 used by the JavaScript and Python
 // SDKs: their ONNX-runtime inference is much faster, whereas this pure-Go engine
 // makes a large input expensive enough to matter on the request path. 4096
-// characters keeps the worst case to roughly ten windows (well under a second
-// on a typical multi-core server) even when the caller sets no timeout. Raise
-// it via [Options.MaxInputChars] if you need to scan larger payloads and can
-// afford the latency (and prefer to also bound cost with a context deadline).
+// characters is at most ten windows. Most text takes one inference pass per
+// window; text that expands to several tokens per character, such as spaced
+// Korean, takes up to four, so a call makes at most forty passes even when the
+// caller sets no timeout. Raise it via [Options.MaxInputChars] if you need to
+// scan larger payloads and can afford the latency (and prefer to also bound
+// cost with a context deadline).
 const DefaultMaxInputChars = 4096
 
 // Options configures the [New] backend.
