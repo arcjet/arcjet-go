@@ -105,6 +105,15 @@ type panickingMarshaler struct{}
 
 func (panickingMarshaler) MarshalJSON() ([]byte, error) { panic("boom") }
 
+// The panic value is application data and can be sensitive, so it must not
+// reach the error.
+func TestMarshalMetadataValuePanicErrorOmitsThePanicValue(t *testing.T) {
+	_, err := marshalMetadataValue(panickingMarshaler{})
+	if !errors.Is(err, errMetadataPanicked) || strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 // invalidUTF8 is a string encoding/json cannot carry as-is: it substitutes
 // U+FFFD for each byte, quietly changing the value.
 var invalidUTF8 = string([]byte{0xff, 0xfe})

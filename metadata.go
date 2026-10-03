@@ -1,6 +1,7 @@
 package arcjet
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -170,6 +171,8 @@ func encodeMetadata(metadata Metadata, prefix string) (map[string]string, []Warn
 	}}
 }
 
+var errMetadataPanicked = errors.New("arcjet: metadata value panicked while encoding")
+
 // marshalMetadataValue JSON-encodes a single metadata value.
 //
 // HTML escaping is disabled so "<" and "&" are stored as themselves rather than
@@ -193,11 +196,11 @@ func encodeMetadata(metadata Metadata, prefix string) (map[string]string, []Warn
 // encoding/json does not recover a panic raised by a value's MarshalJSON or
 // MarshalText, or by a nil embedded pointer whose method it promotes, so it is
 // recovered here and the key is dropped, as arcjet-js does when encoding
-// throws.
+// throws. The panic value is application data, so the error does not carry it.
 func marshalMetadataValue(value any) (encoded string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			encoded, err = "", fmt.Errorf("arcjet: metadata value panicked while encoding: %v", r)
+			encoded, err = "", errMetadataPanicked
 		}
 	}()
 	return marshalJSON(value)
