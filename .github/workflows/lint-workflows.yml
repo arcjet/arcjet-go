@@ -39,6 +39,7 @@ jobs:
             release-assets.githubusercontent.com:443
             raw.githubusercontent.com:443
             astral.sh:443
+            releases.astral.sh:443
             pypi.org:443
             files.pythonhosted.org:443
 
