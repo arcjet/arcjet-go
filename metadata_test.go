@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEncodeMetadataEmpty(t *testing.T) {
@@ -77,6 +78,12 @@ func TestEncodeMetadataDropsUnencodable(t *testing.T) {
 		"inf":      math.Inf(1),
 		"cycle":    cycle,
 		"bad-utf8": string([]byte{0xff, 0xfe}),
+		// encoding/json does not recover either panic.
+		"panicking MarshalJSON": panickingMarshaler{},
+		"nil embedded pointer": struct {
+			*time.Time
+			Name string
+		}{Name: "x"},
 	}
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -91,6 +98,19 @@ func TestEncodeMetadataDropsUnencodable(t *testing.T) {
 				t.Fatalf("message = %q", warnings[0].Message)
 			}
 		})
+	}
+}
+
+type panickingMarshaler struct{}
+
+func (panickingMarshaler) MarshalJSON() ([]byte, error) { panic("boom") }
+
+// The panic value is application data and can be sensitive, so it must not
+// reach the error.
+func TestMarshalMetadataValuePanicErrorOmitsThePanicValue(t *testing.T) {
+	_, err := marshalMetadataValue(panickingMarshaler{})
+	if !errors.Is(err, errMetadataPanicked) || strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -530,4 +550,30 @@ func mapKeys(m map[string]string) []string {
 		out = append(out, key)
 	}
 	return out
+}
+
+// Raw JSON can carry a UTF-16 surrogate escape that is not half of a pair,
+// such as a string JavaScript cut inside an emoji. Every build drops it, and
+// keeps a complete pair and text that only looks like an escape.
+func TestEncodeMetadataRawSurrogateEscapesAgreeAcrossBuilds(t *testing.T) {
+	for raw, wantKept := range map[string]bool{
+		"\"\x5cud83d\x5cude00\"":      true,
+		"\"\x5c\x5cud83d\"":           true,
+		"\"\x5cud83d\"":               false,
+		"\"\x5cude00\"":               false,
+		"\"a\x5cud83dz\"":             false,
+		"\"\x5cud83d\x5cud83d\"":      false,
+		"\"\x5cud83d\x5cu0041\"":      false,
+		"\"\x5c\x5c\x5cud83d\"":       false,
+		"\"\x5cuD83D\"":               false,
+		"{\"\x5cud83d\":1}":           false,
+		"[\"ok\",\"\x5cud83d\x5cn\"]": false,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			encoded, warnings := encodeMetadata(Metadata{"k": json.RawMessage(raw)}, "")
+			if kept := encoded["k"] != ""; kept != wantKept {
+				t.Fatalf("kept = %v, want %v (encoded %q, warnings %#v)", kept, wantKept, encoded, warnings)
+			}
+		})
+	}
 }
