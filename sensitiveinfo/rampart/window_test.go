@@ -117,6 +117,20 @@ func TestPlanWindowsCapsAnOverlapAtTheBudget(t *testing.T) {
 	}
 }
 
+// TestPlanWindowsClampsAnUnsupportedBudgetOrOverlap passes a budget below 1 or
+// a negative overlap. Unclamped, the first gives empty windows and the second
+// leaves tokens between windows unscanned.
+func TestPlanWindowsClampsAnUnsupportedBudgetOrOverlap(t *testing.T) {
+	ids := words(3, 1, 4, 1, 5)
+	for _, tc := range []struct{ budget, overlap, wantBudget, wantOverlap int }{
+		{budget: 0, overlap: 0, wantBudget: 1, wantOverlap: 0},
+		{budget: -5, overlap: 3, wantBudget: 1, wantOverlap: 0},
+		{budget: 4, overlap: -3, wantBudget: 4, wantOverlap: 0},
+	} {
+		assertValidPlan(t, ids, tc.wantBudget, tc.wantOverlap, planWindows(ids, tc.budget, tc.overlap))
+	}
+}
+
 func TestPlanWindowsProperties(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	for range 500 {
