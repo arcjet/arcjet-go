@@ -16,8 +16,11 @@ tool calls and agent runs with [Arcjet Guard](../README.md#arcjet-guard).
 Requires Go 1.26 (the framework's floor).
 
 ```sh
-go get github.com/arcjet/arcjet-go/agentframework@latest
+go get github.com/arcjet/arcjet-go@latest github.com/arcjet/arcjet-go/agentframework@latest
 ```
+
+Name both modules. On its own, this module brings in the SDK version it was
+released with, which can be older than the latest SDK release.
 
 ## Which helper
 

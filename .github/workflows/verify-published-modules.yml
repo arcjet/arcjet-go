@@ -17,11 +17,13 @@ on:
 permissions:
   contents: read
 
-# A release pushes several tags at once. Queue the runs rather than cancel
-# them: each verifies every release tag on the commit, so a later run confirms
-# what an earlier one already saw, against a warm cache.
+# A release pushes several tags at once, and GitHub starts one run per tag.
+# Each run verifies every release tag on the commit, so they are grouped by
+# tag rather than by commit: a group holds at most one pending run, and with
+# three tags sharing one group GitHub replaced the second run with the third
+# and reported it cancelled.
 concurrency:
-  group: verify-published-modules-${{ github.sha }}
+  group: verify-published-modules-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

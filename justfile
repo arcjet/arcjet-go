@@ -49,6 +49,13 @@ lint-examples:
     cd examples/nethttp && {{ golangci }} run ./...
     cd examples/agentframework && {{ golangci }} run ./...
 
+# Lint the GitHub Actions workflows with the same actionlint and zizmor versions
+# and options as .github/workflows/lint-workflows.yml; change both together.
+# zizmor's online audits need GH_TOKEN, as in CI.
+lint-workflows:
+    go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+    uvx zizmor==1.30.0 --min-severity=medium .github/workflows/
+
 # Lint and auto-apply fixes where the linters support it.
 lint-fix:
     {{ golangci }} run --fix ./...

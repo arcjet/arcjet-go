@@ -65,10 +65,14 @@ jobs:
           tar --extract --gzip --file "$dir/actionlint.tar.gz" --directory "$dir" actionlint
           "$dir/actionlint" -color
 
+      # The repository has no uv.toml or pyproject.toml for setup-uv to read a
+      # version from, so without this it installs the latest uv. Renovate does
+      # not manage this pin; update it by hand, like actionlint and zizmor.
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: false
+          version: 0.12.19
 
       # Gate on medium-and-higher findings at every confidence level.
       - name: zizmor
