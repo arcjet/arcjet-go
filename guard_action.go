@@ -128,10 +128,13 @@ const (
 	guardOutcomeUnavailable = "unavailable"
 )
 
-// defaultGuardTimeout bounds the Guard call GuardAction makes when the
-// caller's context carries no deadline. Without it a Decide service that
-// accepts a connection and then stops responding would hang the action
-// forever rather than failing closed. It matches the Protect default.
+// defaultGuardTimeout bounds a Decide service call whose context carries no
+// deadline. Without it a service that accepts a connection and then stops
+// responding would hang the caller forever rather than failing closed. It
+// matches the Protect default. [GuardClient.Guard] applies it per RPC, so
+// GuardAction inherits it; GuardAction keeps its own wrap because that one
+// bounds the whole Guard call, local evaluation included, which is the budget
+// a fail-closed action wants.
 const defaultGuardTimeout = 2 * time.Second
 
 func captureGuardOutcome(client *GuardClient, policy GuardActionPolicy, correlationID, decisionID, outcome string) {

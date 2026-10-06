@@ -1065,6 +1065,27 @@ a non-nil `error`; use the error for observability and `HasFailedOpen()` for the
 security outcome. Programmer errors instead return the zero-value decision and
 a non-nil error and must always be handled.
 
+`Guard()` bounds each call to the Decide service with a two second deadline
+when the context carries none, matching `Protect` and `GuardAction`. A deadline
+you set yourself is never replaced, whether it is shorter or longer. The bound
+covers the service call only: remote policy preparation applies its own two
+second fetch timeout, and local rule evaluation terminates on its own. Timing
+those out would fail the call open because the SDK was slow rather than because
+Arcjet was unreachable.
+
+An expiry is reported as the transport failure it is, on the fail-open path
+above: a usable `ALLOW` for which `HasFailedOpen()` is `true`, alongside a
+non-nil `*connect.Error` whose message is
+`deadline_exceeded: context deadline exceeded`.
+
+Test it with `connect.CodeOf(err) == connect.CodeDeadlineExceeded`, not with
+`errors.Is(err, context.DeadlineExceeded)`. Whether the error unwraps to that
+sentinel depends on which side of the RPC observes the expiry first: connect
+wraps the sentinel when it builds the error from the local context, and loses
+it when it decodes a `deadline_exceeded` status off the wire. The code is set
+on both paths. `GuardAction` passes the same error through as the `Err` of a
+`*GuardUnavailableError`, so the code check keeps working through the wrapper.
+
 A real `DENY` is a completed policy decision and is distinct from an
 unavailable evaluation. Applications commonly alert or retry when
 `HasFailedOpen()` is true, while handling a real denial without retrying the
@@ -1455,7 +1476,10 @@ capture event per call whose metadata `outcome` is `success`, `degraded`,
 
 `GuardAction` bounds its Guard call with a two second deadline when the
 context carries none, matching `Protect`. A `Resolve` hook runs before that
-deadline is applied, so a hook that blocks is the caller's to bound.
+deadline is applied, so a hook that blocks is the caller's to bound. The bound
+here covers the whole Guard call, local evaluation included, which is the
+budget a fail-closed action wants; `Guard` on its own bounds the service call
+only.
 
 **Fail closed by default.** When policy cannot be evaluated, `GuardAction`
 returns `*GuardUnavailableError` without running the function. That covers a

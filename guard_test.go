@@ -36,9 +36,24 @@ type testGuardHandler struct {
 	captureHeader http.Header
 	captureErr    error
 	captureBlock  chan struct{}
+	// hangUntilDone blocks Guard until ctx is cancelled.
+	hangUntilDone bool
+	sawDeadline   bool
+	deadlineLeft  time.Duration
 }
 
 func (h *testGuardHandler) Guard(ctx context.Context, req *connect.Request[decidev2.GuardRequest]) (*connect.Response[decidev2.GuardResponse], error) {
+	h.mu.Lock()
+	if dl, ok := ctx.Deadline(); ok {
+		h.sawDeadline = true
+		h.deadlineLeft = time.Until(dl)
+	}
+	hang := h.hangUntilDone
+	h.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	h.seen = req.Msg
 	h.seenRequests = append(h.seenRequests, proto.Clone(req.Msg).(*decidev2.GuardRequest))
 	h.header = req.Header()
