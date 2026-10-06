@@ -54,14 +54,14 @@ func TestGuardToolRejectsAnActionThatIsNotAValidLabel(t *testing.T) {
 	decide := &fakeDecide{resp: allowResponse()}
 	client := newTestClient(t, decide)
 	base, _ := newLookupTool(t)
-	for _, action := range []string{"Refund.Issued", "-refund", "refund-", "issue refund"} {
+	for _, action := range []string{"Refund Issued", "-refund", "refund-", "issue refund", "réfund.issued"} {
 		if _, err := GuardTool(client, base, ToolPolicy{Action: action}); err == nil {
 			t.Fatalf("GuardTool accepted Action %q; want an error", action)
 		} else if !errors.Is(err, arcjet.ErrInvalidLabel) {
 			t.Fatalf("GuardTool(%q) error = %v; want it to wrap ErrInvalidLabel", action, err)
 		}
 	}
-	for _, action := range []string{"refund.issued", "issue_refund", "order.looked-up"} {
+	for _, action := range []string{"refund.issued", "issue_refund", "order.looked-up", "Refund.Issued", "lookupOrder.invoked"} {
 		if _, err := GuardTool(client, base, ToolPolicy{Action: action}); err != nil {
 			t.Fatalf("GuardTool rejected a valid Action %q: %v", action, err)
 		}

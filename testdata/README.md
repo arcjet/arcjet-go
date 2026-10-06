@@ -13,9 +13,9 @@ monorepo, which is the source of truth for the guard label grammar.
 The grammar lives in one place per implementation: twice in the decide service,
 once here, and once in each of the JavaScript and Python SDKs. Those copies
 disagreed. The request-side validator accepted any Unicode letter while the
-policy side accepted only lowercase ASCII, so a label such as
-`getWeather.invoked` passed the request boundary, drew no `AJ1023`, and could
-never match a published policy — silent at both layers.
+policy side accepted only ASCII, so a label such as `café.invoked` passed the
+request boundary, drew no `AJ1023`, and could never match a published policy —
+silent at both layers.
 
 A copy that drifts now fails by name against these cases.
 

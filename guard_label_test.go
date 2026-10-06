@@ -22,6 +22,10 @@ func TestValidateGuardLabel(t *testing.T) {
 		{"underscore only", "a_b", true},
 		{"digits", "rule1.v2", true},
 		{"single character", "a", true},
+		{"PascalCase tool name", "Bash.invoked", true},
+		{"camelCase tool name", "getWeather.invoked", true},
+		{"uppercase at both ends", "Send_Email", true},
+		{"single uppercase character", "Z", true},
 
 		{"empty", "", false},
 		{"leading underscore", "_ab", false},
@@ -29,7 +33,9 @@ func TestValidateGuardLabel(t *testing.T) {
 		{"leading dash", "-ab", false},
 		{"trailing dot", "ab.", false},
 		{"interior space", "a b", false},
-		{"uppercase", "Send_Email", false},
+		{"non-ASCII uppercase letter", "Émail.sent", false},
+		{"uppercase beside a space", "Send Email", false},
+		{"uppercase with leading underscore", "_Send", false},
 		{"colon", "a:b", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
