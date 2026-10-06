@@ -11,15 +11,9 @@ import (
 // cases every other validator reads: the request side and both policy-side
 // copies in the decide service, and the JavaScript and Python SDKs.
 //
-// This validator is already correct, so the test is a characterization gate
-// rather than a fix. Running the shared cases against the one implementation
-// known to be right is what proves the cases themselves before two new
-// validators are written against them.
-//
 // The rule it pins matters in one direction in particular: this check must
 // never be stricter than the service. A label the service accepts and this
-// refuses breaks working code, which is what happened when the service began
-// accepting an underscore and this did not.
+// refuses fails at construction in code the service would have run.
 func TestValidateGuardLabelMatchesSharedCases(t *testing.T) {
 	const casesPath = "testdata/guard-label-cases.json"
 

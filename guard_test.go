@@ -827,7 +827,7 @@ func TestGuardBuilderValidation(t *testing.T) {
 
 func TestGuardLabelValidation(t *testing.T) {
 	client := newGuardTestClient(t, &testGuardHandler{})
-	_, err := client.Guard(context.Background(), GuardRequest{Label: "Tools.Bad"})
+	_, err := client.Guard(context.Background(), GuardRequest{Label: "tools bad"})
 	if !errors.Is(err, ErrInvalidLabel) {
 		t.Fatalf("expected ErrInvalidLabel, got %v", err)
 	}
@@ -907,7 +907,9 @@ func TestValidateGuardLabelEdges(t *testing.T) {
 		valid bool
 	}{
 		{"", false},
-		{"Tools.Test", false},
+		{"Tools.Test", true},
+		{"Tools Test", false},
+		{"Ünicode", false},
 		{"-bad", false},
 		{"bad-", false},
 		{".bad", false},
