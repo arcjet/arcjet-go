@@ -157,6 +157,59 @@ at all, such as an invalid `Action` or a rule whose key is empty, is denied
 whatever `OnGuardError` is set to: the alternative is running the tool under
 policy that never ran. Those errors wrap `arcjet.ErrGuardMisconfigured`.
 
+## Running locally without a key
+
+`arcjet.NewGuardClient` fails with `arcjet.ErrMissingKey` when neither
+`GuardConfig.Key` nor `ARCJET_KEY` is set, and the guarded constructors reject
+the nil client that leaves you with. That is the default and it does not
+change: an agent cannot end up ungoverned by accident.
+
+For a local run with no key, opt in explicitly. `GuardMiddlewareOrPassThrough`,
+`GuardToolOrPassThrough` and `GuardToolsOrPassThrough` take the same arguments
+as their guarded counterparts and treat a nil client as a request for a
+pass-through instead of an error:
+
+```go
+// ARCJET_KEY unset locally; set in CI and in production.
+client, err := arcjet.NewGuardClient(arcjet.GuardConfig{})
+if err != nil && !errors.Is(err, arcjet.ErrMissingKey) {
+	return err
+}
+// client is nil when the key was missing, which is the opt-in.
+
+guarded, err := agentframework.GuardToolOrPassThrough(client, lookup, policy)
+if err != nil {
+	return err
+}
+
+mw, err := agentframework.GuardMiddlewareOrPassThrough(client, agentframework.MiddlewareConfig{
+	Tools: pickPolicy,
+})
+if err != nil {
+	return err
+}
+```
+
+With a client, these are exactly the guarded constructors. With a nil client
+they return the tools unwrapped and a middleware that hands the run straight to
+the next one, and log a single warning through `slog.Default`:
+
+```text
+level=WARN msg="agentframework: running ungoverned, no Arcjet Guard client was configured, so tool calls and inbound text are not evaluated"
+```
+
+The line is emitted once per process, not once per tool.
+
+> **Production must not use this.** Nothing is screened, no decision is made,
+> and no capture event is recorded, so the run does not appear in the Arcjet
+> dashboard at all. Make `ARCJET_KEY` a required setting everywhere except a
+> developer's machine, and fail startup if it is missing there.
+
+Policy is still validated without a key. A `ToolPolicy.Action` that Guard would
+reject, a nil tool, and a nil policy function are errors on this path too, so
+the run that has no key is also the run that catches the typo rather than
+deferring it to the first deployment that does have one.
+
 ## Correlation
 
 Put an ID you already have on the context before `Run`:

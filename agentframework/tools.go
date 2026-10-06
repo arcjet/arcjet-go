@@ -36,6 +36,19 @@ func GuardTools(client *arcjet.GuardClient, tools []tool.Tool, policy func(tool.
 	if client == nil {
 		return nil, errNilClient
 	}
+	return selectTools(tools, policy, func(ft tool.FuncTool, p ToolPolicy) (tool.Tool, error) {
+		return GuardTool(client, ft, p)
+	})
+}
+
+// selectTools walks tools, picks out the function tools policy claims, and
+// replaces each with what replace returns. Every other tool passes through
+// untouched.
+//
+// GuardTools and [GuardToolsOrPassThrough] share it so the two cannot disagree
+// about which tools a policy applies to, and so the pass-through form
+// validates exactly the policies the guarded form would have used.
+func selectTools(tools []tool.Tool, policy func(tool.Tool) (ToolPolicy, bool), replace func(tool.FuncTool, ToolPolicy) (tool.Tool, error)) ([]tool.Tool, error) {
 	if policy == nil {
 		return nil, errNilPolicyFunc
 	}
@@ -60,11 +73,11 @@ func GuardTools(client *arcjet.GuardClient, tools []tool.Tool, policy func(tool.
 			out = append(out, t)
 			continue
 		}
-		guarded, err := GuardTool(client, ft, p)
+		replaced, err := replace(ft, p)
 		if err != nil {
 			return nil, fmt.Errorf("agentframework: guarding tool %q: %w", t.Name(), err)
 		}
-		out = append(out, guarded)
+		out = append(out, replaced)
 	}
 	return out, nil
 }

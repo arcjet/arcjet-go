@@ -9,6 +9,12 @@
 // contributing agent.WithTool, and toolautocall.Config.AdditionalTools.
 // Wrap those with GuardTool before contributing them.
 //
+// A nil client is a construction error, so an agent cannot end up ungoverned
+// by accident. GuardMiddlewareOrPassThrough, GuardToolOrPassThrough and
+// GuardToolsOrPassThrough are the explicit opt-in for a local run with no
+// ARCJET_KEY: they take the same arguments, treat a nil client as a request
+// to pass through unguarded, and log that once. Production must not use them.
+//
 // The helpers fail closed by default: when policy cannot be evaluated the
 // tool does not run and the model receives arcjet.NewGuardUnavailableResult. A
 // denial is returned to the model as a successful tool result carrying
