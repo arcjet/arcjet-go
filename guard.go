@@ -196,6 +196,25 @@ func (c *GuardClient) buildRuleSubmissions(ctx context.Context, rules []GuardRul
 	return submissions, warnings, nil
 }
 
+// guardRPC issues one Guard RPC, bounded by [defaultGuardTimeout] when ctx
+// carries no deadline. Without it a Decide service that accepts a connection
+// and then stops responding blocks the caller until its context is cancelled,
+// or forever.
+//
+// The bound covers the call to the Decide service and nothing else. Local
+// policy preparation and rule evaluation are CPU-bound and terminate on their
+// own, and the policy fetch they may wait on applies guardPolicyFetchTimeout.
+// Charging that work to this budget would fail a Guard open, allowing the
+// request because the SDK's own analysis was slow rather than because Arcjet
+// was unreachable. Each RPC is bounded separately for the same reason: a retry
+// the server asked for is a fresh call, not the remainder of the first one's
+// budget.
+func (c *GuardClient) guardRPC(ctx context.Context, req *connect.Request[decidev2.GuardRequest]) (*connect.Response[decidev2.GuardResponse], error) {
+	ctx, cancel := withDefaultDeadline(ctx, defaultGuardTimeout)
+	defer cancel()
+	return c.guardClient.Guard(ctx, req)
+}
+
 // Guard evaluates bound guard rule inputs.
 //
 // Programmer errors (nil client, invalid label, nil rule, or a rule that
@@ -211,6 +230,29 @@ func (c *GuardClient) buildRuleSubmissions(ctx context.Context, rules []GuardRul
 // reports true and [GuardDecision.ErrorResults] surfaces the failure, so a
 // fail-closed policy stays honest. A missing or malformed response is also
 // fail-open (synthesized by guardDecisionFromProto), but returns a nil error.
+//
+// Each call to the Decide service is bounded by a two-second default when ctx
+// carries no deadline, so a connection the service accepts and then stops
+// answering cannot block the caller indefinitely. A caller's own deadline is
+// never replaced, whether it is shorter or longer. The bound covers the
+// service call only: local policy preparation and rule evaluation terminate on
+// their own, and timing them out would fail the Guard open because the SDK was
+// slow rather than because Arcjet was unreachable.
+//
+// Expiry is runtime degradation rather than misuse, so it is reported as the
+// transport failure it is, by the fail-open path above: a usable ALLOW
+// carrying a TRANSPORT_ERROR result, alongside a non-nil *connect.Error whose
+// message is "deadline_exceeded: context deadline exceeded".
+//
+// Test it with connect.CodeOf(err) == connect.CodeDeadlineExceeded, not with
+// errors.Is(err, [context.DeadlineExceeded]). Whether the error unwraps to
+// that sentinel depends on which side of the RPC observes the expiry first:
+// connect wraps the sentinel when it builds the error from the local context,
+// and loses it when it decodes a deadline_exceeded status off the wire. The
+// code is set on both paths. [GuardAction] passes the same error through as
+// the Err of a *GuardUnavailableError under the default OnGuardErrorDeny, so
+// the code check keeps working through the wrapper — which is what a Guard
+// caller doing its own fail-closed handling should mirror.
 func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecision, error) {
 	if c == nil {
 		return GuardDecision{}, fmt.Errorf("arcjet: %w: %w", ErrGuardMisconfigured, ErrNilClient)
@@ -284,7 +326,7 @@ func (c *GuardClient) Guard(ctx context.Context, req GuardRequest) (GuardDecisio
 	connectReq := connect.NewRequest(wireReq)
 	connectReq.Header().Set("Authorization", "Bearer "+c.key)
 	connectReq.Header().Set("User-Agent", c.userAgent)
-	resp, err := c.guardClient.Guard(ctx, connectReq)
+	resp, err := c.guardRPC(ctx, connectReq)
 	if err != nil {
 		// Fail open: a transport failure is runtime degradation, not a
 		// programmer error. Return a usable ALLOW carrying a synthetic errored
@@ -340,7 +382,7 @@ func (c *GuardClient) refreshAndRetry(
 	if prepared.decision != nil {
 		state.wireReq.PolicyInputs = localOnlyPolicyInputs(prepared.inputs)
 		state.wireReq.LocalPolicyRevision, state.wireReq.LocalPolicyResults = prepared.revision, prepared.results
-		resp, err = c.guardClient.Guard(ctx, state.connectReq)
+		resp, err = c.guardRPC(ctx, state.connectReq)
 		if err != nil {
 			return withLocalWarnings(*prepared.decision, state.warnings), err
 		}
@@ -352,7 +394,7 @@ func (c *GuardClient) refreshAndRetry(
 	if state.sanitizeInputs || prepared.sanitizeInputs {
 		state.wireReq.PolicyInputs = localOnlyPolicyInputs(state.wireReq.GetPolicyInputs())
 	}
-	resp, err = c.guardClient.Guard(ctx, state.connectReq)
+	resp, err = c.guardRPC(ctx, state.connectReq)
 	if err != nil {
 		return withLocalWarnings(guardErrorDecision("TRANSPORT_ERROR", err.Error()), state.warnings), err
 	}
@@ -367,7 +409,7 @@ func (c *GuardClient) reportLocalPolicyDenial(ctx context.Context, req GuardRequ
 	connectReq := connect.NewRequest(wireReq)
 	connectReq.Header().Set("Authorization", "Bearer "+c.key)
 	connectReq.Header().Set("User-Agent", c.userAgent)
-	resp, err := c.guardClient.Guard(ctx, connectReq)
+	resp, err := c.guardRPC(ctx, connectReq)
 	decision := *prepared.decision
 	if err != nil {
 		return withLocalWarnings(decision, warnings), err
