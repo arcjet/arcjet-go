@@ -12,5 +12,5 @@ require (
 require (
 	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )

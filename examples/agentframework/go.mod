@@ -9,7 +9,7 @@ replace github.com/arcjet/arcjet-go => ../..
 replace github.com/arcjet/arcjet-go/agentframework => ../../agentframework
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.75.0
+	github.com/anthropics/anthropic-sdk-go v1.78.0
 	github.com/arcjet/arcjet-go v1.2.0
 	github.com/arcjet/arcjet-go/agentframework v0.1.0
 	github.com/microsoft/agent-framework-go v0.1.0
@@ -35,7 +35,7 @@ require (
 	go.opentelemetry.io/otel v1.46.0 // indirect
 	go.opentelemetry.io/otel/trace v1.46.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )

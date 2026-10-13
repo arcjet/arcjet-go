@@ -43,11 +43,10 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Keep the public compatibility floor in go.mod while testing with
-          # the latest security-patched release in that Go minor line. Lint
-          # stays here rather than on 1.27: the pinned golangci-lint (v2.12.2)
-          # panics in staticcheck's IR builder on the Go 1.27 standard library.
-          go-version: 1.25.x
+          # Run govulncheck on the patched Go 1.26 standard library. The test
+          # matrix still covers the public Go 1.25 compatibility floor. The
+          # pinned golangci-lint panics on the Go 1.27 standard library.
+          go-version: 1.26.x
           check-latest: true
           # Cache the main module, the tools module (golangci-lint has a heavy
           # dep graph — caching it saves ~30s per run), and the rampart module.
@@ -101,9 +100,7 @@ jobs:
         # The examples are their own modules and nothing else in CI built
         # them, so a rename in the SDK could break one with every other job
         # green. `test` compiles without leaving a binary in the worktree.
-        # The agentframework example needs Go 1.26 and is covered by that
-        # module's own job instead, because this job pins GOTOOLCHAIN=local
-        # at the 1.25 compatibility floor.
+        # The agentframework example is covered by that module's own job.
         run: go -C examples/nethttp test ./...
 
   test:
@@ -213,7 +210,7 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # The agentframework module requires Go 1.26 because Microsoft
-          # Agent Framework does. The root stays on 1.25 in the other jobs.
+          # Agent Framework does. The root test matrix covers Go 1.25.
           go-version: 1.26.x
           check-latest: true
           cache-dependency-path: |
