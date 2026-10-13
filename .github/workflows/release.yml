@@ -69,7 +69,9 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.25.x
+          # Release checks include govulncheck, so use the patched Go 1.26
+          # standard library; CI separately tests the Go 1.25 floor.
+          go-version: 1.26.x
           check-latest: true
           cache-dependency-path: |
             go.sum
@@ -261,8 +263,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # The agentframework module and its example require Go 1.26 because Microsoft
-  # Agent Framework does. setup-go pins GOTOOLCHAIN=local, so the Go 1.25
-  # preflight cannot tidy, build or test them.
+  # Agent Framework does. Check their separate modules in this preflight.
   preflight-agentframework:
     name: Preflight (agentframework)
     runs-on: ubuntu-24.04
