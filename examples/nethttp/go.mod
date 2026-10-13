@@ -16,7 +16,7 @@ require (
 	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	go.jetify.com/typeid v1.3.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
