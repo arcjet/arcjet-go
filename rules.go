@@ -386,7 +386,7 @@ type SensitiveInfoOptions struct {
 //
 // Set [SensitiveInfoOptions.Backend] to the on-device Rampart backend
 // (github.com/arcjet/arcjet-go/sensitiveinfo/rampart). Detection runs
-// in-process — the text never leaves the SDK.
+// in-process – the text never leaves the SDK.
 func SensitiveInfo(opts SensitiveInfoOptions) Rule {
 	return ruleFunc{
 		build: func() (map[string]any, error) {

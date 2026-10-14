@@ -13,7 +13,7 @@ Arcjet Go SDK.
 
 `POST /submit` additionally runs:
 
-- **Sensitive information detection** — scans the request body with the
+- **Sensitive information detection** – scans the request body with the
   on-device Rampart NER backend
   ([`sensitiveinfo/rampart`](../../sensitiveinfo/rampart)) and rejects it if
   it contains names, emails, addresses, SSNs, card numbers, tax and government
@@ -62,7 +62,7 @@ for i in {1..5}; do curl -s -o /dev/null -w "%{http_code}\n" 'http://localhost:3
 # Submit a clean body — accepted.
 curl -X POST 'http://localhost:3000/submit' --data 'Hello, this is my feedback.'
 
-# Submit a body containing personal information — rejected with each detection.
+# Submit a body containing personal information – rejected with each detection.
 curl -X POST 'http://localhost:3000/submit' \
   --data 'My name is Sarah Connor, I live in London, SSN 123-45-6789, sarah@example.com'
 ```

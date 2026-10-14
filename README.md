@@ -510,9 +510,9 @@ The returned rules can be combined with others using `append`.
 
 ## Sensitive information detection
 
-Detect and block personally identifiable information — names, emails, phone
+Detect and block personally identifiable information – names, emails, phone
 numbers, addresses, SSNs, credit card numbers, tax and government IDs, and more
-— in text you pass to `Protect`. Detection runs **on-device** with the
+– in text you pass to `Protect`. Detection runs **on-device** with the
 [`github.com/arcjet/arcjet-go/sensitiveinfo/rampart`](./sensitiveinfo/rampart)
 backend: a quantized BERT named-entity-recognition model **embedded in the
 binary**. It runs entirely in-process, so the scanned text never leaves the SDK
@@ -1223,8 +1223,8 @@ returned; check it before reading `Unit` or `Count`.
 
 ### Guard sensitive information detection
 
-Use on text an agent is about to send or store — a tool argument, an outgoing
-message, a model response — to block personal information. Detection runs
+Use on text an agent is about to send or store – a tool argument, an outgoing
+message, a model response – to block personal information. Detection runs
 on-device with the
 [Rampart backend](#sensitive-information-detection); only a SHA-256 hash of the
 text and the locally computed result are sent to Arcjet. Create the backend once
