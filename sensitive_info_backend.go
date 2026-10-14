@@ -6,17 +6,14 @@ import (
 	"log/slog"
 )
 
-// SensitiveInfoBackend is a pluggable engine for sensitive-information
-// detection. When a backend is supplied to a [SensitiveInfo] rule (via
-// [SensitiveInfoOptions.Backend]) or a Guard sensitive-info rule (via
-// [GuardSensitiveInfoOptions.Backend]), detection is dispatched to it instead
-// of the bundled WebAssembly analyzer.
+// SensitiveInfoBackend is the engine for sensitive-information detection. Pass
+// one to a [SensitiveInfo] rule (via [SensitiveInfoOptions.Backend]) or a Guard
+// sensitive-info rule (via [GuardSensitiveInfoOptions.Backend]).
 //
 // A backend runs entirely in-process: the scanned text is never sent to the
-// Arcjet service. The optional module
-// github.com/arcjet/arcjet-go/sensitiveinfo/rampart implements this interface
-// with an on-device NER model that detects many more entity types than the four
-// the bundled analyzer recognises.
+// Arcjet service. The recommended implementation is the module
+// github.com/arcjet/arcjet-go/sensitiveinfo/rampart, an on-device NER model
+// that detects every entity type the SDK defines.
 //
 // Implementations must be safe for concurrent use; a single backend is shared
 // across every request the rule evaluates.

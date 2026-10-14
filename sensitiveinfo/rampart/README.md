@@ -1,14 +1,14 @@
 # Rampart sensitive-info backend
 
-An optional, on-device sensitive-information detection backend for
+The recommended sensitive-information detection backend for
 [`github.com/arcjet/arcjet-go`](https://github.com/arcjet/arcjet-go). It plugs
-into the SDK's `SensitiveInfo` and `GuardSensitiveInfo` rules and detects many
-more entity types than the bundled analyzer — names, addresses, SSNs, tax and
-government IDs, and more — using a quantized BERT named-entity-recognition model
-that is **embedded in the binary** and runs entirely in-process.
+into the SDK's `SensitiveInfo` and `GuardSensitiveInfo` rules and detects names,
+emails, phone numbers, addresses, SSNs, card numbers, tax and government IDs,
+and more, using a quantized BERT named-entity-recognition model that is
+**embedded in the binary** and runs entirely in-process.
 
 This is an Arcjet SDK backend, not a standalone SDK. It is a separate Go module
-only so the ~15 MB of model weights ship with applications that opt in;
+only so the ~15 MB of model weights ship with the applications that use it;
 `go get github.com/arcjet/arcjet-go` is unaffected. Core and this backend are
 released together at the same version.
 
@@ -40,9 +40,23 @@ client, err := arcjet.NewClient(arcjet.Config{
 })
 ```
 
-The scanned text never leaves the process. As with the built-in analyzer, the
-SDK sends only a SHA-256 hash of the text plus the locally-computed result to
-Arcjet.
+For Arcjet Guard, pass the same backend to the rule and to the client, so
+sensitive-info rules from remote policies use it too:
+
+```go
+guard, err := arcjet.NewGuardClient(arcjet.GuardConfig{
+	SensitiveInfoBackend: backend,
+})
+
+piiScan, err := arcjet.GuardSensitiveInfo(arcjet.GuardSensitiveInfoOptions{
+	Mode:    arcjet.ModeLive,
+	Deny:    rampart.Entities(),
+	Backend: backend,
+})
+```
+
+The scanned text never leaves the process. The SDK sends only a SHA-256 hash
+of the text plus the locally-computed result to Arcjet.
 
 ## Detected entity types
 
@@ -57,10 +71,6 @@ overlapping text).
 
 `rampart.Entities()` returns the full set, handy for
 `Deny: rampart.Entities()`.
-
-Listing any of these non-native types on a `SensitiveInfo`/`GuardSensitiveInfo`
-rule **without** a backend is a configuration error
-(`arcjet.ErrUnsupportedEntityType`).
 
 ## Performance
 

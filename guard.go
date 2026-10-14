@@ -43,7 +43,9 @@ type GuardConfig struct {
 	// this client.
 	SensitiveInfoDetect SensitiveInfoDetect
 	// SensitiveInfoBackend evaluates sensitive-info rules projected by remote
-	// policies. If nil, the bundled WebAssembly analyzer is used.
+	// policies. Set it to the same Rampart backend
+	// (github.com/arcjet/arcjet-go/sensitiveinfo/rampart) you pass to
+	// [GuardSensitiveInfoOptions.Backend].
 	SensitiveInfoBackend SensitiveInfoBackend
 }
 
@@ -1008,10 +1010,12 @@ type GuardSensitiveInfoOptions struct {
 	Allow []EntityType
 	// Deny lists entity types denied in scanned text.
 	Deny []EntityType
-	// Backend optionally replaces the bundled WebAssembly analyzer with a
-	// pluggable detection engine (see [SensitiveInfoBackend]). Required to
-	// allow or deny any entity type the bundled analyzer does not detect on
-	// its own.
+	// Backend is the detection engine for this rule. Set it to a backend from
+	// github.com/arcjet/arcjet-go/sensitiveinfo/rampart (created once with
+	// rampart.New and shared), the recommended configuration; it detects
+	// every entity type the SDK defines. Without a backend, only
+	// [SensitiveInfoEmail], [SensitiveInfoPhoneNumber], [SensitiveInfoIPAddress],
+	// and [SensitiveInfoCreditCardNumber] are detected.
 	Backend SensitiveInfoBackend
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -1081,11 +1085,10 @@ func (r *GuardSensitiveInfoRule) ErrorResult(d GuardDecision) *ArcjetError {
 
 // Text binds text to scan for one Guard call.
 //
-// Detection runs locally via the bundled WebAssembly analyzer (the same
-// `arcjet_analyze_js_req` component used by arcjet-js and arcjet-py); the
-// text never leaves the SDK. The submission carries a SHA-256 hash of the
-// text alongside the locally-computed result so the server can correlate
-// inputs without seeing the raw value. The scan uses the default context
+// Detection runs in-process through the rule's backend (the on-device Rampart
+// backend is recommended); the text never leaves the SDK. The submission
+// carries a SHA-256 hash of the text alongside the locally-computed result so
+// the server can correlate inputs without seeing the raw value. The scan uses the default context
 // window of 1; GuardSensitiveInfoRule does not expose ContextWindowSize.
 func (r *GuardSensitiveInfoRule) Text(text string) GuardRuleInput {
 	allow := append([]EntityType(nil), r.allow...)

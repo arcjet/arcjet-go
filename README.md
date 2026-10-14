@@ -510,80 +510,16 @@ The returned rules can be combined with others using `append`.
 
 ## Sensitive information detection
 
-Detect and block personally identifiable information — emails, phone numbers,
-IP addresses, and credit card numbers — in text you pass to `Protect`.
-Detection runs **locally** via the bundled WebAssembly analyzer (the same
-`arcjet_analyze_js_req` component used by the JavaScript and Python SDKs), so
-the scanned text never leaves the SDK. Pass the text to scan with
-`arcjet.WithSensitiveInfoValue`:
-
-```go
-aj, err := arcjet.NewClient(arcjet.Config{
-	Key: arcjetKey,
-	Rules: []arcjet.Rule{
-		arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{
-			Mode: arcjet.ModeLive,
-			Deny: []arcjet.EntityType{
-				arcjet.SensitiveInfoEmail,
-				arcjet.SensitiveInfoCreditCardNumber,
-			},
-		}),
-	},
-})
-
-decision, err := aj.Protect(
-	r.Context(),
-	r,
-	arcjet.WithSensitiveInfoValue("User input to scan"),
-)
-if decision.Reason.IsSensitiveInfo() {
-	http.Error(w, "Sensitive information detected", http.StatusBadRequest)
-	return
-}
-```
-
-`Allow` and `Deny` are mutually exclusive: `Deny` blocks the listed entity
-types, while `Allow` blocks every type _except_ those listed. The built-in
-entity types are `SensitiveInfoEmail`, `SensitiveInfoPhoneNumber`,
-`SensitiveInfoIPAddress`, and `SensitiveInfoCreditCardNumber`.
-
-To detect custom entities, set `Config.SensitiveInfoDetect`. It receives the
-tokenized text and returns one `EntityType` per token (empty leaves a token
-unclassified); the returned label can be any custom string you then list in
-`Allow`/`Deny`:
-
-```go
-aj, err := arcjet.NewClient(arcjet.Config{
-	Key: arcjetKey,
-	SensitiveInfoDetect: func(ctx context.Context, tokens []string) []arcjet.EntityType {
-		out := make([]arcjet.EntityType, len(tokens))
-		for i, tok := range tokens {
-			if strings.HasPrefix(tok, "sk-") {
-				out[i] = "API_KEY"
-			}
-		}
-		return out
-	},
-	Rules: []arcjet.Rule{
-		arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{
-			Mode: arcjet.ModeLive,
-			Deny: []arcjet.EntityType{"API_KEY"},
-		}),
-	},
-})
-```
-
-### On-device NER backend (more entity types)
-
-The built-in analyzer detects the four types above. For names, addresses, SSNs,
-tax and government IDs, and more, set `Backend` on the rule to the optional
+Detect and block personally identifiable information — names, emails, phone
+numbers, addresses, SSNs, credit card numbers, tax and government IDs, and more
+— in text you pass to `Protect`. Detection runs **on-device** with the
 [`github.com/arcjet/arcjet-go/sensitiveinfo/rampart`](./sensitiveinfo/rampart)
-module. It runs a quantized BERT named-entity-recognition model **embedded in
-the binary** — entirely in-process, so (like the built-in analyzer) the scanned
-text never leaves the SDK and nothing is fetched at runtime.
+backend: a quantized BERT named-entity-recognition model **embedded in the
+binary**. It runs entirely in-process, so the scanned text never leaves the SDK
+and nothing is fetched at runtime.
 
-Add it to an existing Arcjet application (it is a separate module only so the
-~15 MB of weights do not affect applications that have not opted in):
+Add it to your Arcjet application (it is a separate module only so the ~15 MB
+of model weights ship with the applications that use it):
 
 ```
 go get github.com/arcjet/arcjet-go/sensitiveinfo/rampart
@@ -666,8 +602,12 @@ func main() {
 }
 ```
 
-The backend detects these entity types (pass any of them to `Allow`/`Deny`, or
-use `rampart.Entities()` for the whole set):
+Pass the text to scan with `arcjet.WithSensitiveInfoValue`. `Allow` and `Deny`
+are mutually exclusive: `Deny` blocks the listed entity types, while `Allow`
+blocks every type _except_ those listed.
+
+The Rampart backend detects these entity types (pass any of them to
+`Allow`/`Deny`, or use `rampart.Entities()` for the whole set):
 
 | Constant | Value | Detected by |
 | --- | --- | --- |
@@ -695,8 +635,7 @@ use `rampart.Entities()` for the whole set):
 Deterministic recognizers (email, URL, IP, SSN, Luhn-validated cards) run
 alongside the NER model and take precedence on overlapping text. Phone numbers
 are left to the model because their digit shape overlaps with financial and
-government identifiers. Listing a non-built-in entity type without a backend
-(or a `SensitiveInfoDetect` callback) is a configuration error.
+government identifiers.
 
 > **Performance:** inference runs on the request path. Cost scales with input
 > length: text is scanned in 480-character windows, and each window takes one
@@ -712,6 +651,11 @@ government identifiers. Listing a non-built-in entity type without a backend
 
 See the [module README](./sensitiveinfo/rampart/README.md) for the full entity
 list and details.
+
+The same backend works with Arcjet Guard: set it on
+`GuardSensitiveInfoOptions.Backend`, and on `GuardConfig.SensitiveInfoBackend`
+so sensitive-info rules from remote policies use it too. See
+[Guard sensitive information detection](#guard-sensitive-information-detection).
 
 To redact rather than block sensitive information, see
 [Redacting sensitive information](#redacting-sensitive-information) below.
@@ -1276,6 +1220,44 @@ if result := moderation.Result(decision); result != nil && result.Billing != nil
 The result is a binary `Detected` verdict plus optional `Billing` in
 `text_units`. Billing is a pointer and can be nil when usage data is not
 returned; check it before reading `Unit` or `Count`.
+
+### Guard sensitive information detection
+
+Use on text an agent is about to send or store — a tool argument, an outgoing
+message, a model response — to block personal information. Detection runs
+on-device with the
+[Rampart backend](#sensitive-information-detection); only a SHA-256 hash of the
+text and the locally computed result are sent to Arcjet. Create the backend once
+at startup and pass it to both the client (for remote policies) and the rule:
+
+```go
+backend, err := rampart.New(rampart.Options{})
+if err != nil {
+	log.Fatal(err)
+}
+
+guard, err := arcjet.NewGuardClient(arcjet.GuardConfig{
+	Key:                  arcjetKey,
+	SensitiveInfoBackend: backend,
+})
+
+piiScan, err := arcjet.GuardSensitiveInfo(arcjet.GuardSensitiveInfoOptions{
+	Mode:    arcjet.ModeLive,
+	Deny:    rampart.Entities(),
+	Backend: backend,
+})
+
+decision, err := guard.Guard(ctx, arcjet.GuardRequest{
+	Label: "tools.send-email",
+	Rules: []arcjet.GuardRuleInput{piiScan.Text(emailBody)},
+})
+
+if decision.IsDenied() && decision.Reason == arcjet.ReasonSensitiveInfo {
+	if result := piiScan.Result(decision); result != nil {
+		return fmt.Errorf("remove personal information: %v", result.DetectedEntityTypes)
+	}
+}
+```
 
 ### Custom rules
 
