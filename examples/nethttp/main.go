@@ -66,10 +66,10 @@ func main() {
 				Capacity:   10,               // Bucket capacity of 10 tokens.
 			}),
 
-			// Block request bodies containing sensitive information. The text to
-			// scan is passed per request with arcjet.WithSensitiveInfoValue and is
-			// analyzed locally — it is never sent to Arcjet. The rule only runs
-			// when a value is supplied, so it is a no-op on GET / below.
+			// Block request bodies containing sensitive information. POST /submit
+			// passes the body with arcjet.WithSensitiveInfoValue; GET / passes
+			// no value, so this rule skips it. The text is analyzed locally and
+			// is never sent to Arcjet.
 			// rampart.Entities() denies every type the backend can detect; pass
 			// a narrower slice (e.g. GivenName, Surname, SSN) to scope it down.
 			arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{

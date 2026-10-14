@@ -518,8 +518,8 @@ backend: a quantized BERT named-entity-recognition model **embedded in the
 binary**. It runs entirely in-process, so the scanned text never leaves the SDK
 and nothing is fetched at runtime.
 
-Add it to your Arcjet application (it is a separate module only so the ~15 MB
-of model weights ship with the applications that use it):
+Add it to your Arcjet application. It is a separate module so applications that
+don't need it don't ship the ~15 MB of model weights:
 
 ```
 go get github.com/arcjet/arcjet-go/sensitiveinfo/rampart

@@ -8,7 +8,7 @@ and more, using a quantized BERT named-entity-recognition model that is
 **embedded in the binary** and runs entirely in-process.
 
 This is an Arcjet SDK backend, not a standalone SDK. It is a separate Go module
-only so the ~15 MB of model weights ship with the applications that use it;
+so applications that don't need it don't ship the ~15 MB of model weights;
 `go get github.com/arcjet/arcjet-go` is unaffected. Core and this backend are
 released together at the same version.
 
