@@ -1,8 +1,8 @@
-// Package rampart is an optional, on-device sensitive-information detection
-// backend for the Arcjet Go SDK. It plugs into the SDK's SensitiveInfo and
-// GuardSensitiveInfo rules (via their Backend option) and detects many more
-// entity types than the bundled analyzer — names, addresses, SSNs, tax and
-// government IDs, and more — using a quantized BERT named-entity-recognition
+// Package rampart is the recommended, on-device sensitive-information
+// detection backend for the Arcjet Go SDK. It plugs into the SDK's
+// SensitiveInfo and GuardSensitiveInfo rules (via their Backend option) and
+// detects names, emails, phone numbers, addresses, SSNs, card numbers, tax and
+// government IDs, and more, using a quantized BERT named-entity-recognition
 // model bundled with this package.
 //
 // Everything runs in-process with the embedded model weights: no data leaves

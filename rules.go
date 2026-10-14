@@ -367,10 +367,12 @@ type SensitiveInfoOptions struct {
 	Allow []EntityType
 	// Deny lists entity types denied in scanned text.
 	Deny []EntityType
-	// Backend optionally replaces the bundled WebAssembly analyzer with a
-	// pluggable detection engine (see [SensitiveInfoBackend]). When set,
-	// detection runs entirely through the backend. Required to allow or deny
-	// any entity type the bundled analyzer does not detect on its own.
+	// Backend is the detection engine for this rule. Set it to a backend from
+	// github.com/arcjet/arcjet-go/sensitiveinfo/rampart (created once with
+	// rampart.New and shared), the recommended configuration; it detects
+	// every entity type the SDK defines. Without a backend, only
+	// [SensitiveInfoEmail], [SensitiveInfoPhoneNumber], [SensitiveInfoIPAddress],
+	// and [SensitiveInfoCreditCardNumber] are detected.
 	Backend SensitiveInfoBackend
 	// ContextWindowSize is the number of adjacent tokens passed to a custom
 	// [SensitiveInfoDetect] callback at a time. Defaults to 1 when zero or
@@ -382,9 +384,9 @@ type SensitiveInfoOptions struct {
 // SensitiveInfo creates a sensitive information detection rule. The text
 // to scan comes from [WithSensitiveInfoValue] on each Protect call.
 //
-// Detection runs locally via the bundled WebAssembly analyzer (the same
-// `arcjet_analyze_js_req` component used by the JavaScript and Python
-// SDKs) — the text never leaves the SDK.
+// Set [SensitiveInfoOptions.Backend] to the on-device Rampart backend
+// (github.com/arcjet/arcjet-go/sensitiveinfo/rampart). Detection runs
+// in-process – the text never leaves the SDK.
 func SensitiveInfo(opts SensitiveInfoOptions) Rule {
 	return ruleFunc{
 		build: func() (map[string]any, error) {

@@ -44,11 +44,10 @@ const (
 // Sensitive information entity type identifiers for use with
 // SensitiveInfoOptions.Allow, SensitiveInfoOptions.Deny,
 // GuardSensitiveInfoOptions.Allow, and GuardSensitiveInfoOptions.Deny.
-// The first four are detected by the bundled WebAssembly analyzer. The
-// remainder require a backend that supports them (see [SensitiveInfoBackend]
-// and the github.com/arcjet/arcjet-go/sensitiveinfo/rampart module) or a custom
-// [SensitiveInfoDetect] callback; listing one without either is a
-// configuration error.
+// The on-device Rampart backend
+// (github.com/arcjet/arcjet-go/sensitiveinfo/rampart, see
+// [SensitiveInfoBackend]) detects all of them. Without a backend only the first
+// four are detected.
 const (
 	SensitiveInfoEmail            EntityType = "EMAIL"
 	SensitiveInfoPhoneNumber      EntityType = "PHONE_NUMBER"
