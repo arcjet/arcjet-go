@@ -94,10 +94,9 @@ func TestLocalFilterMatchesFilterLocalFields(t *testing.T) {
 	}
 }
 
-// TestLocalEvaluatorBotCategoryConstants checks that each bot category constant
-// names a category the analyzer actually knows. A typo or a category the wasm
-// has never heard of would silently match nothing, so drive a representative
-// user agent through the two categories added alongside the 4f9fb96 corpus sync.
+// TestLocalEvaluatorBotCategoryConstants checks that representative bot category
+// constants name categories the analyzer actually knows. A typo or a category
+// the wasm has never heard of would silently match nothing.
 func TestLocalEvaluatorBotCategoryConstants(t *testing.T) {
 	for _, tc := range []struct {
 		category  string
@@ -105,6 +104,7 @@ func TestLocalEvaluatorBotCategoryConstants(t *testing.T) {
 	}{
 		{BotCategoryApple, "Applebot/0.1"},
 		{BotCategoryWebhook, "Stripe/1.0"},
+		{BotCategoryMonitor, "OsanoBot"},
 	} {
 		t.Run(tc.category, func(t *testing.T) {
 			opts := BotOptions{Mode: ModeLive, Deny: []string{tc.category}}

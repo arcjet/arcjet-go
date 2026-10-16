@@ -54,14 +54,18 @@ func TestSignedBotDirectoryConfiguration(t *testing.T) {
 func TestSignedBotPolicies(t *testing.T) {
 	for _, entity := range []string{
 		"GOOGLE_AGENT", "CHATGPT_AGENT", "DUCKASSIST_BOT", "BROWSERBASE", "MANUS_BOT",
+		"YOU_CRAWLER", "EXA_SEARCHBOT", "CONTEXT7_CRAWLER", "SHOPIFY_CLOUDSURF",
+		"KERNEL_AGENT", "KERNEL_SEARCH", "OSANO_BOT", "CLOUDFLARE_BROWSER_RUN",
+		"LANE_AGENT",
 		BotCategoryAI, BotCategoryGoogle, BotCategorySearchEngine, BotCategoryTool,
+		BotCategoryMonitor,
 		"SIGNED_BOT:https://bot.example.com/.well-known/http-message-signatures-directory",
 	} {
 		if !mayBeSignedBot(entity) {
 			t.Errorf("%q should be signer-relevant", entity)
 		}
 	}
-	for _, entity := range []string{"CURL", "OPENAI_CRAWLER_USER", BotCategoryMonitor, "SIGNED_BOT"} {
+	for _, entity := range []string{"CURL", "OPENAI_CRAWLER_USER", "SIGNED_BOT"} {
 		if mayBeSignedBot(entity) {
 			t.Errorf("%q should not be signer-relevant", entity)
 		}
@@ -69,6 +73,8 @@ func TestSignedBotPolicies(t *testing.T) {
 	for _, opts := range []BotOptions{
 		{Mode: ModeLive, Allow: []string{"CHATGPT_AGENT"}},
 		{Mode: ModeLive, Deny: []string{BotCategoryTool}},
+		{Mode: ModeLive, Allow: []string{"OSANO_BOT"}},
+		{Mode: ModeLive, Deny: []string{BotCategoryMonitor}},
 	} {
 		rule, err := buildRequestRule(DetectBot(opts))
 		if err != nil {
