@@ -31,9 +31,13 @@ func mayBeSignedBot(entity string) bool {
 		return true
 	}
 	switch entity {
-	case "GOOGLE_AGENT", "CHATGPT_AGENT", "DUCKASSIST_BOT", "BROWSERBASE", "MANUS_BOT":
+	case "GOOGLE_AGENT", "CHATGPT_AGENT", "DUCKASSIST_BOT", "BROWSERBASE", "MANUS_BOT",
+		"YOU_CRAWLER", "EXA_SEARCHBOT", "CONTEXT7_CRAWLER", "SHOPIFY_CLOUDSURF",
+		"KERNEL_AGENT", "KERNEL_SEARCH", "OSANO_BOT", "CLOUDFLARE_BROWSER_RUN",
+		"LANE_AGENT":
 		return true
-	case BotCategoryAI, BotCategoryGoogle, BotCategorySearchEngine, BotCategoryTool:
+	case BotCategoryAI, BotCategoryGoogle, BotCategorySearchEngine, BotCategoryTool,
+		BotCategoryMonitor:
 		return true
 	default:
 		return false
