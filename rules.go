@@ -538,6 +538,7 @@ func validateBotOptions(opts BotOptions) error {
 	}
 	for _, entities := range [][]string{opts.Allow, opts.Deny} {
 		for _, entity := range entities {
+			// The bare name has no directory to verify against and is invalid.
 			if entity == "SIGNED_BOT" || strings.HasPrefix(entity, "SIGNED_BOT:") {
 				if !validSignedBotDirectory(strings.TrimPrefix(entity, "SIGNED_BOT:")) {
 					return fmt.Errorf("arcjet: bot rule: invalid signed bot directory %q", entity)

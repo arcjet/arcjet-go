@@ -307,7 +307,8 @@ type ProtectDetails struct {
 	// RawPath is the path exactly as it appeared in the original origin-form
 	// HTTP request target, without its query. It is used only by Arcjet Cloud
 	// when verifying a signature covering @path. Leave it empty if only a
-	// parsed URL is available. Protect populates it from RequestURI.
+	// parsed URL is available. Invalid values are silently omitted from Decide.
+	// Protect populates it from RequestURI.
 	RawPath string
 	// Headers are request headers keyed by lowercase header name.
 	Headers map[string]string

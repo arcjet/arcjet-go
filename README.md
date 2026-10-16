@@ -384,7 +384,8 @@ blocks all bots. The reverse applies for deny lists.
 
 ### Signed bots
 
-Use the bot catalog identifiers for signing operators, such as
+Use the [bot catalog identifiers](https://docs.arcjet.com/bot-protection/identifying-bots)
+for signing operators, such as
 `CHATGPT_AGENT`, `BROWSERBASE`, `MANUS_BOT`, `GOOGLE_AGENT`, and
 `DUCKASSIST_BOT`:
 

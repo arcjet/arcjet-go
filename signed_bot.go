@@ -7,9 +7,11 @@ import (
 	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
 )
 
-// These identities and categories mirror the signed operators in the
-// well-known-bots catalog. A signature can change a bot's identity even when
-// local User-Agent matching would have denied it.
+// Keep these identities and their containing categories in sync with
+// verification[type=web-bot-auth] entries in the source catalog:
+// https://github.com/arcjet/well-known-bots/blob/main/well-known-bots.json.
+// A signature can change a bot's identity even when local User-Agent matching
+// would have denied it.
 func botRulesMayVerifySignature(rules []*decidev1.Rule) bool {
 	for _, rule := range rules {
 		bot := rule.GetBotV2()
