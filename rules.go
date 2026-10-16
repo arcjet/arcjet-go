@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -268,7 +269,10 @@ func Shield(opts ShieldOptions) Rule {
 // BotOptions configures bot detection.
 //
 // Allow and Deny are mutually exclusive. An empty Allow list blocks all detected
-// bots.
+// bots. Known signed bots use their catalog identifiers (for example,
+// "CHATGPT_AGENT"). Custom signing bots use
+// "SIGNED_BOT:https://bot.example.com/.well-known/http-message-signatures-directory".
+// Arcjet Cloud verifies signatures for these bots.
 type BotOptions struct {
 	// Mode controls whether the rule enforces denials or only reports them.
 	Mode Mode
@@ -532,7 +536,26 @@ func validateBotOptions(opts BotOptions) error {
 	if len(opts.Allow) > 0 && len(opts.Deny) > 0 {
 		return fmt.Errorf("arcjet: bot rule: %w", ErrAllowDenyConflict)
 	}
+	for _, entities := range [][]string{opts.Allow, opts.Deny} {
+		for _, entity := range entities {
+			// The bare name has no directory to verify against and is invalid.
+			if entity == "SIGNED_BOT" || strings.HasPrefix(entity, "SIGNED_BOT:") {
+				if !validSignedBotDirectory(strings.TrimPrefix(entity, "SIGNED_BOT:")) {
+					return fmt.Errorf("arcjet: bot rule: invalid signed bot directory %q", entity)
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// validSignedBotDirectory checks URL syntax only. Arcjet Cloud applies the
+// directory fetch safety policy before looking up keys.
+func validSignedBotDirectory(directory string) bool {
+	u, err := url.Parse(directory)
+	return err == nil && strings.EqualFold(u.Scheme, "https") && u.Host != "" &&
+		u.Opaque == "" && u.EscapedPath() == "/.well-known/http-message-signatures-directory" &&
+		u.RawQuery == "" && u.Fragment == ""
 }
 
 func validateEmailOptions(opts EmailOptions) error {

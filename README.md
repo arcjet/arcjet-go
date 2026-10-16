@@ -382,6 +382,36 @@ to catch typos at compile time.
 If you specify an allow list, all other bots are denied. An empty allow list
 blocks all bots. The reverse applies for deny lists.
 
+### Signed bots
+
+Use the [bot catalog identifiers](https://docs.arcjet.com/bot-protection/identifying-bots)
+for signing operators, such as
+`CHATGPT_AGENT`, `BROWSERBASE`, `MANUS_BOT`, `GOOGLE_AGENT`, and
+`DUCKASSIST_BOT`:
+
+```go
+arcjet.DetectBot(arcjet.BotOptions{
+	Mode: arcjet.ModeLive,
+	Allow: []string{"CHATGPT_AGENT", "BROWSERBASE", "MANUS_BOT"},
+})
+```
+
+For a custom signing bot, use its public HTTPS Web Bot Auth directory:
+
+```go
+arcjet.DetectBot(arcjet.BotOptions{
+	Mode:  arcjet.ModeLive,
+	Allow: []string{"SIGNED_BOT:https://bot.example.com/.well-known/http-message-signatures-directory"},
+})
+```
+
+Arcjet Cloud verifies request signatures against those directories. The Go SDK
+forwards the signature headers and, when `Protect` receives an original
+origin-form request target, its unchanged path for signatures covering `@path`.
+When calling `ProtectDetails` directly, set `RawPath` only from the original
+request target; leave it empty if only a parsed URL is available. The SDK
+checks custom directory URL syntax; Arcjet Cloud enforces fetch safety.
+
 ### Verified vs. spoofed bots
 
 Bots claiming to be well-known crawlers (e.g. Googlebot) are verified against

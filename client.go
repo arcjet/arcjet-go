@@ -118,6 +118,7 @@ type Client struct {
 	// builtRules, so this mapping is needed to align Decide-response
 	// RuleResults back to the originating rule's cache namespace.
 	builtRuleIndices []int
+	hasSignedBotRule bool
 	characteristics  []string
 	decideClient     decidev1alpha1connect.DecideServiceClient
 	sdkVersion       string
@@ -192,6 +193,7 @@ func NewClient(cfg Config) (*Client, error) {
 		fpChars:          collectFingerprintChars(rules, cfg.Characteristics),
 		builtRules:       builtRules,
 		builtRuleIndices: builtRuleIndices,
+		hasSignedBotRule: botRulesMayVerifySignature(builtRules),
 		characteristics:  append([]string(nil), cfg.Characteristics...),
 		sdkVersion:       version,
 		userAgent:        ua,
@@ -266,6 +268,7 @@ func (c *Client) WithRule(rule Rule) (*Client, error) {
 	next.fpChars = collectFingerprintChars(rules, c.characteristics)
 	next.builtRules = builtRules
 	next.builtRuleIndices = builtRuleIndices
+	next.hasSignedBotRule = botRulesMayVerifySignature(builtRules)
 	next.characteristics = append([]string(nil), c.characteristics...)
 	// Cache invalidation is per-rule via ruleID — adding a rule does not
 	// touch existing rules' cache slots, so we keep the shared *ruleCache
@@ -301,6 +304,12 @@ type ProtectDetails struct {
 	Host string
 	// Path is the URL path.
 	Path string
+	// RawPath is the path exactly as it appeared in the original origin-form
+	// HTTP request target, without its query. It is used only by Arcjet Cloud
+	// when verifying a signature covering @path. Leave it empty if only a
+	// parsed URL is available. Invalid values are silently omitted from Decide.
+	// Protect populates it from RequestURI.
+	RawPath string
 	// Headers are request headers keyed by lowercase header name.
 	Headers map[string]string
 	// Body is an optional request body override.
@@ -588,8 +597,9 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	// open.
 	warnings = append(warnings, enforceMetadataBudget([]map[string]string{metadataJSON})...)
 	localWarnings := warningsToProtoV1(warnings)
+	deferBotRules := c.hasSignedBotRule && hasSignatureInput(details.Headers)
 
-	if local := c.evaluateLocal(ctx, details, options, fingerprints); local.liveDeny() {
+	if local := c.evaluateLocal(ctx, details, options, fingerprints, deferBotRules); local.liveDeny() {
 		c.reportLocal(ctx, details, rules, local.decision, metadataJSON, localWarnings)
 		return withProtectWarnings(decisionFromProto(local.decision), warnings), nil
 	}
@@ -600,7 +610,7 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 	req := connect.NewRequest(&decidev1.DecideRequest{
 		SdkStack:        decidev1.SDKStack_SDK_STACK_GO,
 		SdkVersion:      c.sdkVersion,
-		Details:         details.toProto(),
+		Details:         details.toDecideProto(),
 		Rules:           rules,
 		Characteristics: c.characteristics,
 		MetadataJson:    metadataJSON,
@@ -617,7 +627,7 @@ func (c *Client) ProtectDetails(ctx context.Context, details ProtectDetails, opt
 		// return the zero Decision.
 		return withProtectWarnings(protectErrorDecision(err), warnings), err
 	}
-	c.cacheDecideResults(resp.Msg.GetDecision(), fingerprints)
+	c.cacheDecideResults(resp.Msg.GetDecision(), fingerprints, deferBotRules)
 	return withProtectWarnings(decisionFromProto(resp.Msg.GetDecision()), warnings), nil
 }
 
@@ -671,11 +681,17 @@ func (c *Client) ruleFingerprints(ctx context.Context, details ProtectDetails) [
 // per-rule cache around each call. Returns the first live DENY (cached or
 // fresh) so the caller can skip the Decide RPC and report just that
 // result, matching arcjet-js's protect() flow.
-func (c *Client) evaluateLocal(ctx context.Context, details ProtectDetails, options ProtectOptions, fingerprints []string) *localDecision {
+func (c *Client) evaluateLocal(ctx context.Context, details ProtectDetails, options ProtectOptions, fingerprints []string, deferBotRules bool) *localDecision {
 	if c.local == nil {
 		return nil
 	}
+	// A signature can establish a different bot identity than User-Agent.
+	// Bypass local bot detection and its cached denials when any configured bot
+	// policy can name a signer; Arcjet Cloud verifies the signature.
 	for i, rule := range c.rules {
+		if deferBotRules && rule.localKind() == localKindBot {
+			continue
+		}
 		id := c.ruleIDs[i]
 		fingerprint := fingerprints[i]
 		if cached := c.cache.get(id, fingerprint); cached != nil {
@@ -710,7 +726,7 @@ func (c *Client) evaluateLocal(ctx context.Context, details ProtectDetails, opti
 // ruleID and fingerprint. Mirrors arcjet-js's intent of letting future calls
 // short-circuit on a cached server DENY without another network round-trip —
 // but with the granularity JS uses for its local-rule cache.
-func (c *Client) cacheDecideResults(decision *decidev1.Decision, fingerprints []string) {
+func (c *Client) cacheDecideResults(decision *decidev1.Decision, fingerprints []string, deferBotRules bool) {
 	if c.cache == nil || decision == nil {
 		return
 	}
@@ -722,6 +738,12 @@ func (c *Client) cacheDecideResults(decision *decidev1.Decision, fingerprints []
 			break
 		}
 		idx := c.builtRuleIndices[j]
+		// Signed and unsigned traffic can share a fingerprint. Even if an
+		// older Arcjet Cloud returns a positive TTL for a signed bot denial,
+		// do not let it deny subsequent unsigned traffic from the cache.
+		if deferBotRules && c.rules[idx].localKind() == localKindBot {
+			continue
+		}
 		c.cache.set(c.ruleIDs[idx], fingerprints[idx], result)
 	}
 }
@@ -863,6 +885,7 @@ func detailsFromRequest(r *http.Request, proxies []trustedProxy, platform hostin
 		Protocol:        r.Proto,
 		Host:            host,
 		Path:            r.URL.Path,
+		RawPath:         rawPathFromOriginFormTarget(r.RequestURI),
 		Headers:         headers,
 		Cookies:         r.Header.Get("Cookie"),
 		Query:           r.URL.RawQuery,
@@ -1116,6 +1139,14 @@ func (d ProtectDetails) toProto() *decidev1.RequestDetails {
 		// cache key (ruleID, fingerprint); see ruleFingerprints.
 		CorrelationId: d.CorrelationID,
 	}
+}
+
+// toDecideProto includes the original request path only on Decide. Report is
+// telemetry and does not verify signatures.
+func (d ProtectDetails) toDecideProto() *decidev1.RequestDetails {
+	details := d.toProto()
+	details.RawPath = rawPathFromOriginFormTarget(d.RawPath)
+	return details
 }
 
 // withValidUTF8 returns d with every string that is not valid UTF-8 decoded as
