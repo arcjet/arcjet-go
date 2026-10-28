@@ -141,54 +141,57 @@ See the Go modules reference on
 [mapping versions to commits](https://go.dev/ref/mod#vcs-version) for why a
 module in a repository subdirectory needs that subdirectory in its tag.
 
-1. Create a release branch from an up-to-date `main`.
-2. Set `Version` in `types.go` to the release version without the leading `v`.
-3. Update the SDK requirement in `sensitiveinfo/rampart/go.mod`, both SDK
+Root releases are prepared by
+[Release Please](https://github.com/googleapis/release-please), so commit
+messages on `main` must be
+[conventional commits](https://www.conventionalcommits.org/): `feat` makes a
+minor release, `fix`, `deps` and the other types a patch release, and `!` or a
+`BREAKING CHANGE` footer a major one.
+
+1. Release Please keeps a release PR open against `main`. It bumps `Version` in
+   `types.go`, the SDK requirement in `sensitiveinfo/rampart/go.mod`, both SDK
    requirements in `examples/nethttp/go.mod`, and the `arcjet-go` requirement
-   in `examples/agentframework/go.mod` to `v<version>`. Keep the local
-   `replace` directives; downstream consumers ignore them. Leave
-   `examples/agentframework/go.mod`'s `agentframework` requirement alone; it
-   moves only with an agentframework release.
-4. Run `just tidy`. Then, with Go 1.25, run
-   `just fmt-check tidy-check build test`,
-   `go -C examples/nethttp test ./...`, and
-   `go -C examples/agentframework test ./...`, and run `just lint vuln` with
-   the latest Go 1.26 release. The `just` recipes are the parts of `just check`,
-   split across two toolchains: the pinned golangci-lint panics on Go 1.27, and
-   on Go 1.25 the automatic toolchain switch runs the tools module (and builds
-   the agentframework module) with go1.26.0, whose standard-library
-   vulnerabilities fail `just vuln`.
-5. Review the exported API changes since the previous release. Once v1 is
+   in `examples/agentframework/go.mod` (the lines marked
+   `x-release-please-version`), and writes `CHANGELOG.md`. It leaves the local
+   `replace` directives and `examples/agentframework/go.mod`'s
+   `agentframework` requirement alone; the latter moves only with an
+   agentframework release.
+2. Review the exported API changes since the previous release. Once v1 is
    published, incompatible API changes require a new major module version.
-6. Merge the release PR to `main`, then run the
-   [Release tags workflow](.github/workflows/release.yml) from `main`. The
-   workflow infers the version from `types.go`, verifies every lockstep version,
-   and creates an annotated tag for each selected module on the exact commit.
-   Use its dry-run mode for a rehearsal.
-7. Review the completed preflight summary, then approve the protected
+3. Merge the release PR once CI passes. That push starts the
+   [Release tags workflow](.github/workflows/release.yml) for the root and
+   Rampart modules on the merged commit. The workflow infers the version from
+   `types.go`, verifies every lockstep version, and creates an annotated tag for
+   each module on that commit.
+4. Review the completed preflight summary, then approve the protected
    `release-tags` environment. The gated job pushes every tag atomically using
    the release GitHub App and does nothing else. The
    [release automation runbook](docs/RELEASING.md) covers the one-time App,
-   environment, and tag-ruleset configuration.
-8. Wait for the Verify published modules workflow, which the tag push starts,
-   then follow [After tagging](docs/RELEASING.md#after-tagging) in the runbook
-   for the smoke test and the GitHub release. Do not request the new versions
-   from the Go module proxy before that workflow passes: the proxy caches a
-   failed fetch for up to 30 minutes, so an early request blocks the release
-   for that long.
+   environment, and tag-ruleset configuration, and the manual run for a dry run
+   or a retry.
+5. The tag push starts the Verify published modules workflow and creates the
+   GitHub release from the changelog. Wait for the verification, then follow
+   [After tagging](docs/RELEASING.md#after-tagging) in the runbook for the smoke
+   test. Do not request the new versions from the Go module proxy before that
+   workflow passes: the proxy caches a failed fetch for up to 30 minutes, so an
+   early request blocks the release for that long.
 
 The `agentframework` module keeps its own `v0.x` version line because it
 tracks a preview framework, but the workflow tags it in the same run as the
 root module and from the same commit, so the SDK version it requires is
-published alongside it. To include it in a release, add to step 3:
+published alongside it. Release Please does not version it. To include it in
+a release, merge a PR before the release PR that:
 
-- set `Version` in `agentframework/version.go` to the agentframework release
+- sets `Version` in `agentframework/version.go` to the agentframework release
   version, without the leading `v`;
-- set the `arcjet-go` requirement in `agentframework/go.mod` to the root
-  release version;
-- set the `agentframework` requirement in `examples/agentframework/go.mod` to
+- sets the `arcjet-go` requirement in `agentframework/go.mod` to the root
+  version in the open release PR;
+- sets the `agentframework` requirement in `examples/agentframework/go.mod` to
   the agentframework release version.
 
-Then run the workflow in step 6 with **components** set to
-`root-and-agentframework`. Its preflight refuses the release if those three
-disagree with each other or with `types.go`.
+Then merge the release PR. Because `agentframework/go.mod` now requires the
+version being released, the Release Please workflow does not start the
+root-only release and warns instead. Run the Release tags workflow from `main`
+with **components** set to `root-and-agentframework` before anything else
+merges. Its preflight refuses the release if those three disagree with each
+other or with `types.go`.

@@ -3,9 +3,25 @@ name: Release tags
 # Surface the selected ref, modules and dry-run state in the run list and in
 # the protected-environment approval notification. Each version is inferred
 # from its module and shown in the preflight summary before approval.
+# A workflow_call run takes its run name from the calling workflow.
 run-name: "Release ${{ inputs.components }} from ${{ github.ref_name }}${{ inputs.dry-run && ' (dry run)' || '' }}"
 
 on:
+  # Release Please calls this workflow when a release PR merges to main, for
+  # the root and Rampart modules only. The call shares the push event's
+  # context, so github.sha is the merged release commit rather than whatever
+  # main points at later, and the same preflight and release-tags approval
+  # gate apply. See docs/RELEASING.md.
+  workflow_call:
+    inputs:
+      components:
+        description: Which modules to tag; 'root' or 'root-and-agentframework'.
+        required: true
+        type: string
+      dry-run:
+        description: Validate the release and run git push --dry-run without creating remote tags.
+        required: true
+        type: boolean
   workflow_dispatch:
     inputs:
       components:
@@ -142,6 +158,16 @@ jobs:
           check_requirement examples/nethttp/go.mod github.com/arcjet/arcjet-go
           check_requirement examples/nethttp/go.mod github.com/arcjet/arcjet-go/sensitiveinfo/rampart
           check_requirement examples/agentframework/go.mod github.com/arcjet/arcjet-go
+
+          # Release Please records the last root version in its manifest and
+          # computes the next one from it. A manifest that disagrees with
+          # types.go would open the next release PR from the wrong base.
+          manifest=".github/.release-please-manifest.json"
+          manifest_version="$(jq -r '.["."] // empty' "$manifest")"
+          if [[ "$manifest_version" != "$version" ]]; then
+            echo "::error file=$manifest::Release Please version is '${manifest_version:-<missing>}', expected '$version' from types.go."
+            mismatched="true"
+          fi
 
           agentframework_version=""
           agentframework_tag=""
