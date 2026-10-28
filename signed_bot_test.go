@@ -56,7 +56,7 @@ func TestSignedBotPolicies(t *testing.T) {
 		"GOOGLE_AGENT", "CHATGPT_AGENT", "DUCKASSIST_BOT", "BROWSERBASE", "MANUS_BOT",
 		"YOU_CRAWLER", "EXA_SEARCHBOT", "CONTEXT7_CRAWLER", "SHOPIFY_CLOUDSURF",
 		"KERNEL_AGENT", "KERNEL_SEARCH", "OSANO_BOT", "CLOUDFLARE_BROWSER_RUN",
-		"LANE_AGENT",
+		"LANE_AGENT", "ISONSEARCH_CRAWLER", "ISONAI_USER", "LINER_BOT", "LINER_USER",
 		BotCategoryAI, BotCategoryGoogle, BotCategorySearchEngine, BotCategoryTool,
 		BotCategoryMonitor,
 		"SIGNED_BOT:https://bot.example.com/.well-known/http-message-signatures-directory",
@@ -75,6 +75,9 @@ func TestSignedBotPolicies(t *testing.T) {
 		{Mode: ModeLive, Deny: []string{BotCategoryTool}},
 		{Mode: ModeLive, Allow: []string{"OSANO_BOT"}},
 		{Mode: ModeLive, Deny: []string{BotCategoryMonitor}},
+		{Mode: ModeLive, Allow: []string{"LINER_USER"}},
+		{Mode: ModeLive, Deny: []string{"ISONSEARCH_CRAWLER"}},
+		{Mode: ModeLive, Allow: []string{"ISONAI_USER", "LINER_BOT"}},
 	} {
 		rule, err := buildRequestRule(DetectBot(opts))
 		if err != nil {
