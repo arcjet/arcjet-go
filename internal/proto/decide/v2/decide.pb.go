@@ -3987,8 +3987,9 @@ type GuardRequest struct {
 	// Optional so the server can distinguish "not sent" from epoch 0.
 	SentAtUnixMs *uint64 `protobuf:"varint,3,opt,name=sent_at_unix_ms,json=sentAtUnixMs,proto3,oneof" json:"sent_at_unix_ms,omitempty"`
 	// A label identifying the protection boundary (e.g. "tools.weather").
-	// Required. Max 256 bytes. Only lowercase letters, digits, dash, dot, and
-	// underscore. Must start and end with a lowercase letter or digit. The
+	// Required. Max 256 bytes. Only ASCII letters of either case, digits, dash,
+	// dot, and underscore, matched case-sensitively. Must start and end with a
+	// letter or digit. The
 	// cases every validator agrees on are in
 	// proto/decide/v2/guard-label-cases.json in the arcjet monorepo.
 	Label string `protobuf:"bytes,10,opt,name=label,proto3" json:"label,omitempty"`
