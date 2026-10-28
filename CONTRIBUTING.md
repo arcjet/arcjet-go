@@ -101,8 +101,8 @@ on the next run — there's no separate version file to keep in sync.
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every PR, push
 to `main`, and in the merge queue:
 
-- **Lint** (arm64) — verifies `go.mod` / `tools/go.mod` are tidy, then runs
-  golangci-lint and `govulncheck` for the SDK and Rampart backend.
+- **Lint** (arm64, Go 1.26) — verifies `go.mod` / `tools/go.mod` are tidy,
+  then runs golangci-lint and `govulncheck` for the SDK and Rampart backend.
 - **Test** (arm64 + amd64, each on Go 1.25 and Go 1.27) — `go build ./...`
   and `go test -race -shuffle=on ./...`. The Go 1.25 legs are named
   `Test (<os>)` and the Go 1.27 legs `Test (<os>, Go 1.27.x)`.
@@ -110,12 +110,15 @@ to `main`, and in the merge queue:
   `agentframework/go.mod` is tidy, then runs golangci-lint, `govulncheck`,
   build, and race tests.
 
-The Lint job and the Go 1.25 Test legs use the latest security-patched Go 1.25
-release while `go.mod` keeps the public compatibility floor at Go 1.25.0. The
-Go 1.27 Test legs use the latest Go 1.27 release, because Go 1.27 runs
-`encoding/json` on json/v2 and the SDK builds a different metadata encoder
-there (`metadata_jsonv2.go`). Lint stays on Go 1.25: the pinned golangci-lint
-panics inside staticcheck on the Go 1.27 standard library. The
+The Go 1.25 Test legs use the latest security-patched Go 1.25 release while
+`go.mod` keeps the public compatibility floor at Go 1.25.0. The Lint job uses
+the latest security-patched Go 1.26 release: `tools/go.mod` requires Go 1.26.0
+(golangci-lint and `govulncheck` are development tools, not part of the SDK's
+compatibility floor), and `govulncheck` then checks the patched standard
+library. Lint does not move to Go 1.27: the pinned golangci-lint panics inside
+staticcheck on the Go 1.27 standard library. The Go 1.27 Test legs use the
+latest Go 1.27 release, because Go 1.27 runs `encoding/json` on json/v2 and the
+SDK builds a different metadata encoder there (`metadata_jsonv2.go`). The
 agentframework job uses the latest security-patched Go 1.26 release to match
 `agentframework/go.mod`'s floor of Go 1.26.0. Action versions are pinned by
 commit SHA and the runner is locked down with `step-security/harden-runner`
@@ -147,13 +150,14 @@ module in a repository subdirectory needs that subdirectory in its tag.
    `examples/agentframework/go.mod`'s `agentframework` requirement alone; it
    moves only with an agentframework release.
 4. Run `just tidy`. Then, with Go 1.25, run
-   `just fmt-check tidy-check lint build test`,
+   `just fmt-check tidy-check build test`,
    `go -C examples/nethttp test ./...`, and
-   `go -C examples/agentframework test ./...`, and run `just vuln` with the
-   latest Go 1.26 release. The `just` recipes are the parts of `just check`,
+   `go -C examples/agentframework test ./...`, and run `just lint vuln` with
+   the latest Go 1.26 release. The `just` recipes are the parts of `just check`,
    split across two toolchains: the pinned golangci-lint panics on Go 1.27, and
-   on Go 1.25 the automatic toolchain switch builds the agentframework module
-   with go1.26.0, whose standard-library vulnerabilities fail `just vuln`.
+   on Go 1.25 the automatic toolchain switch runs the tools module (and builds
+   the agentframework module) with go1.26.0, whose standard-library
+   vulnerabilities fail `just vuln`.
 5. Review the exported API changes since the previous release. Once v1 is
    published, incompatible API changes require a new major module version.
 6. Merge the release PR to `main`, then run the
