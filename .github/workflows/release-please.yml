@@ -118,6 +118,10 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          # Bash clears errexit inside $(...), so without this an API error in
+          # file_at would make version_at print nothing and succeed, and a
+          # release commit would read as "no release" with no warning.
+          shopt -s inherit_errexit
           errors="$(mktemp)"
 
           # Prints a file at a commit, or nothing when it does not exist
