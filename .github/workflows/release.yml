@@ -3,25 +3,9 @@ name: Release tags
 # Surface the selected ref, modules and dry-run state in the run list and in
 # the protected-environment approval notification. Each version is inferred
 # from its module and shown in the preflight summary before approval.
-# A workflow_call run takes its run name from the calling workflow.
 run-name: "Release ${{ inputs.components }} from ${{ github.ref_name }}${{ inputs.dry-run && ' (dry run)' || '' }}"
 
 on:
-  # Release Please calls this workflow when a release PR merges to main, for
-  # the root and Rampart modules only. The call shares the push event's
-  # context, so github.sha is the merged release commit rather than whatever
-  # main points at later, and the same preflight and release-tags approval
-  # gate apply. See docs/RELEASING.md.
-  workflow_call:
-    inputs:
-      components:
-        description: Which modules to tag; 'root' or 'root-and-agentframework'.
-        required: true
-        type: string
-      dry-run:
-        description: Validate the release and run git push --dry-run without creating remote tags.
-        required: true
-        type: boolean
   workflow_dispatch:
     inputs:
       components:
@@ -356,10 +340,17 @@ jobs:
     name: Create ${{ needs.preflight.outputs.root-tag }} release tags
     needs: [preflight, preflight-agentframework]
     runs-on: ubuntu-24.04
+    # Only a person dispatches this workflow, so Prevent self-review on this
+    # environment makes someone else approve the release. See the arcjet ADR
+    # 2026-10-28-automate-sdk-release-prs-and-dispatch-publish-by-hand.
     environment:
       name: release-tags
+    # The App token pushes the tags and creates the GitHub release. The
+    # workflow token only relabels the merged release PR.
     permissions:
       contents: read
+      issues: write
+      pull-requests: write
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -417,6 +408,63 @@ jobs:
             push_args+=(--dry-run)
           fi
           git push "${push_args[@]}" origin "${refspecs[@]}"
+
+      # Release Please runs with skip-github-release, so the GitHub release is
+      # created here, with the release PR's changelog entry as its notes.
+      - name: Create the GitHub release
+        if: inputs.dry-run == false
+        env:
+          AGENTFRAMEWORK_TAG: ${{ needs.preflight.outputs.agentframework-tag }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RAMPART_TAG: ${{ needs.preflight.outputs.rampart-tag }}
+          ROOT_TAG: ${{ needs.preflight.outputs.root-tag }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes="$(mktemp)"
+          if [[ -f CHANGELOG.md ]]; then
+            awk -v heading="## [$VERSION]" '
+              index($0, heading) == 1 { found = 1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md > "$notes"
+          fi
+          generate=()
+          if [[ -z "$(tr -d '[:space:]' < "$notes")" ]]; then
+            generate=(--generate-notes)
+          fi
+          {
+            echo
+            echo "Released in lockstep: \`$RAMPART_TAG\`${AGENTFRAMEWORK_TAG:+, and \`$AGENTFRAMEWORK_TAG\`}."
+          } >> "$notes"
+          gh release create "$ROOT_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$ROOT_TAG" --notes-file "$notes" "${generate[@]}"
+
+      # Release Please opens no new release PR while a merged one is labelled
+      # "autorelease: pending"; relabelling it "autorelease: tagged" is the
+      # step its own GitHub release would have done. The title is
+      # pull-request-title-pattern in .github/release-please-config.json.
+      - name: Mark the release PR tagged
+        if: inputs.dry-run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="chore: release Go SDK $VERSION"
+          numbers="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state merged \
+            --label "autorelease: pending" --json number,title \
+            | jq -r --arg title "$title" '.[] | select(.title == $title) | .number')"
+          if [[ -z "$numbers" ]]; then
+            echo "::notice::No merged release PR titled '$title' is labelled 'autorelease: pending'."
+            exit 0
+          fi
+          for number in $numbers; do
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${number}/labels/autorelease:%20pending" > /dev/null
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${number}/labels" \
+              -f "labels[]=autorelease: tagged" > /dev/null
+            echo "Marked #$number autorelease: tagged."
+          done
 
       - name: Summarize the result
         env:

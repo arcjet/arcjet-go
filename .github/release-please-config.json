@@ -18,7 +18,7 @@
     { "type": "ci", "section": "✅ Continuous Integration" }
   ],
   "pull-request-title-pattern": "chore: release Go SDK ${version}",
-  "pull-request-header": "Automatically generated with [Release Please](https://github.com/googleapis/release-please). Merging this PR starts the Release tags workflow for the root and Rampart modules; it waits for approval of the `release-tags` environment before any tag is created.",
+  "pull-request-header": "Automatically generated with [Release Please](https://github.com/googleapis/release-please). Merging this PR publishes nothing. After it merges, run the Release tags workflow from `main`; someone other than you approves the `release-tags` environment before any tag is created. See docs/RELEASING.md.",
   "pull-request-footer": "",
   "include-v-in-tag": true,
   "bump-minor-pre-major": false,

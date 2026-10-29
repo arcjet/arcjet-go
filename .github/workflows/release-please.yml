@@ -1,34 +1,14 @@
 name: Release Please
 
-# Release Please maintains the release PR and writes the GitHub release. It
-# never creates a tag: the root and Rampart module tags must be pushed together,
-# atomically, by the release-tags job in release.yml, behind the release-tags
-# environment approval. The chain, end to end:
-#
-# 1. push to main: Release Please opens or updates the release PR. Merging it
-#    bumps types.go, the go.mod requirements and the manifest in one commit.
-# 2. push to main of that commit: detect-release sees the manifest version
-#    change in the head commit and calls release.yml for the root and Rampart
-#    modules. Its preflight runs, then the release job waits for a reviewer to
-#    approve the release-tags environment before the App key is reachable.
-# 3. push of the v<version> tag (by the release-tags App, so it starts
-#    workflows): Release Please creates the GitHub release on that existing
-#    tag and marks the release PR "autorelease: tagged", which lets it open
-#    the next release PR. Verify published modules runs on the same push.
-#
-# agentframework is versioned independently and only released by an explicit
-# workflow_dispatch of release.yml with components=root-and-agentframework, so
-# step 2 stands down when agentframework was prepared for this release. See
-# docs/RELEASING.md.
+# Release Please only maintains the release PR. It never tags or creates a
+# GitHub release (skip-github-release), and merging the release PR starts
+# nothing: a person dispatches the Release tags workflow (release.yml) from
+# main, and someone else approves it. See docs/RELEASING.md.
 
 on:
   push:
     branches:
       - main
-    tags:
-      # Root module release tags only. GitHub's '*' does not match '/', so
-      # sensitiveinfo/rampart/v* and agentframework/v* do not start this.
-      - v[0-9]*
 
 permissions:
   contents: read
@@ -36,16 +16,14 @@ permissions:
 jobs:
   release-pr:
     name: Update the release PR
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # Holds the Release Please App key. Restrict this environment to main and
-    # v* tags so a workflow on any other branch cannot read it.
-    environment:
-      name: release-please
-    # The App token does the writing; the workflow token only reads.
+    # Pushing the release branch, opening the PR, and creating and applying
+    # the "autorelease: pending" label.
     permissions:
-      contents: read
+      contents: write
+      issues: write
+      pull-requests: write
     # Queue rather than cancel, so no run stops part-way through updating the
     # release branch. A newer pending run replaces an older pending one.
     concurrency:
@@ -61,216 +39,13 @@ jobs:
             api.github.com:443
             github.com:443
 
-      # An App token, unlike GITHUB_TOKEN, starts CI on the release PR. Scope it
-      # to what opening and labelling that PR needs.
-      - name: Create GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-
-      # skip-github-release: a release created here would create the v<version>
-      # tag on its own, ahead of the approval gate and without the Rampart tag.
-      # The tag ruleset would refuse it, but this never asks.
+      # A PR opened or updated with GITHUB_TOKEN does not start CI. Close and
+      # reopen the release PR to run CI before merging it.
       - name: Release Please
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ github.token }}
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
           target-branch: main
           skip-github-release: true
-
-  detect-release:
-    name: Detect a merged release PR
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      release: ${{ steps.detect.outputs.release }}
-      version: ${{ steps.detect.outputs.version }}
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          disable-sudo: true
-          egress-policy: block
-          allowed-endpoints: >
-            api.github.com:443
-
-      # A release is the head commit of this push changing the root version in
-      # the Release Please manifest. Comparing against the head commit's first
-      # parent, rather than against the push's "before", is what pins the tag
-      # to the release commit itself: release.yml tags github.sha, so a release
-      # commit that is not the head of the push is reported for a manual run
-      # instead of being tagged together with the commits pushed after it.
-      - name: Compare the manifest version with the parent commit
-        id: detect
-        env:
-          BEFORE: ${{ github.event.before }}
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # Bash clears errexit inside $(...), so without this an API error in
-          # file_at would make version_at print nothing and succeed, and a
-          # release commit would read as "no release" with no warning.
-          shopt -s inherit_errexit
-          errors="$(mktemp)"
-
-          # Prints a file at a commit, or nothing when it does not exist
-          # there. Any other API failure fails the job.
-          file_at() {
-            local path="$1" ref="$2"
-            if ! gh api -H "Accept: application/vnd.github.raw+json"                 "repos/${REPOSITORY}/contents/${path}?ref=${ref}" 2> "$errors"; then
-              if grep -q "HTTP 404" "$errors"; then
-                return 0
-              fi
-              cat "$errors" >&2
-              return 1
-            fi
-          }
-
-          version_at() {
-            local body
-            body="$(file_at .github/.release-please-manifest.json "$1")"
-            if [[ -n "$body" ]]; then
-              jq -r '.["."] // empty' <<< "$body"
-            fi
-          }
-
-          parent="$(gh api "repos/${REPOSITORY}/commits/${SHA}" --jq '.parents[0].sha // empty')"
-          after="$(version_at "$SHA")"
-          before=""
-          if [[ -n "$parent" ]]; then
-            before="$(version_at "$parent")"
-          fi
-
-          # The commit that introduces the manifest is not a release: it
-          # records a version that has already been tagged.
-          if [[ -z "$before" || -z "$after" || "$before" == "$after" ]]; then
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            # A push of several commits whose release commit is not the head.
-            # Say so rather than tag a commit the release PR did not describe.
-            if [[ -n "$BEFORE" && "$BEFORE" != "$parent" && ! "$BEFORE" =~ ^0+$ ]]; then
-              pushed_from="$(version_at "$BEFORE")"
-              if [[ -n "$pushed_from" && -n "$after" && "$pushed_from" != "$after" ]]; then
-                echo "::warning::The root version changed from $pushed_from to $after in this push, but not in its head commit, so no release was started. Review main and run the Release tags workflow manually."
-              fi
-            fi
-            exit 0
-          fi
-
-          # agentframework is only released by an explicit choice of
-          # components=root-and-agentframework, and only in the same run as
-          # the root module, so a root-only run here would leave it untaggable
-          # at this version. Preparing it means requiring the root version
-          # being released, so leave that release to a person.
-          agentframework_requires="$(file_at agentframework/go.mod "$SHA"             | awk '($1 == "require" && $2 == "github.com/arcjet/arcjet-go") { print $3 }
-                   ($1 == "github.com/arcjet/arcjet-go") { print $2 }')"
-          if [[ "$agentframework_requires" == "v$after" ]]; then
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::agentframework/go.mod requires arcjet-go v$after, so agentframework was prepared for this release. No release was started: run the Release tags workflow manually with components=root-and-agentframework."
-            exit 0
-          fi
-
-          echo "Release commit: root version $before -> $after at $SHA."
-          {
-            echo "release=true"
-            echo "version=$after"
-          } >> "$GITHUB_OUTPUT"
-          {
-            echo "## Release detected"
-            echo "- version: \`$after\` (was \`$before\`)"
-            echo "- commit: \`$SHA\`"
-            echo "- modules: root and Rampart; agentframework is not tagged by this run"
-            echo
-            echo "The Release tags job waits for approval of the \`release-tags\` environment."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  tag:
-    name: Release tags v${{ needs.detect-release.outputs.version }}
-    needs: detect-release
-    if: needs.detect-release.outputs.release == 'true'
-    # The called workflow's own jobs set their permissions; this is their
-    # ceiling. Its release job reads the App key from the release-tags
-    # environment, which stays the approval gate.
-    permissions:
-      contents: read
-    uses: ./.github/workflows/release.yml
-    with:
-      components: root
-      dry-run: false
-
-  github-release:
-    name: Create the GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    environment:
-      name: release-please
-    permissions:
-      contents: read
-    concurrency:
-      group: release-please-github-release
-      cancel-in-progress: false
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          disable-sudo: true
-          egress-policy: block
-          allowed-endpoints: >
-            api.github.com:443
-            github.com:443
-
-      # Release Please releases the version of the merged release PR, and the
-      # GitHub API creates a missing tag for a new release. Only continue when
-      # the pushed tag is that version, so the release attaches to the tag the
-      # release-tags job pushed rather than asking for a new one.
-      - name: Assert the tag is the manifest version
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          version="$(gh api -H "Accept: application/vnd.github.raw+json" \
-            "repos/${REPOSITORY}/contents/.github/.release-please-manifest.json?ref=${TAG}" \
-            | jq -r '.["."] // empty')"
-          if [[ "v$version" != "$TAG" ]]; then
-            echo "::notice::$TAG is not the Release Please version at that commit ('${version:-<missing>}'); no GitHub release created."
-            echo "matches=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "matches=true" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub App token
-        if: steps.check.outputs.matches == 'true'
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-
-      # Creates the GitHub release on the existing tag, comments on the release
-      # PR, and relabels it "autorelease: tagged". Until that label moves,
-      # Release Please refuses to open the next release PR.
-      - name: Release Please
-        if: steps.check.outputs.matches == 'true'
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          config-file: .github/release-please-config.json
-          manifest-file: .github/.release-please-manifest.json
-          target-branch: main
-          skip-github-pull-request: true
