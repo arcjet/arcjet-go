@@ -39,7 +39,9 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      pull-requests: read
     outputs:
+      release-pr: ${{ steps.release-pr.outputs.number }}
       agentframework-tag: ${{ steps.release.outputs.agentframework-tag }}
       agentframework-version: ${{ steps.release.outputs.agentframework-version }}
       rampart-tag: ${{ steps.release.outputs.rampart-tag }}
@@ -143,6 +145,16 @@ jobs:
           check_requirement examples/nethttp/go.mod github.com/arcjet/arcjet-go/sensitiveinfo/rampart
           check_requirement examples/agentframework/go.mod github.com/arcjet/arcjet-go
 
+          # Release Please records the last root version in its manifest and
+          # computes the next one from it. A manifest that disagrees with
+          # types.go would open the next release PR from the wrong base.
+          manifest=".github/.release-please-manifest.json"
+          manifest_version="$(jq -r '.["."] // empty' "$manifest")"
+          if [[ "$manifest_version" != "$version" ]]; then
+            echo "::error file=$manifest::Release Please version is '${manifest_version:-<missing>}', expected '$version' from types.go."
+            mismatched="true"
+          fi
+
           agentframework_version=""
           agentframework_tag=""
           if [[ "$COMPONENTS" == "root-and-agentframework" ]]; then
@@ -237,6 +249,24 @@ jobs:
           go -C sensitiveinfo/rampart test -race -run '^TestAdversarialConcurrentDetect$' ./...
           go -C examples/nethttp test ./...
 
+      # Release Please opens no new release PR while a merged one is labelled
+      # "autorelease: pending", and identifies it by that label alone. Find it
+      # the same way, here, so a missing or ambiguous PR fails before approval.
+      - name: Find the merged release PR
+        id: release-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          numbers="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state merged \
+            --label "autorelease: pending" --json number --jq '.[].number')"
+          count="$(printf '%s' "$numbers" | grep -c . || true)"
+          if [[ "$count" != "1" ]]; then
+            echo "::error::Expected exactly one merged PR into main labelled 'autorelease: pending', found $count: ${numbers//$'\n'/ }"
+            exit 1
+          fi
+          echo "number=$numbers" >> "$GITHUB_OUTPUT"
+
       - name: Summarize the release request
         env:
           AGENTFRAMEWORK_TAG: ${{ steps.release.outputs.agentframework-tag }}
@@ -330,10 +360,17 @@ jobs:
     name: Create ${{ needs.preflight.outputs.root-tag }} release tags
     needs: [preflight, preflight-agentframework]
     runs-on: ubuntu-24.04
+    # Only a person dispatches this workflow, so Prevent self-review on this
+    # environment makes someone else approve the release. See the arcjet ADR
+    # 2026-10-28-automate-sdk-release-prs-and-dispatch-publish-by-hand.
     environment:
       name: release-tags
+    # The App token pushes the tags and creates the GitHub release. The
+    # workflow token only relabels the merged release PR.
     permissions:
       contents: read
+      issues: write
+      pull-requests: write
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -391,6 +428,51 @@ jobs:
             push_args+=(--dry-run)
           fi
           git push "${push_args[@]}" origin "${refspecs[@]}"
+
+      # Release Please runs with skip-github-release, so the GitHub release is
+      # created here, with the release PR's changelog entry as its notes.
+      - name: Create the GitHub release
+        if: inputs.dry-run == false
+        env:
+          AGENTFRAMEWORK_TAG: ${{ needs.preflight.outputs.agentframework-tag }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RAMPART_TAG: ${{ needs.preflight.outputs.rampart-tag }}
+          ROOT_TAG: ${{ needs.preflight.outputs.root-tag }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes="$(mktemp)"
+          if [[ -f CHANGELOG.md ]]; then
+            awk -v heading="## [$VERSION]" '
+              index($0, heading) == 1 { found = 1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md > "$notes"
+          fi
+          generate=()
+          if [[ -z "$(tr -d '[:space:]' < "$notes")" ]]; then
+            generate=(--generate-notes)
+          fi
+          {
+            echo
+            echo "Released in lockstep: \`$RAMPART_TAG\`${AGENTFRAMEWORK_TAG:+, and \`$AGENTFRAMEWORK_TAG\`}."
+          } >> "$notes"
+          gh release create "$ROOT_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$ROOT_TAG" --notes-file "$notes" "${generate[@]}"
+
+      # Relabelling the merged release PR is the step Release Please's own
+      # GitHub release would have done; it opens no new release PR until then.
+      - name: Mark the release PR tagged
+        if: inputs.dry-run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PR: ${{ needs.preflight.outputs.release-pr }}
+        run: |
+          set -euo pipefail
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${RELEASE_PR}/labels/autorelease:%20pending" > /dev/null
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${RELEASE_PR}/labels" \
+            -f "labels[]=autorelease: tagged" > /dev/null
+          echo "Marked #$RELEASE_PR autorelease: tagged."
 
       - name: Summarize the result
         env:
