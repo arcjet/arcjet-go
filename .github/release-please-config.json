@@ -17,14 +17,15 @@
     { "type": "build", "section": "🔨 Build System" },
     { "type": "ci", "section": "✅ Continuous Integration" }
   ],
-  "pull-request-title-pattern": "chore: release Go SDK ${version}",
-  "pull-request-header": "Automatically generated with [Release Please](https://github.com/googleapis/release-please). Merging this PR publishes nothing. After it merges, run the Release tags workflow from `main`; someone other than you approves the `release-tags` environment before any tag is created. See docs/RELEASING.md.",
+  "pull-request-title-pattern": "chore: Release ${version}",
+  "pull-request-header": "Automatically generated with [Release Please](https://github.com/googleapis/release-please).",
   "pull-request-footer": "",
   "include-v-in-tag": true,
   "bump-minor-pre-major": false,
   "bump-patch-for-minor-pre-major": false,
   "draft": false,
   "prerelease": false,
+  "always-update": true,
   "packages": {
     ".": {
       "include-component-in-tag": false,
