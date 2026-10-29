@@ -39,7 +39,9 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      pull-requests: read
     outputs:
+      release-pr: ${{ steps.release-pr.outputs.number }}
       agentframework-tag: ${{ steps.release.outputs.agentframework-tag }}
       agentframework-version: ${{ steps.release.outputs.agentframework-version }}
       rampart-tag: ${{ steps.release.outputs.rampart-tag }}
@@ -247,6 +249,24 @@ jobs:
           go -C sensitiveinfo/rampart test -race -run '^TestAdversarialConcurrentDetect$' ./...
           go -C examples/nethttp test ./...
 
+      # Release Please opens no new release PR while a merged one is labelled
+      # "autorelease: pending", and identifies it by that label alone. Find it
+      # the same way, here, so a missing or ambiguous PR fails before approval.
+      - name: Find the merged release PR
+        id: release-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          numbers="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state merged \
+            --label "autorelease: pending" --json number --jq '.[].number')"
+          count="$(printf '%s' "$numbers" | grep -c . || true)"
+          if [[ "$count" != "1" ]]; then
+            echo "::error::Expected exactly one merged PR into main labelled 'autorelease: pending', found $count: ${numbers//$'\n'/ }"
+            exit 1
+          fi
+          echo "number=$numbers" >> "$GITHUB_OUTPUT"
+
       - name: Summarize the release request
         env:
           AGENTFRAMEWORK_TAG: ${{ steps.release.outputs.agentframework-tag }}
@@ -440,31 +460,19 @@ jobs:
           gh release create "$ROOT_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "$ROOT_TAG" --notes-file "$notes" "${generate[@]}"
 
-      # Release Please opens no new release PR while a merged one is labelled
-      # "autorelease: pending"; relabelling it "autorelease: tagged" is the
-      # step its own GitHub release would have done. The title is
-      # pull-request-title-pattern in .github/release-please-config.json.
+      # Relabelling the merged release PR is the step Release Please's own
+      # GitHub release would have done; it opens no new release PR until then.
       - name: Mark the release PR tagged
         if: inputs.dry-run == false
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.preflight.outputs.version }}
+          RELEASE_PR: ${{ needs.preflight.outputs.release-pr }}
         run: |
           set -euo pipefail
-          title="chore: release Go SDK $VERSION"
-          numbers="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state merged \
-            --label "autorelease: pending" --json number,title \
-            | jq -r --arg title "$title" '.[] | select(.title == $title) | .number')"
-          if [[ -z "$numbers" ]]; then
-            echo "::notice::No merged release PR titled '$title' is labelled 'autorelease: pending'."
-            exit 0
-          fi
-          for number in $numbers; do
-            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${number}/labels/autorelease:%20pending" > /dev/null
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${number}/labels" \
-              -f "labels[]=autorelease: tagged" > /dev/null
-            echo "Marked #$number autorelease: tagged."
-          done
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${RELEASE_PR}/labels/autorelease:%20pending" > /dev/null
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${RELEASE_PR}/labels" \
+            -f "labels[]=autorelease: tagged" > /dev/null
+          echo "Marked #$RELEASE_PR autorelease: tagged."
 
       - name: Summarize the result
         env:
