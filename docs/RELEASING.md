@@ -27,7 +27,7 @@ The workflow has two jobs. The ungated preflight validates `main`, checks every
 version and dependency pin, confirms both tags are unused, runs the release
 checks, and writes the exact request to the workflow summary. Only then can a
 reviewer approve the `release-tags` environment. The gated job mints a
-short-lived GitHub App token and pushes the tags.
+short-lived GitHub App token, pushes the tags, and creates the GitHub release.
 
 Every workflow change is checked by `actionlint` and `zizmor` in the
 [workflow lint job](../.github/workflows/lint-workflows.yml). Actions are pinned
@@ -37,54 +37,42 @@ persisted, and the release jobs use explicit minimum permissions.
 ## Release Please
 
 [Release Please](https://github.com/googleapis/release-please) prepares root
-releases, and the [Release Please workflow](../.github/workflows/release-please.yml)
-starts the Release tags workflow when its release PR merges. It never creates a
-tag. The chain is:
+releases. It never publishes: merging its PR starts nothing, and a person
+dispatches the Release tags workflow, which someone else approves (the arcjet
+ADR `2026-10-28-automate-sdk-release-prs-and-dispatch-publish-by-hand`).
 
-1. Every push to `main` updates the release PR from the conventional commits
-   since the last root tag. The PR bumps `Version` in `types.go`, the SDK
-   requirement in `sensitiveinfo/rampart/go.mod`, both requirements in
-   `examples/nethttp/go.mod`, the `arcjet-go` requirement in
-   `examples/agentframework/go.mod`, `CHANGELOG.md`, and
-   `.github/.release-please-manifest.json`. Commits that touch only
-   `agentframework/` or `examples/agentframework/` do not count.
-2. Merging the release PR pushes that one commit to `main`. The workflow sees
-   the root version in the manifest change in the head commit and calls the
-   Release tags workflow with `components: root` and `dry-run: false`. The call
-   runs in the same workflow run as the push, so it tags that exact commit.
-   Its preflight runs and its release job waits for approval of the
-   `release-tags` environment, exactly as for a manual run.
-3. The approved job pushes the tags with the release-tags App. A push by an App
-   token starts workflows, unlike one by `GITHUB_TOKEN`, so the `v<version>`
-   tag starts both Verify published modules and the Release Please workflow
-   again. That run creates the GitHub release on the existing tag, with the
-   changelog entry as notes, and relabels the release PR from
-   `autorelease: pending` to `autorelease: tagged`.
+1. On every push to `main`, the
+   [Release Please workflow](../.github/workflows/release-please.yml) updates
+   the release PR from the conventional commits since the last root release.
+   The PR bumps `Version` in `types.go`, every requirement line marked
+   `x-release-please-version` (in `sensitiveinfo/rampart/go.mod`,
+   `examples/nethttp/go.mod` and `examples/agentframework/go.mod`),
+   `CHANGELOG.md`, and `.github/.release-please-manifest.json`. Commits that
+   touch only `agentframework/` or `examples/agentframework/` do not count.
+   Each of those `go.mod` files replaces the SDK with the working tree, so the
+   PR builds before the new version is tagged.
+2. The workflow uses `GITHUB_TOKEN`, so the PR starts no CI. Close and reopen
+   it to run CI, then merge it.
+3. Run the Release tags workflow as described in
+   [Running a release](#running-a-release). After the tags are pushed, its
+   gated job creates the GitHub release from the PR's changelog entry and
+   relabels the merged PR from `autorelease: pending` to `autorelease: tagged`.
 
-Release Please refuses to open a new release PR while a merged one is still
-`autorelease: pending`, so the label is the release's completion marker. If the
-approval is rejected or the release fails, no new release PR appears until the
-release is finished: fix the problem and rerun the failed jobs of the Release
-Please run (or run the Release tags workflow manually from `main` if `main`
-has not moved).
+Release Please finds the previous release by listing GitHub releases for a
+tag matching the manifest version, falling back to the tag itself, and counts
+commits from there. It opens no new release PR while a merged one is still
+`autorelease: pending`, so between merging and releasing it cannot propose the
+same version again. If the gated job fails after pushing the tags, create the
+GitHub release and move the label by hand; until the label moves, no new
+release PR appears.
 
-The workflow does not start a release, and says why in a warning, when:
-
-- the release commit is not the head of the push, because the Release tags
-  workflow tags the head of the push; or
-- `agentframework/go.mod` already requires the root version being released,
-  which means agentframework was prepared for this release. agentframework is
-  only tagged together with the root module, so this release must be run
-  manually with `root-and-agentframework`.
-
-The commit that adds the manifest is not a release, because it records the
-version that is already tagged. The preflight checks that the manifest version
-equals `Version` in `types.go`, so the two cannot drift apart.
+The preflight checks that the manifest version equals `Version` in `types.go`.
 
 ## One-time GitHub configuration
 
-Configure all of these controls before running the workflows. The workflows'
-normal `GITHUB_TOKEN` is read-only and cannot substitute for either GitHub App.
+Configure all of these controls before running the workflows. The Release tags
+workflow's `GITHUB_TOKEN` cannot write repository contents and cannot
+substitute for the GitHub App.
 
 ### 1. GitHub App
 
@@ -151,11 +139,6 @@ It is redundant once the pattern appears above, and deleting it keeps the tag
 protections in one place. Leaving it does not block a release: it never
 restricted creations.
 
-Do not add the Release Please App below to this bypass list. Release Please runs
-without an approval gate, so its App must not be able to create a release tag;
-the ruleset is what stops a GitHub release created on a missing tag from
-creating the tag itself.
-
 Read the ruleset back once it exists. With **Restrict creations** on and an
 empty bypass list, nothing can create `v*` at all, and because a dry-run push
 sends no ref update there is nothing for the ruleset to reject — so the
@@ -176,40 +159,13 @@ gh api repos/arcjet/arcjet-go/rulesets --jq \
 `release-tags` lists `creation` among its rules and names the release App in
 `bypass_actors`.
 
-### 4. Release Please App and environment
+### 4. Release Please
 
-Release Please needs its own GitHub App, separate from the release-tags App:
-
-1. Disable webhooks.
-2. Grant the repository permissions **Contents: Read and write** and **Pull
-   requests: Read and write**. Do not grant **Workflows**: the release PR
-   never edits `.github/workflows/`.
-3. Install it on `arcjet/arcjet-go`. An existing organization Release Please
-   App, such as the one `arcjet-js` uses, can be reused if it is not on any tag
-   ruleset bypass list.
-4. Record its client ID and generate a private key.
-
-The release PR is opened by this App, which is what makes CI run on it.
-
-Then create an environment named `release-please`:
-
-1. Add no required reviewers; this environment scopes the key, it is not an
-   approval gate.
-2. Under **Deployment branches and tags**, select **Selected branches and
-   tags**, then allow the `main` branch and the `v*` tag pattern.
-3. Add environment variable `RELEASE_PLEASE_APP_CLIENT_ID` with the App client
-   ID.
-4. Add environment secret `RELEASE_PLEASE_APP_PRIVATE_KEY` with the PEM private
-   key.
-
-Release Please creates the `autorelease: pending` and `autorelease: tagged`
-labels when it first needs them.
+Under **Settings -> Actions -> General**, enable **Allow GitHub Actions to
+create and approve pull requests**, so the workflow token can open the release
+PR. Release Please creates its `autorelease: pending` label on first use.
 
 ## Running a release
-
-Normally, merge the release PR and continue from step 4 below; the Release
-Please workflow has already started the run. Use the manual steps for a dry
-run, for a release that includes agentframework, or to retry one.
 
 1. Merge the release PR to `main`. `Version` in `types.go`, the Rampart SDK
    requirement, both example requirements, and the Release Please manifest
@@ -217,11 +173,11 @@ run, for a release that includes agentframework, or to retry one.
 2. Open **Actions -> Release tags -> Run workflow**.
 3. Select `main` and choose whether this is a dry run. The workflow infers the
    version from `types.go`.
-4. Open the completed **Preflight** job and review its workflow summary. It
-   shows both proposed tags, the exact commit, the inferred version, and the
-   dry-run state. For a merged release PR, the job is in the **Release
-   Please** run for that push, under **Release tags v&lt;version&gt;**.
-5. Approve or reject the `release-tags` environment.
+4. Ask another release approver to open the completed **Preflight** job,
+   review its workflow summary, and approve or reject the `release-tags`
+   environment. The summary shows both proposed tags, the exact commit, the
+   inferred version, and the dry-run state. **Prevent self-review** stops the
+   person who dispatched the run from approving it.
 
 A dry run creates both annotated tags only in the ephemeral runner and performs
 `git push --dry-run` with the GitHub App token. This validates the preflight,
@@ -231,9 +187,9 @@ update, so it cannot exercise the tag ruleset or prove that the App has bypass
 permission. Review the active ruleset before the first real release; that push
 is the first end-to-end test of the bypass configuration.
 
-The real run creates every remote tag atomically and stops there. Do not
-delete or repoint a published release tag; fix the problem and release a new
-version instead.
+The real run creates every remote tag atomically, then creates the GitHub
+release and relabels the release PR. Do not delete or repoint a published
+release tag; fix the problem and release a new version instead.
 
 The push then starts the
 [Verify published modules workflow](../.github/workflows/verify-published-modules.yml),
@@ -269,10 +225,9 @@ GOPROXY=https://proxy.golang.org go get \
 go mod download all
 ```
 
-The Release Please workflow creates one GitHub release for the root tag; edit
-it to mention that the optional Rampart backend was released in lockstep. Do
-not create a second GitHub release for its module-qualified tag. For a release
-that did not come from a release PR, create the GitHub release by hand.
+The Release tags workflow creates one GitHub release for the root tag and
+names the lockstep module tags in it. Do not create a second GitHub release for
+a module-qualified tag.
 
 ## References
 

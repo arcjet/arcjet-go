@@ -158,23 +158,23 @@ minor release, `fix`, `deps` and the other types a patch release, and `!` or a
    agentframework release.
 2. Review the exported API changes since the previous release. Once v1 is
    published, incompatible API changes require a new major module version.
-3. Merge the release PR once CI passes. That push starts the
-   [Release tags workflow](.github/workflows/release.yml) for the root and
-   Rampart modules on the merged commit. The workflow infers the version from
-   `types.go`, verifies every lockstep version, and creates an annotated tag for
-   each module on that commit.
-4. Review the completed preflight summary, then approve the protected
-   `release-tags` environment. The gated job pushes every tag atomically using
-   the release GitHub App and does nothing else. The
-   [release automation runbook](docs/RELEASING.md) covers the one-time App,
-   environment, and tag-ruleset configuration, and the manual run for a dry run
-   or a retry.
-5. The tag push starts the Verify published modules workflow and creates the
-   GitHub release from the changelog. Wait for the verification, then follow
-   [After tagging](docs/RELEASING.md#after-tagging) in the runbook for the smoke
-   test. Do not request the new versions from the Go module proxy before that
-   workflow passes: the proxy caches a failed fetch for up to 30 minutes, so an
-   early request blocks the release for that long.
+3. Close and reopen the release PR to run CI on it (a PR opened by the
+   workflow token starts no workflows), then merge it. Merging publishes
+   nothing.
+4. Run the [Release tags workflow](.github/workflows/release.yml) from `main`.
+   Its preflight infers the version from `types.go`, verifies every lockstep
+   version, and runs the release checks.
+5. Someone other than you reviews the preflight summary and approves the
+   protected `release-tags` environment. The gated job pushes every tag
+   atomically with the release GitHub App, creates the GitHub release from the
+   changelog, and marks the release PR `autorelease: tagged`. The
+   [release automation runbook](docs/RELEASING.md) covers the one-time
+   configuration and dry runs.
+6. The tag push starts the Verify published modules workflow. Wait for it,
+   then follow [After tagging](docs/RELEASING.md#after-tagging) in the runbook
+   for the smoke test. Do not request the new versions from the Go module proxy
+   before that workflow passes: the proxy caches a failed fetch for up to 30
+   minutes, so an early request blocks the release for that long.
 
 The `agentframework` module keeps its own `v0.x` version line because it
 tracks a preview framework, but the workflow tags it in the same run as the
@@ -189,9 +189,6 @@ a release, merge a PR before the release PR that:
 - sets the `agentframework` requirement in `examples/agentframework/go.mod` to
   the agentframework release version.
 
-Then merge the release PR. Because `agentframework/go.mod` now requires the
-version being released, the Release Please workflow does not start the
-root-only release and warns instead. Run the Release tags workflow from `main`
-with **components** set to `root-and-agentframework` before anything else
-merges. Its preflight refuses the release if those three disagree with each
-other or with `types.go`.
+Then merge the release PR and run the Release tags workflow with
+**components** set to `root-and-agentframework`. Its preflight refuses the
+release if those three disagree with each other or with `types.go`.
