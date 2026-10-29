@@ -18,12 +18,13 @@ jobs:
     name: Update the release PR
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # Pushing the release branch, opening the PR, and creating and applying
-    # the "autorelease: pending" label.
+    # Only run on `main`. App token pushes re-trigger workflows, so running
+    # this on the release-please branch would loop.
+    if: github.ref == 'refs/heads/main'
+    # The GitHub App token handles pushing the release branch, opening the PR,
+    # and the "autorelease: pending" label, so GITHUB_TOKEN only reads.
     permissions:
-      contents: write
-      issues: write
-      pull-requests: write
+      contents: read
     # Queue rather than cancel, so no run stops part-way through updating the
     # release branch. A newer pending run replaces an older pending one.
     concurrency:
@@ -39,12 +40,23 @@ jobs:
             api.github.com:443
             github.com:443
 
-      # A PR opened or updated with GITHUB_TOKEN does not start CI. Close and
-      # reopen the release PR to run CI before merging it.
+      # A private GitHub App for this repository only (not shared with other
+      # SDKs). A PR it opens starts CI, which GITHUB_TOKEN would not. This is
+      # separate from the release App that release.yml uses to push tags.
+      - name: Generate GitHub App Token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
       - name: Release Please
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
-          token: ${{ github.token }}
+          token: ${{ steps.app-token.outputs.token }}
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
           target-branch: main

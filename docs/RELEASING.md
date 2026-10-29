@@ -51,8 +51,8 @@ ADR `2026-10-28-automate-sdk-release-prs-and-dispatch-publish-by-hand`).
    touch only `agentframework/` or `examples/agentframework/` do not count.
    Each of those `go.mod` files replaces the SDK with the working tree, so the
    PR builds before the new version is tagged.
-2. The workflow uses `GITHUB_TOKEN`, so the PR starts no CI. Close and reopen
-   it to run CI, then merge it.
+2. The workflow opens the PR with a GitHub App token, so CI runs on it. Merge
+   it once CI passes.
 3. Run the Release tags workflow as described in
    [Running a release](#running-a-release). After the tags are pushed, its
    gated job creates the GitHub release from the PR's changelog entry and
@@ -161,9 +161,13 @@ gh api repos/arcjet/arcjet-go/rulesets --jq \
 
 ### 4. Release Please
 
-Under **Settings -> Actions -> General**, enable **Allow GitHub Actions to
-create and approve pull requests**, so the workflow token can open the release
-PR. Release Please creates its `autorelease: pending` label on first use.
+Create a private GitHub App for this repository only, with read and write
+access to Contents, Pull requests and Issues (Release Please applies the
+`autorelease: pending` label through Issues). Install it on `arcjet-go` only,
+then store its ID and private key as the repository secrets
+`RELEASE_PLEASE_APP_ID` and `RELEASE_PLEASE_APP_PRIVATE_KEY`. This is separate
+from the release App that pushes tags. Release Please creates its label on
+first use.
 
 ## Running a release
 

@@ -158,9 +158,7 @@ minor release, `fix`, `deps` and the other types a patch release, and `!` or a
    agentframework release.
 2. Review the exported API changes since the previous release. Once v1 is
    published, incompatible API changes require a new major module version.
-3. Close and reopen the release PR to run CI on it (a PR opened by the
-   workflow token starts no workflows), then merge it. Merging publishes
-   nothing.
+3. Merge the release PR once CI passes. Merging publishes nothing.
 4. Run the [Release tags workflow](.github/workflows/release.yml) from `main`.
    Its preflight infers the version from `types.go`, verifies every lockstep
    version, and runs the release checks.
