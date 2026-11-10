@@ -691,8 +691,9 @@ government identifiers.
 > the denial has an error reason, so `decision.IsDenied()` and
 > `decision.Reason.IsError()` are both true and
 > `decision.Reason.IsSensitiveInfo()` is false. With `GuardSensitiveInfo`, the
-> rule's result is a denial with no detected entity types. In `DRY_RUN` mode
-> the denial is recorded but not enforced.
+> rule's result is a denial with no detected entity types. A `LOCAL` input to
+> an agent guard policy is denied the same way. In `DRY_RUN` mode the denial is
+> recorded but not enforced.
 
 See the [module README](./sensitiveinfo/rampart/README.md) for the full entity
 list and details.

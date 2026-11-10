@@ -329,3 +329,40 @@ func TestRemotePolicyLocalResultDeniesAnEntityOnTheDenyList(t *testing.T) {
 		t.Fatalf("detected types = %#v", got)
 	}
 }
+
+// A LOCAL policy input longer than the backend scans is attested as a DENY
+// with nothing detected, without running the backend, and the runtime counts
+// it as a local denial. Input at the limit is still scanned.
+func TestRemotePolicyLocalResultDeniesInputOverTheBackendLimit(t *testing.T) {
+	policy := &decidev2.GuardLocalPolicyProjection{PolicyId: "policy-id", Revision: "revision-1"}
+	rule := &decidev2.GuardLocalSensitiveInfoRule{EntityFilter: &decidev2.GuardLocalSensitiveInfoRule_EntitiesDeny{
+		EntitiesDeny: &decidev2.EntityList{Entities: []string{"EMAIL"}},
+	}}
+	for name, tc := range map[string]struct {
+		text       string
+		wantCalled bool
+		wantDeny   bool
+	}{
+		"over the limit": {text: "ééééé", wantCalled: false, wantDeny: true},
+		"at the limit":   {text: "éééé", wantCalled: true, wantDeny: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			backend := &limitedBackend{limit: 4}
+			runtime := newRemotePolicyRuntime(&blockingPolicyClient{}, "key", "ua", newLazyLocalEvaluator(nil), backend)
+			computed := runtime.localResult(context.Background(), policy, rule, tc.text).GetLocalSensitiveInfo()
+			if computed == nil {
+				t.Fatal("want a computed local result")
+			}
+			if backend.called != tc.wantCalled {
+				t.Fatalf("backend called = %v, want %v", backend.called, tc.wantCalled)
+			}
+			gotDeny := computed.GetConclusion() == decidev2.GuardConclusion_GUARD_CONCLUSION_DENY
+			if gotDeny != tc.wantDeny {
+				t.Fatalf("conclusion = %v, want deny = %v", computed.GetConclusion(), tc.wantDeny)
+			}
+			if computed.GetDetected() || len(computed.GetDetectedEntityTypes()) != 0 || len(computed.GetDetectedEntities()) != 0 {
+				t.Fatalf("an unscanned value must report no detection: %#v", computed)
+			}
+		})
+	}
+}
