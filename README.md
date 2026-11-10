@@ -704,8 +704,9 @@ government identifiers.
 > live rule fails closed if the scan doesn't finish. Give the Guard call a
 > context deadline longer than 3 seconds (without one, the SDK applies
 > 2 seconds) so the client doesn't stop waiting first, and deny when
-> `decision.HasFailedOpen()` is true. Split text
-> longer than about 100 KB into parts and screen each one.
+> `decision.HasFailedOpen()` is true. A request screens up to two different
+> texts over 2 KB, so to screen text longer than about 100 KB, split it into
+> parts and screen each part in its own `Guard` call.
 
 See the [module README](./sensitiveinfo/rampart/README.md) for the full entity
 list and details.
