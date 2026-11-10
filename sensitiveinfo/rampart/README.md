@@ -94,7 +94,10 @@ denial-of-service vector:
   most text, and at most forty for text that expands to several tokens per
   character, such as spaced Korean. The default is deliberately low because
   pure-Go inference makes a large input expensive on the request path. Raise
-  it if you need to accept larger payloads and can afford the latency.
+  it if you need to accept larger payloads and can afford the latency. For
+  longer text, or to detect PHI, use the server-side sensitive information
+  detector in an agent guard policy instead (see the
+  [SDK README](../../README.md)).
 - **Context cancellation** — `Detect` checks the context between windows, so a
   request deadline (`context.WithTimeout`, or the incoming `*http.Request`
   context) caps total inference regardless of input length. On cancellation the

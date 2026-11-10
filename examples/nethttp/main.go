@@ -176,11 +176,26 @@ func submit(aj *arcjet.Client) http.HandlerFunc {
 			arcjet.WithSensitiveInfoValue(text),
 		)
 		if err != nil {
-			// Arcjet fails open — log and continue serving.
+			// This route accepts data only after it's screened, so fail closed
+			// when Arcjet can't be reached.
 			slog.Warn("arcjet: protect", "err", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "Service unavailable",
+			})
+			return
 		}
 
 		if decision.IsDenied() {
+			if decision.Reason.IsError() {
+				// The text is longer than the backend's MaxInputChars, so it
+				// was denied without being scanned. For longer text, or to
+				// detect PHI, use the server-side detector in an agent guard
+				// policy instead.
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+					"error": "Text too long to screen",
+				})
+				return
+			}
 			if si := decision.Reason.SensitiveInfo; si != nil {
 				// Report each detection with its type and the matched text
 				// (Start/End are byte offsets into the scanned value).
@@ -211,6 +226,15 @@ func submit(aj *arcjet.Client) http.HandlerFunc {
 			writeJSON(w, status, map[string]any{
 				"error":  "Denied",
 				"reason": decision.Reason,
+			})
+			return
+		}
+
+		// Fail closed when Arcjet couldn't complete the check.
+		if decision.IsErrored() {
+			slog.Warn("arcjet: protect", "err", decision.Err())
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "Service unavailable",
 			})
 			return
 		}

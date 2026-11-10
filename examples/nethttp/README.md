@@ -24,6 +24,12 @@ Arcjet Go SDK.
   happens before the server starts listening.
 - A rejection reports each detection's type, byte offsets, and the exact
   matched text.
+- A body longer than the backend's `MaxInputChars` (4,096 characters by
+  default) is rejected with `413` without being scanned. For longer text, or
+  to detect PHI, use the server-side sensitive information detector in an
+  agent guard policy.
+- The route fails closed: if Arcjet can't complete the check, it returns
+  `503` instead of accepting unscreened text.
 
 ## Setup
 

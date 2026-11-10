@@ -694,6 +694,18 @@ government identifiers.
 > rule's result is a denial with no detected entity types. A `LOCAL` input to
 > an agent guard policy is denied the same way. In `DRY_RUN` mode the denial is
 > recorded but not enforced.
+>
+> For longer text, or to detect PHI, send the text as a `SERVER` input to the
+> server-side sensitive information detector in an
+> [agent guard policy](https://docs.arcjet.com/guards/remote-policies#detectors).
+> It screens values up to about 100 KB, and only it detects the
+> [PHI types](https://docs.arcjet.com/sensitive-info/phi), such as medical
+> record numbers. It allows up to 3 seconds to screen a value over 2 KB, and a
+> live rule fails closed if the scan doesn't finish. Give the Guard call a
+> context deadline longer than 3 seconds (without one, the SDK applies
+> 2 seconds) so the client doesn't stop waiting first, and deny when
+> `decision.HasFailedOpen()` is true. Split text
+> longer than about 100 KB into parts and screen each one.
 
 See the [module README](./sensitiveinfo/rampart/README.md) for the full entity
 list and details.

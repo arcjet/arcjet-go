@@ -69,7 +69,9 @@ type Options struct {
 	// the SDK's SensitiveInfoBackendLimiter interface, and the SensitiveInfo
 	// and GuardSensitiveInfo rules deny longer input without scanning it.
 	// When Detect is called directly, longer input is truncated (a prefix, so
-	// offsets stay valid) and a warning is logged.
+	// offsets stay valid) and a warning is logged. For longer text, or to
+	// detect PHI, use the server-side sensitive information detector in an
+	// agent guard policy, which Rampart does not replace.
 	MaxInputChars int
 
 	// Recognizers are the deterministic recognizers run alongside the model
