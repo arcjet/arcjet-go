@@ -36,21 +36,26 @@ import (
 // DefaultThreshold is the minimum confidence a model token needs to count.
 const DefaultThreshold = 0.5
 
-// DefaultMaxInputChars bounds how many characters are scanned per call. Model
-// inference is synchronous and its cost grows with input length (each ~480-char
-// window takes one or more full inference passes, tens of milliseconds each),
-// so unbounded input is a denial-of-service vector. Longer input is truncated to this many
-// characters before detection.
+// DefaultMaxInputChars is the default for [Options.MaxInputChars]: the most
+// characters (Unicode code points) the backend scans per call. Model inference
+// is synchronous and its cost grows with input length (each ~480-char window
+// takes one or more full inference passes, tens of milliseconds each), so
+// unbounded input is a denial-of-service vector.
 //
-// This is deliberately lower than the 100,000 used by the JavaScript and Python
-// SDKs: their ONNX-runtime inference is much faster, whereas this pure-Go engine
-// makes a large input expensive enough to matter on the request path. 4096
-// characters is at most ten windows. Most text takes one inference pass per
-// window; text that expands to several tokens per character, such as spaced
-// Korean, takes up to four, so a call makes at most forty passes even when the
-// caller sets no timeout. Raise it via [Options.MaxInputChars] if you need to
-// scan larger payloads and can afford the latency (and prefer to also bound
-// cost with a context deadline).
+// The SDK's SensitiveInfo and GuardSensitiveInfo rules deny input longer than
+// the limit without scanning it, because the text past the limit would
+// otherwise go unscanned while the decision allowed it. Code that calls Detect
+// directly gets the first MaxInputChars characters scanned and the rest
+// ignored, with a warning logged.
+//
+// The default is deliberately low because this pure-Go engine makes a large
+// input expensive enough to matter on the request path. 4096 characters is at
+// most ten windows. Most text takes one inference pass per window; text that
+// expands to several tokens per character, such as spaced Korean, takes up to
+// four, so a call makes at most forty passes even when the caller sets no
+// timeout. Raise it via [Options.MaxInputChars] if you need to accept larger
+// payloads and can afford the latency (and prefer to also bound cost with a
+// context deadline).
 const DefaultMaxInputChars = 4096
 
 // Options configures the [New] backend.
@@ -59,9 +64,12 @@ type Options struct {
 	// count. Zero uses [DefaultThreshold].
 	Threshold float64
 
-	// MaxInputChars caps the characters scanned per call. Zero uses
-	// [DefaultMaxInputChars]. Longer input is truncated (a prefix, so offsets
-	// stay valid) and a warning is logged.
+	// MaxInputChars is the most characters (Unicode code points) scanned per
+	// call. Zero uses [DefaultMaxInputChars]. The backend reports it through
+	// the SDK's SensitiveInfoBackendLimiter interface, and the SensitiveInfo
+	// and GuardSensitiveInfo rules deny longer input without scanning it.
+	// When Detect is called directly, longer input is truncated (a prefix, so
+	// offsets stay valid) and a warning is logged.
 	MaxInputChars int
 
 	// Recognizers are the deterministic recognizers run alongside the model
@@ -93,6 +101,12 @@ func truncateChars(s string, maxChars int) string {
 	return s
 }
 
+// The backend declares its entity set and its scan limit to the SDK.
+var (
+	_ arcjet.SensitiveInfoBackendEntitySupporter = (*backend)(nil)
+	_ arcjet.SensitiveInfoBackendLimiter         = (*backend)(nil)
+)
+
 // backend is the SensitiveInfoBackend returned by New.
 type backend struct {
 	runner        *modelRunner
@@ -106,6 +120,13 @@ type backend struct {
 // than silently ignored.
 func (b *backend) SupportedEntities() []arcjet.EntityType {
 	return Entities()
+}
+
+// MaxInputChars reports the most characters this backend scans per call,
+// implementing the SDK's optional limit-declaration interface so the SDK's
+// rules deny longer input instead of letting its tail go unscanned.
+func (b *backend) MaxInputChars() int {
+	return b.maxInputChars
 }
 
 // New loads the bundled model and returns a ready-to-share backend. Loading
@@ -158,6 +179,8 @@ func (b *backend) Detect(
 	// Bound synchronous inference cost: scan only the first maxInputChars
 	// characters (Unicode code points, not bytes). Truncating on a rune
 	// boundary keeps span offsets valid and never splits a multi-byte rune.
+	// The SDK's rules deny longer input before calling Detect (see
+	// MaxInputChars), so this applies only to direct callers.
 	if runeCount := utf8.RuneCountInString(value); runeCount > b.maxInputChars {
 		if bctx.Log != nil {
 			bctx.Log.Warn(fmt.Sprintf("rampart: input of %d characters exceeds the "+

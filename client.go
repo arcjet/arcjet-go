@@ -186,6 +186,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	local.log = logger
 	return &Client{
 		key:              key,
 		rules:            rules,

@@ -376,6 +376,12 @@ func (r *remotePolicyRuntime) localResult(ctx context.Context, policy *decidev2.
 		ValueSha256:    localPolicyDigest(text),
 		Type:           decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO,
 	}
+	// This path does not apply the backend's declared scan limit
+	// (SensitiveInfoBackendLimiter), so a backend such as Rampart scans only a
+	// prefix of longer input. The server derives a policy result from
+	// `detected`, not the conclusion, so a DENY with no detected entities would
+	// not survive reporting; enforcing the limit here needs a wire
+	// representation for an oversize local result.
 	outcome, err := r.local.scanSensitiveInfo(ctx, text, allow, deny, r.backend, 0)
 	if err != nil {
 		result.Result = &decidev2.GuardLocalPolicyResult_Error{Error: &decidev2.ResultError{Code: "LOCAL_POLICY_ERROR", Message: "local policy evaluation failed"}}

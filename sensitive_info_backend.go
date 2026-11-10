@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"unicode/utf8"
 )
 
 // SensitiveInfoBackend is the engine for sensitive-information detection. Pass
@@ -83,6 +84,56 @@ type SensitiveInfoBackendOptions struct {
 type SensitiveInfoBackendEntitySupporter interface {
 	// SupportedEntities returns every entity type the backend can detect.
 	SupportedEntities() []EntityType
+}
+
+// SensitiveInfoBackendLimiter is an optional interface a [SensitiveInfoBackend]
+// may implement to declare that it scans at most a fixed number of characters
+// per call. When a backend implements it, the [SensitiveInfo] and
+// [GuardSensitiveInfo] rules count the input's characters (Unicode code
+// points, as [utf8.RuneCountInString] does) before calling Detect, and deny
+// input over the limit without scanning it. The text past the limit would
+// otherwise go unscanned while the decision still allowed it. Backends that do
+// not implement it are passed input of any length.
+type SensitiveInfoBackendLimiter interface {
+	// MaxInputChars returns the most characters the backend scans in one call.
+	MaxInputChars() int
+}
+
+// sensitiveInfoOversize describes input longer than a backend's declared
+// limit. It holds only the counts, never the text.
+type sensitiveInfoOversize struct {
+	chars int
+	limit int
+}
+
+// message is the error-reason text for an oversize denial. It does not include
+// the input.
+func (o sensitiveInfoOversize) message() string {
+	return fmt.Sprintf("sensitive info input of %d characters exceeds the backend limit of %d", o.chars, o.limit)
+}
+
+// checkSensitiveInfoLimit reports whether text is longer than backend's
+// declared limit, logging one warning with the counts (never the text) to log
+// when it is. A nil backend or one that does not implement
+// [SensitiveInfoBackendLimiter] has no limit.
+func checkSensitiveInfoLimit(log *slog.Logger, backend SensitiveInfoBackend, text string) (sensitiveInfoOversize, bool) {
+	limiter, ok := backend.(SensitiveInfoBackendLimiter)
+	if !ok {
+		return sensitiveInfoOversize{}, false
+	}
+	limit := limiter.MaxInputChars()
+	// A string has at least as many bytes as code points, so text no longer
+	// than the limit in bytes cannot exceed it.
+	if len(text) <= limit {
+		return sensitiveInfoOversize{}, false
+	}
+	chars := utf8.RuneCountInString(text)
+	if chars <= limit {
+		return sensitiveInfoOversize{}, false
+	}
+	log.Warn("arcjet: sensitive info input exceeds the backend limit; denying without scanning",
+		"characters", chars, "limit", limit)
+	return sensitiveInfoOversize{chars: chars, limit: limit}, true
 }
 
 // nativeSensitiveInfoTypes is the set of entity types the bundled WebAssembly

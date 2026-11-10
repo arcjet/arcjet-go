@@ -85,13 +85,16 @@ fields are a single window.
 Two mechanisms bound worst-case cost so large input cannot become a
 denial-of-service vector:
 
-- **`Options.MaxInputChars`** (default `4096`) is the hard character ceiling;
-  input beyond it is truncated. At the default a call scans at most ten
-  480-character windows: about ten model passes for most text, and at most
-  forty for text that expands to several tokens per character, such as spaced
-  Korean. The default is deliberately lower than the JavaScript/Python SDKs'
-  `100_000`, whose ONNX-runtime inference is much faster. Raise it if you need
-  to scan larger payloads and can afford the latency.
+- **`Options.MaxInputChars`** (default `4096`) is the hard character limit,
+  counted in Unicode code points. The SDK's `SensitiveInfo` and
+  `GuardSensitiveInfo` rules deny longer input without scanning it, so personal
+  information can't be hidden past the limit. Calling `Detect` directly scans
+  only the first `MaxInputChars` characters and logs a warning. At the default
+  a call scans at most ten 480-character windows: about ten model passes for
+  most text, and at most forty for text that expands to several tokens per
+  character, such as spaced Korean. The default is deliberately low because
+  pure-Go inference makes a large input expensive on the request path. Raise
+  it if you need to accept larger payloads and can afford the latency.
 - **Context cancellation** — `Detect` checks the context between windows, so a
   request deadline (`context.WithTimeout`, or the incoming `*http.Request`
   context) caps total inference regardless of input length. On cancellation the

@@ -377,6 +377,13 @@ type SensitiveInfoOptions struct {
 	// every entity type the SDK defines. Without a backend, only
 	// [SensitiveInfoEmail], [SensitiveInfoPhoneNumber], [SensitiveInfoIPAddress],
 	// and [SensitiveInfoCreditCardNumber] are detected.
+	//
+	// When the backend declares a scan limit ([SensitiveInfoBackendLimiter]),
+	// a value with more characters than the limit is denied without being
+	// scanned. The rule result has conclusion DENY and an error reason that
+	// gives the character count and the limit, so [Decision.IsDenied] and
+	// [Decision.IsErrored] both report true and Reason.IsSensitiveInfo
+	// reports false. In DRY_RUN mode the denial is recorded but not enforced.
 	Backend SensitiveInfoBackend
 	// ContextWindowSize is the number of adjacent tokens passed to a custom
 	// [SensitiveInfoDetect] callback at a time. Defaults to 1 when zero or

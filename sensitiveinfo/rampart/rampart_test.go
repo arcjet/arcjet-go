@@ -2,6 +2,9 @@ package rampart
 
 import (
 	"context"
+	"errors"
+	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -212,5 +215,83 @@ func TestNewDefaults(t *testing.T) {
 	}
 	if len(impl.recognizers) != len(DefaultRecognizers) {
 		t.Errorf("recognizers = %d, want %d", len(impl.recognizers), len(DefaultRecognizers))
+	}
+}
+
+// MaxInputChars reports the configured limit, so the SDK's rules can deny
+// longer input, with zero or a negative value meaning the default and no
+// upper ceiling.
+func TestMaxInputChars(t *testing.T) {
+	tests := []struct {
+		name string
+		opt  int
+		want int
+	}{
+		{name: "zero uses the default", opt: 0, want: DefaultMaxInputChars},
+		{name: "negative uses the default", opt: -1, want: DefaultMaxInputChars},
+		{name: "configured", opt: 20, want: 20},
+		{name: "no ceiling", opt: 1_000_000, want: 1_000_000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := New(Options{MaxInputChars: tt.opt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			limiter, ok := b.(arcjet.SensitiveInfoBackendLimiter)
+			if !ok {
+				t.Fatal("backend does not implement arcjet.SensitiveInfoBackendLimiter")
+			}
+			if got := limiter.MaxInputChars(); got != tt.want {
+				t.Fatalf("MaxInputChars() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// failingTransport fails every request, so a test can tell that the SDK
+// decided locally without contacting Arcjet.
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("no network in this test")
+}
+
+// Personal data placed after the limit must not pass unscanned: the SDK rule
+// denies the whole input instead of scanning a prefix.
+func TestSensitiveInfoRuleDeniesInputOverLimit(t *testing.T) {
+	b, err := New(Options{MaxInputChars: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := arcjet.NewClient(arcjet.Config{
+		Key:        "ajkey_test",
+		HTTPClient: &http.Client{Transport: failingTransport{}},
+		Log:        slog.New(slog.DiscardHandler),
+		Rules: []arcjet.Rule{
+			arcjet.SensitiveInfo(arcjet.SensitiveInfoOptions{
+				Mode:    arcjet.ModeLive,
+				Deny:    []arcjet.EntityType{arcjet.SensitiveInfoEmail},
+				Backend: b,
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close(context.Background())
+
+	value := strings.Repeat("x", 30) + " user@example.com"
+	decision, err := client.ProtectDetails(context.Background(), arcjet.ProtectDetails{},
+		arcjet.WithSensitiveInfoValue(value))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.IsDenied() {
+		t.Fatalf("expected deny, got %#v", decision)
+	}
+	want := "sensitive info input of 47 characters exceeds the backend limit of 20"
+	if decision.Reason.Message != want {
+		t.Fatalf("reason = %q, want %q", decision.Reason.Message, want)
 	}
 }

@@ -3,6 +3,7 @@ package arcjet
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"sync"
 	"time"
@@ -45,6 +46,16 @@ type localEvaluator struct {
 	// detect is the public custom detection callback, retained so the
 	// pluggable-backend path can forward it (the wasm path uses callbacks).
 	detect SensitiveInfoDetect
+	// log receives the evaluator's own diagnostics. Nil uses slog.Default.
+	log *slog.Logger
+}
+
+// logger returns the evaluator's logger, defaulting to [slog.Default].
+func (e *localEvaluator) logger() *slog.Logger {
+	if e.log != nil {
+		return e.log
+	}
+	return slog.Default()
 }
 
 // newLocalEvaluator returns an evaluator and eagerly compiles the shared
@@ -247,6 +258,15 @@ func (e *localEvaluator) matchFilter(ctx context.Context, opts FilterOptions, de
 func (e *localEvaluator) detectSensitiveInfo(ctx context.Context, opts SensitiveInfoOptions, _ ProtectDetails, protectOpts ProtectOptions) (*localDecision, error) {
 	if protectOpts.SensitiveInfoValue == "" {
 		return nil, nil
+	}
+	if oversize, over := checkSensitiveInfoLimit(e.logger(), opts.Backend, protectOpts.SensitiveInfoValue); over {
+		// Deny rather than scan a prefix: the text past the limit would go
+		// unscanned while the decision allowed it. The error reason matches
+		// the server's result for oversize detection input.
+		reason := &decidev1.Reason{Reason: &decidev1.Reason_Error{
+			Error: &decidev1.ErrorReason{Message: oversize.message()},
+		}}
+		return localDeny("local_sensitive_info", opts.Mode, 0, reason), nil
 	}
 	outcome, err := e.scanSensitiveInfo(ctx, protectOpts.SensitiveInfoValue, opts.Allow, opts.Deny, opts.Backend, opts.ContextWindowSize)
 	if err != nil {
