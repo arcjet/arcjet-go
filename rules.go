@@ -383,7 +383,7 @@ type SensitiveInfoOptions struct {
 	// scanned. The rule result has conclusion DENY and an error reason that
 	// gives the character count and the limit, so [Decision.IsDenied] and
 	// [Decision.IsErrored] both report true and Reason.IsSensitiveInfo
-	// reports false. In DRY_RUN mode the denial is recorded but not enforced.
+	// reports false. In DRY_RUN mode the rule logs a warning and doesn't deny.
 	Backend SensitiveInfoBackend
 	// ContextWindowSize is the number of adjacent tokens passed to a custom
 	// [SensitiveInfoDetect] callback at a time. Defaults to 1 when zero or

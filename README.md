@@ -692,8 +692,9 @@ government identifiers.
 > `decision.Reason.IsError()` are both true and
 > `decision.Reason.IsSensitiveInfo()` is false. With `GuardSensitiveInfo`, the
 > rule's result is a denial with no detected entity types. A `LOCAL` input to
-> an agent guard policy is denied the same way. In `DRY_RUN` mode the denial is
-> recorded but not enforced.
+> an agent guard policy is denied the same way. In `DRY_RUN` mode the rule
+> doesn't deny: `SensitiveInfo` logs a warning, and `GuardSensitiveInfo` sends
+> the denial to Arcjet, which records it without enforcing it.
 >
 > For longer text, or to detect PHI, send the text as a `SERVER` input to the
 > server-side sensitive information detector in an

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"time"
+	"unicode/utf8"
 
 	"github.com/arcjet/arcjet-go"
 	"github.com/arcjet/arcjet-go/sensitiveinfo/rampart"
@@ -34,6 +35,12 @@ func main() {
 	if err != nil {
 		slog.Error("rampart: load on-device model", "err", err)
 		os.Exit(1)
+	}
+	// The backend's scan limit, so /submit can tell a body that was too long
+	// to scan from any other denial.
+	maxInputChars := rampart.DefaultMaxInputChars
+	if limiter, ok := backend.(arcjet.SensitiveInfoBackendLimiter); ok {
+		maxInputChars = limiter.MaxInputChars()
 	}
 
 	aj, err := arcjet.NewClient(arcjet.Config{
@@ -86,7 +93,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", hello(aj))
-	mux.HandleFunc("POST /submit", submit(aj))
+	mux.HandleFunc("POST /submit", submit(aj, maxInputChars))
 
 	srv := &http.Server{
 		Addr:              ":3000",
@@ -155,7 +162,7 @@ func hello(aj *arcjet.Client) http.HandlerFunc {
 // submit scans the request body for sensitive information before accepting
 // it. A rejection reports the exact text of each detected entity and where it
 // was found, so you can tell the user what to remove.
-func submit(aj *arcjet.Client) http.HandlerFunc {
+func submit(aj *arcjet.Client, maxInputChars int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Read the body so we can scan it, capping the size so a large body
 		// can't exhaust memory.
@@ -186,7 +193,9 @@ func submit(aj *arcjet.Client) http.HandlerFunc {
 		}
 
 		if decision.IsDenied() {
-			if decision.Reason.IsError() {
+			// Check the length as well as the error reason, so another error that
+			// denies isn't reported as a body that was too long.
+			if decision.Reason.IsError() && utf8.RuneCountInString(text) > maxInputChars {
 				// The text is longer than the backend's MaxInputChars, so it
 				// was denied without being scanned. For longer text, or to
 				// detect PHI, use the server-side detector in an agent guard
