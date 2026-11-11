@@ -105,6 +105,7 @@ func TestLocalEvaluatorBotCategoryConstants(t *testing.T) {
 		{BotCategoryApple, "Applebot/0.1"},
 		{BotCategoryWebhook, "Stripe/1.0"},
 		{BotCategoryMonitor, "OsanoBot"},
+		{BotCategoryAIAgent, "Claude-User (claude-code/2.1.308; +https://support.anthropic.com/)"},
 	} {
 		t.Run(tc.category, func(t *testing.T) {
 			opts := BotOptions{Mode: ModeLive, Deny: []string{tc.category}}
