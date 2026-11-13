@@ -106,6 +106,8 @@ func TestLocalEvaluatorBotCategoryConstants(t *testing.T) {
 		{BotCategoryWebhook, "Stripe/1.0"},
 		{BotCategoryMonitor, "OsanoBot"},
 		{BotCategoryAIAgent, "Claude-User (claude-code/2.1.308; +https://support.anthropic.com/)"},
+		// Every AI agent is also in BotCategoryAI, so existing AI deny lists still deny it.
+		{BotCategoryAI, "Claude-User (claude-code/2.1.308; +https://support.anthropic.com/)"},
 	} {
 		t.Run(tc.category, func(t *testing.T) {
 			opts := BotOptions{Mode: ModeLive, Deny: []string{tc.category}}
