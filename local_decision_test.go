@@ -105,6 +105,9 @@ func TestLocalEvaluatorBotCategoryConstants(t *testing.T) {
 		{BotCategoryApple, "Applebot/0.1"},
 		{BotCategoryWebhook, "Stripe/1.0"},
 		{BotCategoryMonitor, "OsanoBot"},
+		{BotCategoryAIAgent, "Claude-User (claude-code/2.1.308; +https://support.anthropic.com/)"},
+		// Every AI agent is also in BotCategoryAI, so existing AI deny lists still deny it.
+		{BotCategoryAI, "Claude-User (claude-code/2.1.308; +https://support.anthropic.com/)"},
 	} {
 		t.Run(tc.category, func(t *testing.T) {
 			opts := BotOptions{Mode: ModeLive, Deny: []string{tc.category}}
@@ -129,6 +132,42 @@ func TestLocalEvaluatorBotCategoryConstants(t *testing.T) {
 				t.Fatalf("expected %s in denied, got %v", tc.category, denied)
 			}
 		})
+	}
+}
+
+// TestLocalEvaluatorAIAgentAllowList checks that allowing BotCategoryAIAgent
+// lets an AI agent through but still denies an AI crawler, which is in
+// BotCategoryAI only.
+func TestLocalEvaluatorAIAgentAllowList(t *testing.T) {
+	opts := BotOptions{Mode: ModeLive, Allow: []string{BotCategoryAIAgent}}
+	evaluator, err := newLocalEvaluator(context.Background(), []Rule{DetectBot(opts)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.close(context.Background())
+
+	detect := func(userAgent string) *localDecision {
+		t.Helper()
+		decision, err := evaluator.detectBot(context.Background(), opts, ProtectDetails{
+			IP:      "127.0.0.1",
+			Headers: map[string]string{"user-agent": userAgent},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decision
+	}
+
+	if decision := detect("Claude-User (claude-code/2.1.308; +https://support.anthropic.com/)"); decision != nil && decision.liveDeny() {
+		t.Fatalf("expected Claude Code to be allowed, got %#v", decision)
+	}
+
+	decision := detect("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; GPTBot/1.4; +https://openai.com/gptbot")
+	if decision == nil || !decision.liveDeny() {
+		t.Fatalf("expected GPTBot to be denied, got %#v", decision)
+	}
+	if denied := decision.decision.GetReason().GetBotV2().GetDenied(); !slices.Contains(denied, "OPENAI_CRAWLER") {
+		t.Fatalf("expected OPENAI_CRAWLER in denied, got %v", denied)
 	}
 }
 

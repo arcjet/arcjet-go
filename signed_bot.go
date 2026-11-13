@@ -36,8 +36,8 @@ func mayBeSignedBot(entity string) bool {
 		"KERNEL_AGENT", "KERNEL_SEARCH", "OSANO_BOT", "CLOUDFLARE_BROWSER_RUN",
 		"LANE_AGENT", "ISONSEARCH_CRAWLER", "ISONAI_USER", "LINER_BOT", "LINER_USER":
 		return true
-	case BotCategoryAI, BotCategoryGoogle, BotCategorySearchEngine, BotCategoryTool,
-		BotCategoryMonitor:
+	case BotCategoryAI, BotCategoryAIAgent, BotCategoryGoogle, BotCategorySearchEngine,
+		BotCategoryTool, BotCategoryMonitor:
 		return true
 	default:
 		return false

@@ -57,8 +57,8 @@ func TestSignedBotPolicies(t *testing.T) {
 		"YOU_CRAWLER", "EXA_SEARCHBOT", "CONTEXT7_CRAWLER", "SHOPIFY_CLOUDSURF",
 		"KERNEL_AGENT", "KERNEL_SEARCH", "OSANO_BOT", "CLOUDFLARE_BROWSER_RUN",
 		"LANE_AGENT", "ISONSEARCH_CRAWLER", "ISONAI_USER", "LINER_BOT", "LINER_USER",
-		BotCategoryAI, BotCategoryGoogle, BotCategorySearchEngine, BotCategoryTool,
-		BotCategoryMonitor,
+		BotCategoryAI, BotCategoryAIAgent, BotCategoryGoogle, BotCategorySearchEngine,
+		BotCategoryTool, BotCategoryMonitor,
 		"SIGNED_BOT:https://bot.example.com/.well-known/http-message-signatures-directory",
 	} {
 		if !mayBeSignedBot(entity) {

@@ -7,9 +7,13 @@ package arcjet
 // https://arcjet.com/bot-list. Strings are still accepted; these constants
 // exist for autocomplete and to catch typos at compile time.
 const (
-	BotCategoryAcademic     = "CATEGORY:ACADEMIC"
-	BotCategoryAdvertising  = "CATEGORY:ADVERTISING"
-	BotCategoryAI           = "CATEGORY:AI"
+	BotCategoryAcademic    = "CATEGORY:ACADEMIC"
+	BotCategoryAdvertising = "CATEGORY:ADVERTISING"
+	BotCategoryAI          = "CATEGORY:AI"
+	// BotCategoryAIAgent is the part of BotCategoryAI that fetches a page on
+	// demand for a person, such as ChatGPT-User, Claude-User, or a coding agent.
+	// Every member is also in BotCategoryAI.
+	BotCategoryAIAgent      = "CATEGORY:AI_AGENT"
 	BotCategoryAmazon       = "CATEGORY:AMAZON"
 	BotCategoryApple        = "CATEGORY:APPLE"
 	BotCategoryArchive      = "CATEGORY:ARCHIVE"

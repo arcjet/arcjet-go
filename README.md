@@ -367,8 +367,8 @@ arcjet.DetectBot(arcjet.BotOptions{
 ```
 
 Exported constants cover all built-in categories: `arcjet.BotCategoryAcademic`,
-`BotCategoryAdvertising`, `BotCategoryAI`, `BotCategoryAmazon`,
-`BotCategoryApple`, `BotCategoryArchive`, `BotCategoryBotnet`,
+`BotCategoryAdvertising`, `BotCategoryAI`, `BotCategoryAIAgent`,
+`BotCategoryAmazon`, `BotCategoryApple`, `BotCategoryArchive`, `BotCategoryBotnet`,
 `BotCategoryFeedFetcher`, `BotCategoryGoogle`, `BotCategoryMeta`,
 `BotCategoryMicrosoft`, `BotCategoryMonitor`, `BotCategoryOptimizer`,
 `BotCategoryPreview`, `BotCategoryProgrammatic`, `BotCategorySearchEngine`,
@@ -378,6 +378,11 @@ Exported constants cover all built-in categories: `arcjet.BotCategoryAcademic`,
 `"CATEGORY:AI"` or `"OPENAI_CRAWLER_SEARCH"` for [specific bots by
 name](https://arcjet.com/bot-list)) — the constants exist for autocomplete and
 to catch typos at compile time.
+
+`BotCategoryAIAgent` is the part of `BotCategoryAI` that fetches a page on
+demand for a person, such as ChatGPT-User, Claude-User, or a coding agent. To
+block AI crawlers but let AI agents through, allow `BotCategoryAIAgent` instead
+of denying `BotCategoryAI`, because denying `BotCategoryAI` also blocks agents.
 
 If you specify an allow list, all other bots are denied. An empty allow list
 blocks all bots. The reverse applies for deny lists.
