@@ -577,8 +577,9 @@ import (
 func main() {
 	// Load the on-device model once. Reuse `backend` for every request.
 	backend, err := rampart.New(rampart.Options{
-		// Optional: raise the per-request character ceiling (default 4096) if
-		// you need to scan larger payloads — see the performance note below.
+		// Optional: raise the per-request character limit (default 4096) if
+		// you need to accept larger payloads. Longer input is denied without
+		// being scanned — see the performance note below.
 		// MaxInputChars: 16384,
 	})
 	if err != nil {
@@ -616,7 +617,13 @@ func main() {
 			log.Printf("arcjet: %v", err)
 		}
 
-		if decision.Reason.IsSensitiveInfo() {
+		if decision.IsDenied() {
+			if decision.Reason.IsError() {
+				// Longer than the backend's MaxInputChars, so denied without
+				// being scanned.
+				http.Error(w, "Message too long", http.StatusRequestEntityTooLarge)
+				return
+			}
 			// Inspect exactly what was found and where (byte offsets into the
 			// scanned text).
 			if si := decision.Reason.SensitiveInfo; si != nil {
@@ -676,12 +683,36 @@ government identifiers.
 > full model pass, or up to four when its text expands to more tokens than the
 > model takes at once, as spaced Korean text can. Two mechanisms bound
 > worst-case cost so a large input cannot become a denial-of-service vector.
-> `Options.MaxInputChars` is a hard character ceiling; at its default of `4096`
+> `Options.MaxInputChars` is a hard character limit; at its default of `4096`
 > a call scans at most ten windows, so about ten model passes for most text and
 > at most forty. Separately, `Detect` honors context cancellation between
 > passes, so the incoming request's context deadline also caps total inference.
-> Raise `MaxInputChars` if you need to scan larger payloads and can afford the
+> Raise `MaxInputChars` if you need to accept larger payloads and can afford the
 > latency.
+>
+> The `SensitiveInfo` and `GuardSensitiveInfo` rules deny input longer than
+> `MaxInputChars` (counted in Unicode code points) without scanning it, so
+> personal information can't be hidden past the limit. With `SensitiveInfo`,
+> the denial has an error reason, so `decision.IsDenied()` and
+> `decision.Reason.IsError()` are both true and
+> `decision.Reason.IsSensitiveInfo()` is false. With `GuardSensitiveInfo`, the
+> rule's result is a denial with no detected entity types. A `LOCAL` input to
+> an agent guard policy is denied the same way. In `DRY_RUN` mode the rule
+> doesn't deny: `SensitiveInfo` logs a warning, and `GuardSensitiveInfo` sends
+> the denial to Arcjet, which records it without enforcing it.
+>
+> For longer text, or to detect PHI, send the text as a `SERVER` input to the
+> server-side sensitive information detector in an
+> [agent guard policy](https://docs.arcjet.com/guards/remote-policies#detectors).
+> It screens values up to about 100 KB, and only it detects the
+> [PHI types](https://docs.arcjet.com/sensitive-info/phi), such as medical
+> record numbers. It allows up to 3 seconds to screen a value over 2 KB, and a
+> live rule fails closed if the scan doesn't finish. Give the Guard call a
+> context deadline longer than 3 seconds (without one, the SDK applies
+> 2 seconds) so the client doesn't stop waiting first, and deny when
+> `decision.HasFailedOpen()` is true. Each `Guard` call screens up to two
+> `SERVER` inputs longer than 2 KB, so to screen text longer than about 100 KB,
+> split it into parts and screen each part in its own call.
 
 See the [module README](./sensitiveinfo/rampart/README.md) for the full entity
 list and details.

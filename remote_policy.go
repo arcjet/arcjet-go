@@ -376,6 +376,21 @@ func (r *remotePolicyRuntime) localResult(ctx context.Context, policy *decidev2.
 		ValueSha256:    localPolicyDigest(text),
 		Type:           decidev2.GuardRuleType_GUARD_RULE_TYPE_LOCAL_SENSITIVE_INFO,
 	}
+	// A value longer than the backend scans is denied without scanning it, so
+	// nothing past the limit goes through unchecked. The attestation is a DENY
+	// with nothing detected: it reports no detection that never happened, and
+	// the server enforces it as a local denial when the rule is live.
+	if _, over := checkSensitiveInfoLimit(r.local.logger(), r.backend, text); over {
+		elapsed := uint64(0)
+		result.DurationMs = &elapsed
+		result.Result = &decidev2.GuardLocalPolicyResult_LocalSensitiveInfo{LocalSensitiveInfo: &decidev2.ResultLocalSensitiveInfo{
+			Conclusion:          decidev2.GuardConclusion_GUARD_CONCLUSION_DENY,
+			Detected:            false,
+			DetectedEntityTypes: []string{},
+			DetectedEntities:    []*decidev2.GuardSensitiveInfoEntity{},
+		}}
+		return result
+	}
 	outcome, err := r.local.scanSensitiveInfo(ctx, text, allow, deny, r.backend, 0)
 	if err != nil {
 		result.Result = &decidev2.GuardLocalPolicyResult_Error{Error: &decidev2.ResultError{Code: "LOCAL_POLICY_ERROR", Message: "local policy evaluation failed"}}

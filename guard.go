@@ -1016,6 +1016,11 @@ type GuardSensitiveInfoOptions struct {
 	// every entity type the SDK defines. Without a backend, only
 	// [SensitiveInfoEmail], [SensitiveInfoPhoneNumber], [SensitiveInfoIPAddress],
 	// and [SensitiveInfoCreditCardNumber] are detected.
+	//
+	// When the backend declares a scan limit ([SensitiveInfoBackendLimiter]),
+	// text with more characters than the limit is denied without being
+	// scanned: the submission carries a computed DENY with no detected
+	// entities, which Arcjet enforces when the rule is LIVE.
 	Backend SensitiveInfoBackend
 	// Label identifies this rule in the Arcjet dashboard.
 	Label string
@@ -1107,6 +1112,18 @@ func (r *GuardSensitiveInfoRule) Text(text string) GuardRuleInput {
 			payload["configEntitiesAllow"] = map[string]any{"entities": stringSlice(allow)}
 		case len(deny) > 0:
 			payload["configEntitiesDeny"] = map[string]any{"entities": stringSlice(deny)}
+		}
+		if _, over := checkSensitiveInfoLimit(eval.logger(), backend, text); over {
+			// Deny rather than scan a prefix: the text past the limit would go
+			// unscanned. A computed DENY is enforced by the server when the rule
+			// is live; resultError would fail open.
+			payload["resultComputed"] = map[string]any{
+				"conclusion":          guardConclusion(ConclusionDeny),
+				"detected":            false,
+				"detectedEntityTypes": []string{},
+			}
+			payload["resultDurationMs"] = uint64(0)
+			return r.base.submission(map[string]any{"localSensitiveInfo": payload}), nil
 		}
 		outcome, err := eval.scanSensitiveInfo(ctx, text, allow, deny, backend, 0)
 		if err != nil {
