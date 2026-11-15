@@ -7,10 +7,9 @@ import (
 	decidev1 "github.com/arcjet/arcjet-go/internal/proto/decide/v1alpha1"
 )
 
-// Keep these identities and their containing categories in sync with
-// verification[type=web-bot-auth] entries in the source catalog:
-// https://github.com/arcjet/well-known-bots/blob/main/well-known-bots.json.
-// A signature can change a bot's identity even when local User-Agent matching
+// botRulesMayVerifySignature reports whether any bot rule names a bot or
+// category that Arcjet Cloud may identify by a Web Bot Auth signature. A
+// signature can change a bot's identity even when local User-Agent matching
 // would have denied it.
 func botRulesMayVerifySignature(rules []*decidev1.Rule) bool {
 	for _, rule := range rules {
@@ -26,23 +25,15 @@ func botRulesMayVerifySignature(rules []*decidev1.Rule) bool {
 	return false
 }
 
+// mayBeSignedBot reports whether entity is a signed bot directory, a bot
+// that signs requests with Web Bot Auth, or a category that contains one.
+// The bots and categories come from the generated signedBotEntities.
 func mayBeSignedBot(entity string) bool {
 	if strings.HasPrefix(entity, "SIGNED_BOT:") {
 		return true
 	}
-	switch entity {
-	case "GOOGLE_AGENT", "CHATGPT_AGENT", "DUCKASSIST_BOT", "BROWSERBASE", "MANUS_BOT",
-		"YOU_CRAWLER", "EXA_SEARCHBOT", "CONTEXT7_CRAWLER", "SHOPIFY_CLOUDSURF",
-		"KERNEL_AGENT", "KERNEL_SEARCH", "OSANO_BOT", "CLOUDFLARE_BROWSER_RUN",
-		"LANE_AGENT", "ISONSEARCH_CRAWLER", "ISONAI_USER", "LINER_BOT", "LINER_USER",
-		"RIVER_CRAWLER":
-		return true
-	case BotCategoryAI, BotCategoryAIAgent, BotCategoryGoogle, BotCategorySearchEngine,
-		BotCategoryTool, BotCategoryMonitor:
-		return true
-	default:
-		return false
-	}
+	_, ok := signedBotEntities[entity]
+	return ok
 }
 
 func hasSignatureInput(headers map[string]string) bool {

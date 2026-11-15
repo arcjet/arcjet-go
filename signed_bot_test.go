@@ -2,8 +2,12 @@ package arcjet
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -88,6 +92,59 @@ func TestSignedBotPolicies(t *testing.T) {
 		if !botRulesMayVerifySignature([]*decidev1.Rule{rule}) {
 			t.Errorf("rule %#v should be signer-relevant", opts)
 		}
+	}
+}
+
+// TestSignedBotEntitiesCategoriesAreKnown fails when the generated catalog
+// names a category the SDK has no BotCategory constant for, such as after a
+// category rename in the catalog.
+func TestSignedBotEntitiesCategoriesAreKnown(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "constants.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := map[string]bool{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if !strings.HasPrefix(name.Name, "BotCategory") || i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					t.Fatalf("%s is not a string literal", name.Name)
+				}
+				value, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				known[value] = true
+			}
+		}
+	}
+	if !known[BotCategoryAI] || !known[BotCategoryYahoo] {
+		t.Fatalf("parsed BotCategory constants %v are incomplete", known)
+	}
+	categories := 0
+	for entity := range signedBotEntities {
+		if !strings.HasPrefix(entity, "CATEGORY:") {
+			continue
+		}
+		categories++
+		if !known[entity] {
+			t.Errorf("signedBotEntities has %q, which is not a BotCategory constant", entity)
+		}
+	}
+	if categories == 0 {
+		t.Fatal("signedBotEntities has no categories")
 	}
 }
 
