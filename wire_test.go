@@ -171,6 +171,120 @@ func TestDecisionFromProtoThreatIntelligence(t *testing.T) {
 	}
 }
 
+func TestDecisionFromProtoBotIdentity(t *testing.T) {
+	botDecision := func(identity *decidev1.BotIdentity) *decidev1.Decision {
+		return &decidev1.Decision{
+			Conclusion: decidev1.Conclusion_CONCLUSION_DENY,
+			Reason: &decidev1.Reason{Reason: &decidev1.Reason_BotV2{
+				BotV2: &decidev1.BotV2Reason{Denied: []string{"OPENAI_CRAWLER_USER"}, Identity: identity},
+			}},
+		}
+	}
+
+	got := decisionFromProto(botDecision(&decidev1.BotIdentity{
+		Kind:     decidev1.BotKind_BOT_KIND_AI_AGENT,
+		BotId:    "OPENAI_CRAWLER_USER",
+		Operator: "chatgpt.com",
+		Evidence: decidev1.BotEvidence_BOT_EVIDENCE_SIGNATURE,
+	}))
+	want := &BotIdentity{Kind: BotKindAIAgent, BotID: "OPENAI_CRAWLER_USER", Operator: "chatgpt.com", Evidence: BotEvidenceSignature}
+	if got.Reason.Bot == nil || !reflect.DeepEqual(got.Reason.Bot.Identity, want) {
+		t.Fatalf("identity = %#v, want %#v", got.Reason.Bot, want)
+	}
+	if !got.IsAIAgent() {
+		t.Fatal("IsAIAgent() = false for an AI agent identity")
+	}
+
+	kinds := map[decidev1.BotKind]BotKind{
+		decidev1.BotKind_BOT_KIND_AI_AGENT:   BotKindAIAgent,
+		decidev1.BotKind_BOT_KIND_AI_CRAWLER: BotKindAICrawler,
+		decidev1.BotKind_BOT_KIND_AUTOMATION: BotKindAutomation,
+		decidev1.BotKind_BOT_KIND_OTHER:      BotKindOther,
+	}
+	for in, out := range kinds {
+		id := decisionFromProto(botDecision(&decidev1.BotIdentity{Kind: in})).Reason.Bot.Identity
+		if id == nil || id.Kind != out {
+			t.Fatalf("kind %v = %#v, want %q", in, id, out)
+		}
+	}
+	evidence := map[decidev1.BotEvidence]BotEvidence{
+		decidev1.BotEvidence_BOT_EVIDENCE_UNSPECIFIED: "",
+		decidev1.BotEvidence_BOT_EVIDENCE_UNVERIFIED:  BotEvidenceUnverified,
+		decidev1.BotEvidence_BOT_EVIDENCE_FINGERPRINT: BotEvidenceFingerprint,
+		decidev1.BotEvidence_BOT_EVIDENCE_IP:          BotEvidenceIP,
+		decidev1.BotEvidence_BOT_EVIDENCE_SIGNATURE:   BotEvidenceSignature,
+		decidev1.BotEvidence(999):                     "",
+	}
+	for in, out := range evidence {
+		id := decisionFromProto(botDecision(&decidev1.BotIdentity{Kind: decidev1.BotKind_BOT_KIND_OTHER, Evidence: in})).Reason.Bot.Identity
+		if id == nil || id.Evidence != out {
+			t.Fatalf("evidence %v = %#v, want %q", in, id, out)
+		}
+	}
+
+	// No identity, an unspecified kind, or a kind this SDK does not know all
+	// leave Identity nil rather than inventing one.
+	for name, identity := range map[string]*decidev1.BotIdentity{
+		"unset":       nil,
+		"unspecified": {Kind: decidev1.BotKind_BOT_KIND_UNSPECIFIED, BotId: "OPENAI_CRAWLER_USER"},
+		"unknown":     {Kind: decidev1.BotKind(999), BotId: "OPENAI_CRAWLER_USER", Evidence: decidev1.BotEvidence_BOT_EVIDENCE_IP},
+	} {
+		got := decisionFromProto(botDecision(identity))
+		if got.Reason.Type != ReasonBot || got.Reason.Bot == nil {
+			t.Fatalf("%s: reason = %#v, want a bot reason", name, got.Reason)
+		}
+		if got.Reason.Bot.Identity != nil {
+			t.Fatalf("%s: identity = %#v, want nil", name, got.Reason.Bot.Identity)
+		}
+		if !got.IsDenied() || got.IsAIAgent() {
+			t.Fatalf("%s: decision = %#v", name, got)
+		}
+	}
+}
+
+func TestBotKindAndEvidenceUnmarshalJSON(t *testing.T) {
+	kinds := map[string]BotKind{
+		`"BOT_KIND_AI_AGENT"`:    BotKindAIAgent,
+		`"AI_CRAWLER"`:           BotKindAICrawler,
+		`"BOT_KIND_UNSPECIFIED"`: "",
+		`"BOT_KIND_NEW"`:         "",
+		`7`:                      "",
+	}
+	for raw, want := range kinds {
+		var k BotKind
+		if err := json.Unmarshal([]byte(raw), &k); err != nil || k != want {
+			t.Fatalf("BotKind(%s) = %q, err = %v, want %q", raw, k, err, want)
+		}
+	}
+	evidence := map[string]BotEvidence{
+		`"BOT_EVIDENCE_IP"`:          BotEvidenceIP,
+		`"SIGNATURE"`:                BotEvidenceSignature,
+		`"BOT_EVIDENCE_UNSPECIFIED"`: "",
+		`9`:                          "",
+	}
+	for raw, want := range evidence {
+		var e BotEvidence
+		if err := json.Unmarshal([]byte(raw), &e); err != nil || e != want {
+			t.Fatalf("BotEvidence(%s) = %q, err = %v, want %q", raw, e, err, want)
+		}
+	}
+	var k BotKind
+	if err := json.Unmarshal([]byte(`{}`), &k); err == nil {
+		t.Fatal("an object decoded as a bot kind")
+	}
+
+	// BotReason round-trips through its own JSON form.
+	in := BotReason{Denied: []string{"X"}, Identity: &BotIdentity{Kind: BotKindAIAgent, BotID: "X", Evidence: BotEvidenceIP}}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out BotReason
+	if err := json.Unmarshal(data, &out); err != nil || !reflect.DeepEqual(in, out) {
+		t.Fatalf("round trip = %#v, err = %v, want %#v", out, err, in)
+	}
+}
+
 func TestParseGuardRuleType(t *testing.T) {
 	cases := map[string]GuardRuleType{
 		"GUARD_RULE_TYPE_TOKEN_BUCKET":         GuardRuleTypeTokenBucket,

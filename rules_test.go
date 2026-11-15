@@ -210,6 +210,27 @@ func TestDecisionAndErrorHelpers(t *testing.T) {
 	if dryRunLeak.IsVerifiedBot() {
 		t.Fatal("verified bot helper leaked a dry-run detection via the top-level reason")
 	}
+	aiAgent := &BotReason{Identity: &BotIdentity{Kind: BotKindAIAgent, BotID: "OPENAI_CRAWLER_USER"}}
+	if !(Decision{Reason: Reason{Bot: aiAgent}}).IsAIAgent() {
+		t.Fatal("AI agent helper (top-level reason) failed")
+	}
+	if !(Decision{Results: []RuleResult{{State: RuleStateRun, Reason: Reason{Bot: aiAgent}}}}).IsAIAgent() {
+		t.Fatal("AI agent helper (rule result) failed")
+	}
+	if (Decision{Results: []RuleResult{{State: RuleStateDryRun, Reason: Reason{Bot: aiAgent}}}}).IsAIAgent() {
+		t.Fatal("AI agent helper should ignore dry-run results")
+	}
+	if (Decision{Reason: Reason{Bot: aiAgent}, Results: []RuleResult{{State: RuleStateDryRun, Reason: Reason{Bot: aiAgent}}}}).IsAIAgent() {
+		t.Fatal("AI agent helper leaked a dry-run detection via the top-level reason")
+	}
+	for _, kind := range []BotKind{BotKindAICrawler, BotKindAutomation, BotKindOther, ""} {
+		if (Decision{Reason: Reason{Bot: &BotReason{Identity: &BotIdentity{Kind: kind}}}}).IsAIAgent() {
+			t.Fatalf("AI agent helper reported kind %q as an AI agent", kind)
+		}
+	}
+	if (Decision{Reason: Reason{Bot: &BotReason{Verified: true}}}).IsAIAgent() {
+		t.Fatal("AI agent helper should be false without an identity")
+	}
 	if !(Decision{Reason: Reason{Type: ReasonError, Message: "bot detection requires user-agent header"}}).IsMissingUserAgent() {
 		t.Fatal("missing user agent helper (local message) failed")
 	}

@@ -357,6 +357,18 @@ func (d Decision) IsVerifiedBot() bool {
 	})
 }
 
+// IsAIAgent reports whether a bot rule identified the request as coming from
+// an AI agent: an AI product fetching on demand for a person who is waiting on
+// the answer, such as ChatGPT-User or Claude-User (see [BotKindAIAgent]). It
+// relies on [BotReason.Identity], which only Arcjet Cloud reports, so it is
+// false for a decision the SDK made locally, such as a bot rule denied in
+// process or a fail-open decision when Arcjet Cloud could not be reached.
+func (d Decision) IsAIAgent() bool {
+	return d.anyActiveReason(func(r Reason) bool {
+		return r.Bot != nil && r.Bot.Identity != nil && r.Bot.Identity.Kind == BotKindAIAgent
+	})
+}
+
 // IsMissingUserAgent reports whether a bot rule denied the request because it
 // had no User-Agent header. A missing User-Agent is a common indicator of an
 // automated client, since IETF HTTP Semantics (RFC 9110) recommends sending
@@ -444,7 +456,111 @@ type BotReason struct {
 	Denied   []string `json:"denied,omitempty"`
 	Verified bool     `json:"verified,omitempty"`
 	Spoofed  bool     `json:"spoofed,omitempty"`
+	// Identity is the primary bot Arcjet Cloud detected: when a request
+	// matches several bots, it is the one with the strongest evidence. It is
+	// nil when no bot was detected, when the decision was made locally, or
+	// when Arcjet Cloud reported a kind this SDK version does not recognize.
+	Identity *BotIdentity `json:"identity,omitempty"`
 }
+
+// BotIdentity describes the primary bot detected for a request. Only Arcjet
+// Cloud produces it; see [BotReason.Identity].
+type BotIdentity struct {
+	// Kind is what kind of client the bot is. It is always one of the BotKind
+	// constants.
+	Kind BotKind `json:"kind,omitempty"`
+	// BotID is the bot identifier, such as "OPENAI_CRAWLER_USER" or a
+	// "SIGNED_BOT:" directory. It is empty for [BotKindAutomation].
+	BotID string `json:"botId,omitempty"`
+	// Operator is the hostname that operates the bot, such as "chatgpt.com".
+	// It is set only when a verified Web Bot Auth signature proves it, that
+	// is, with [BotEvidenceSignature]; it is empty otherwise.
+	Operator string `json:"operator,omitempty"`
+	// Evidence is how the identity was established. It is empty when Arcjet
+	// Cloud reported evidence this SDK version does not recognize.
+	Evidence BotEvidence `json:"evidence,omitempty"`
+}
+
+// BotKind classifies the client behind a [BotIdentity]. Values are stored in
+// their canonical form, without the "BOT_KIND_" wire prefix.
+type BotKind string
+
+const (
+	// BotKindAIAgent is an AI product fetching on demand for a person who is
+	// waiting on the answer: a member of [BotCategoryAIAgent].
+	BotKindAIAgent BotKind = "AI_AGENT"
+	// BotKindAICrawler is scheduled AI crawling for training or an AI index:
+	// a member of [BotCategoryAI] that is not in [BotCategoryAIAgent].
+	BotKindAICrawler BotKind = "AI_CRAWLER"
+	// BotKindAutomation is browser automation found by Arcjet Signals with no
+	// named bot. Its BotID is empty and its evidence is
+	// [BotEvidenceFingerprint].
+	BotKindAutomation BotKind = "AUTOMATION"
+	// BotKindOther is any other detected bot.
+	BotKindOther BotKind = "OTHER"
+)
+
+// UnmarshalJSON strips the wire "BOT_KIND_" prefix when present. A value that
+// is not one of the BotKind constants, including "BOT_KIND_UNSPECIFIED" and
+// the JSON number protojson writes for an enum value the SDK does not know,
+// decodes to the empty string.
+func (k *BotKind) UnmarshalJSON(data []byte) error {
+	var s protoEnumName
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	switch v := BotKind(strings.TrimPrefix(string(s), "BOT_KIND_")); v {
+	case BotKindAIAgent, BotKindAICrawler, BotKindAutomation, BotKindOther:
+		*k = v
+	default:
+		*k = ""
+	}
+	return nil
+}
+
+// LogValue implements [slog.LogValuer] so BotKind logs as its string form.
+func (k BotKind) LogValue() slog.Value { return slog.StringValue(string(k)) }
+
+// BotEvidence says how a [BotIdentity] was established. Values are stored in
+// their canonical form, without the "BOT_EVIDENCE_" wire prefix. From weakest
+// to strongest: [BotEvidenceUnverified], [BotEvidenceFingerprint],
+// [BotEvidenceIP], [BotEvidenceSignature].
+type BotEvidence string
+
+const (
+	// BotEvidenceUnverified means the bot was matched by User-Agent or IP
+	// reputation and not verified. Spoofed claims have this evidence.
+	BotEvidenceUnverified BotEvidence = "UNVERIFIED"
+	// BotEvidenceFingerprint means Arcjet Signals browser checks failed.
+	BotEvidenceFingerprint BotEvidence = "FINGERPRINT"
+	// BotEvidenceIP means the IP address is in the operator's published
+	// ranges, or reverse DNS confirmed it.
+	BotEvidenceIP BotEvidence = "IP"
+	// BotEvidenceSignature means a Web Bot Auth signature verified against the
+	// operator's key directory.
+	BotEvidenceSignature BotEvidence = "SIGNATURE"
+)
+
+// UnmarshalJSON strips the wire "BOT_EVIDENCE_" prefix when present. A value
+// that is not one of the BotEvidence constants, including
+// "BOT_EVIDENCE_UNSPECIFIED" and the JSON number protojson writes for an enum
+// value the SDK does not know, decodes to the empty string.
+func (e *BotEvidence) UnmarshalJSON(data []byte) error {
+	var s protoEnumName
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	switch v := BotEvidence(strings.TrimPrefix(string(s), "BOT_EVIDENCE_")); v {
+	case BotEvidenceUnverified, BotEvidenceFingerprint, BotEvidenceIP, BotEvidenceSignature:
+		*e = v
+	default:
+		*e = ""
+	}
+	return nil
+}
+
+// LogValue implements [slog.LogValuer] so BotEvidence logs as its string form.
+func (e BotEvidence) LogValue() slog.Value { return slog.StringValue(string(e)) }
 
 // ShieldReason contains details for a Shield decision.
 type ShieldReason struct {
