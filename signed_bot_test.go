@@ -57,6 +57,7 @@ func TestSignedBotPolicies(t *testing.T) {
 		"YOU_CRAWLER", "EXA_SEARCHBOT", "CONTEXT7_CRAWLER", "SHOPIFY_CLOUDSURF",
 		"KERNEL_AGENT", "KERNEL_SEARCH", "OSANO_BOT", "CLOUDFLARE_BROWSER_RUN",
 		"LANE_AGENT", "ISONSEARCH_CRAWLER", "ISONAI_USER", "LINER_BOT", "LINER_USER",
+		"RIVER_CRAWLER",
 		BotCategoryAI, BotCategoryAIAgent, BotCategoryGoogle, BotCategorySearchEngine,
 		BotCategoryTool, BotCategoryMonitor,
 		"SIGNED_BOT:https://bot.example.com/.well-known/http-message-signatures-directory",
@@ -78,6 +79,7 @@ func TestSignedBotPolicies(t *testing.T) {
 		{Mode: ModeLive, Allow: []string{"LINER_USER"}},
 		{Mode: ModeLive, Deny: []string{"ISONSEARCH_CRAWLER"}},
 		{Mode: ModeLive, Allow: []string{"ISONAI_USER", "LINER_BOT"}},
+		{Mode: ModeLive, Deny: []string{"RIVER_CRAWLER"}},
 	} {
 		rule, err := buildRequestRule(DetectBot(opts))
 		if err != nil {
