@@ -228,6 +228,13 @@ func TestDecisionAndErrorHelpers(t *testing.T) {
 			t.Fatalf("AI agent helper reported kind %q as an AI agent", kind)
 		}
 	}
+	spoofedAgent := &BotReason{Identity: &BotIdentity{Kind: BotKindAIAgent, BotID: "OPENAI_CRAWLER_USER", Evidence: BotEvidenceUnverified, Spoofed: true}}
+	if (Decision{Reason: Reason{Bot: spoofedAgent}}).IsAIAgent() {
+		t.Fatal("AI agent helper reported a spoofed identity as an AI agent")
+	}
+	if (Decision{Results: []RuleResult{{State: RuleStateRun, Reason: Reason{Bot: spoofedAgent}}}}).IsAIAgent() {
+		t.Fatal("AI agent helper reported a spoofed identity (rule result) as an AI agent")
+	}
 	if (Decision{Reason: Reason{Bot: &BotReason{Verified: true}}}).IsAIAgent() {
 		t.Fatal("AI agent helper should be false without an identity")
 	}

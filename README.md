@@ -454,7 +454,19 @@ if decision.IsAIAgent() {
 ```
 
 `Identity` is nil when no bot was detected and on decisions the SDK makes
-locally, so `IsAIAgent()` relies on Arcjet Cloud results.
+locally, so `IsAIAgent()` relies on Arcjet Cloud results. `Identity.Spoofed` is
+true when a bot was claimed but IP or reverse DNS verification showed the
+request did not come from its operator; `IsAIAgent()` is false for such an
+identity.
+
+A bot identity is not authorization:
+
+- `BotEvidenceUnverified` is only what the User-Agent claims.
+- `BotEvidenceSignature` identifies the operator of the signing key directory,
+  which can be a hosted-browser platform such as Browserbase. It does not
+  identify the end user or what they intend.
+- `BotEvidenceIP` is only as reliable as the client IP the SDK resolves. Set
+  `Config.Proxies` when your application runs behind a proxy or load balancer.
 
 See the [Bot Protection docs](https://docs.arcjet.com/bot-protection) for more
 details.

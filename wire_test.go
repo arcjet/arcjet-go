@@ -195,6 +195,21 @@ func TestDecisionFromProtoBotIdentity(t *testing.T) {
 		t.Fatal("IsAIAgent() = false for an AI agent identity")
 	}
 
+	// A spoofed claim maps through, and is not an AI agent.
+	spoofed := decisionFromProto(botDecision(&decidev1.BotIdentity{
+		Kind:     decidev1.BotKind_BOT_KIND_AI_AGENT,
+		BotId:    "OPENAI_CRAWLER_USER",
+		Evidence: decidev1.BotEvidence_BOT_EVIDENCE_UNVERIFIED,
+		Spoofed:  true,
+	}))
+	wantSpoofed := &BotIdentity{Kind: BotKindAIAgent, BotID: "OPENAI_CRAWLER_USER", Evidence: BotEvidenceUnverified, Spoofed: true}
+	if spoofed.Reason.Bot == nil || !reflect.DeepEqual(spoofed.Reason.Bot.Identity, wantSpoofed) {
+		t.Fatalf("spoofed identity = %#v, want %#v", spoofed.Reason.Bot, wantSpoofed)
+	}
+	if spoofed.IsAIAgent() {
+		t.Fatal("IsAIAgent() = true for a spoofed AI agent identity")
+	}
+
 	kinds := map[decidev1.BotKind]BotKind{
 		decidev1.BotKind_BOT_KIND_AI_AGENT:   BotKindAIAgent,
 		decidev1.BotKind_BOT_KIND_AI_CRAWLER: BotKindAICrawler,
@@ -274,14 +289,24 @@ func TestBotKindAndEvidenceUnmarshalJSON(t *testing.T) {
 	}
 
 	// BotReason round-trips through its own JSON form.
-	in := BotReason{Denied: []string{"X"}, Identity: &BotIdentity{Kind: BotKindAIAgent, BotID: "X", Evidence: BotEvidenceIP}}
-	data, err := json.Marshal(in)
-	if err != nil {
-		t.Fatal(err)
+	for _, in := range []BotReason{
+		{Denied: []string{"X"}, Identity: &BotIdentity{Kind: BotKindAIAgent, BotID: "X", Evidence: BotEvidenceIP}},
+		{Denied: []string{"X"}, Identity: &BotIdentity{Kind: BotKindAIAgent, BotID: "X", Evidence: BotEvidenceUnverified, Spoofed: true}},
+	} {
+		data, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out BotReason
+		if err := json.Unmarshal(data, &out); err != nil || !reflect.DeepEqual(in, out) {
+			t.Fatalf("round trip = %#v, err = %v, want %#v", out, err, in)
+		}
 	}
-	var out BotReason
-	if err := json.Unmarshal(data, &out); err != nil || !reflect.DeepEqual(in, out) {
-		t.Fatalf("round trip = %#v, err = %v, want %#v", out, err, in)
+
+	// The JSON wire form carries spoofed on the identity.
+	r := parseReason(json.RawMessage(`{"botV2":{"identity":{"kind":"BOT_KIND_AI_AGENT","botId":"X","evidence":"BOT_EVIDENCE_UNVERIFIED","spoofed":true}}}`))
+	if r.Bot == nil || r.Bot.Identity == nil || !r.Bot.Identity.Spoofed {
+		t.Fatalf("JSON wire spoofed identity = %#v", r.Bot)
 	}
 }
 

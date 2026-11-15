@@ -362,10 +362,17 @@ func (d Decision) IsVerifiedBot() bool {
 // the answer, such as ChatGPT-User or Claude-User (see [BotKindAIAgent]). It
 // relies on [BotReason.Identity], which only Arcjet Cloud reports, so it is
 // false for a decision the SDK made locally, such as a bot rule denied in
-// process or a fail-open decision when Arcjet Cloud could not be reached.
+// process or a fail-open decision when Arcjet Cloud could not be reached. It
+// is also false for a spoofed identity (see [BotIdentity.Spoofed]).
+//
+// IsAIAgent is not an authorization check. Check [BotIdentity.Evidence] for
+// how far to trust the identity; see [BotIdentity].
 func (d Decision) IsAIAgent() bool {
 	return d.anyActiveReason(func(r Reason) bool {
-		return r.Bot != nil && r.Bot.Identity != nil && r.Bot.Identity.Kind == BotKindAIAgent
+		if r.Bot == nil || r.Bot.Identity == nil {
+			return false
+		}
+		return r.Bot.Identity.Kind == BotKindAIAgent && !r.Bot.Identity.Spoofed
 	})
 }
 
@@ -465,6 +472,13 @@ type BotReason struct {
 
 // BotIdentity describes the primary bot detected for a request. Only Arcjet
 // Cloud produces it; see [BotReason.Identity].
+//
+// A bot identity is not authorization. [BotEvidenceUnverified] is only what
+// the User-Agent claims. [BotEvidenceSignature] identifies the operator of the
+// signing key directory, which can be a hosted-browser platform such as
+// Browserbase, not the end user or what they intend. [BotEvidenceIP] is only
+// as reliable as the client IP the SDK resolves, so set [Config.Proxies] when
+// the application runs behind a proxy or load balancer.
 type BotIdentity struct {
 	// Kind is what kind of client the bot is. It is always one of the BotKind
 	// constants.
@@ -479,6 +493,10 @@ type BotIdentity struct {
 	// Evidence is how the identity was established. An identity with evidence
 	// this SDK version does not recognize is dropped, so it is never empty.
 	Evidence BotEvidence `json:"evidence,omitempty"`
+	// Spoofed means the bot was claimed, but IP or reverse DNS verification
+	// showed the request did not come from its operator. Evidence is then
+	// [BotEvidenceUnverified].
+	Spoofed bool `json:"spoofed,omitempty"`
 }
 
 // BotKind classifies the client behind a [BotIdentity]. Values are stored in
