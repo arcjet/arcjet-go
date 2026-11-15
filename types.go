@@ -476,8 +476,8 @@ type BotIdentity struct {
 	// It is set only when a verified Web Bot Auth signature proves it, that
 	// is, with [BotEvidenceSignature]; it is empty otherwise.
 	Operator string `json:"operator,omitempty"`
-	// Evidence is how the identity was established. It is empty when Arcjet
-	// Cloud reported evidence this SDK version does not recognize.
+	// Evidence is how the identity was established. An identity with evidence
+	// this SDK version does not recognize is dropped, so it is never empty.
 	Evidence BotEvidence `json:"evidence,omitempty"`
 }
 

@@ -202,18 +202,16 @@ func TestDecisionFromProtoBotIdentity(t *testing.T) {
 		decidev1.BotKind_BOT_KIND_OTHER:      BotKindOther,
 	}
 	for in, out := range kinds {
-		id := decisionFromProto(botDecision(&decidev1.BotIdentity{Kind: in})).Reason.Bot.Identity
+		id := decisionFromProto(botDecision(&decidev1.BotIdentity{Kind: in, Evidence: decidev1.BotEvidence_BOT_EVIDENCE_UNVERIFIED})).Reason.Bot.Identity
 		if id == nil || id.Kind != out {
 			t.Fatalf("kind %v = %#v, want %q", in, id, out)
 		}
 	}
 	evidence := map[decidev1.BotEvidence]BotEvidence{
-		decidev1.BotEvidence_BOT_EVIDENCE_UNSPECIFIED: "",
 		decidev1.BotEvidence_BOT_EVIDENCE_UNVERIFIED:  BotEvidenceUnverified,
 		decidev1.BotEvidence_BOT_EVIDENCE_FINGERPRINT: BotEvidenceFingerprint,
 		decidev1.BotEvidence_BOT_EVIDENCE_IP:          BotEvidenceIP,
 		decidev1.BotEvidence_BOT_EVIDENCE_SIGNATURE:   BotEvidenceSignature,
-		decidev1.BotEvidence(999):                     "",
 	}
 	for in, out := range evidence {
 		id := decisionFromProto(botDecision(&decidev1.BotIdentity{Kind: decidev1.BotKind_BOT_KIND_OTHER, Evidence: in})).Reason.Bot.Identity
@@ -222,12 +220,14 @@ func TestDecisionFromProtoBotIdentity(t *testing.T) {
 		}
 	}
 
-	// No identity, an unspecified kind, or a kind this SDK does not know all
-	// leave Identity nil rather than inventing one.
+	// No identity, or an unspecified or unknown kind or evidence, all leave
+	// Identity nil rather than inventing one.
 	for name, identity := range map[string]*decidev1.BotIdentity{
-		"unset":       nil,
-		"unspecified": {Kind: decidev1.BotKind_BOT_KIND_UNSPECIFIED, BotId: "OPENAI_CRAWLER_USER"},
-		"unknown":     {Kind: decidev1.BotKind(999), BotId: "OPENAI_CRAWLER_USER", Evidence: decidev1.BotEvidence_BOT_EVIDENCE_IP},
+		"unset":                nil,
+		"unspecified":          {Kind: decidev1.BotKind_BOT_KIND_UNSPECIFIED, BotId: "OPENAI_CRAWLER_USER"},
+		"unknown":              {Kind: decidev1.BotKind(999), BotId: "OPENAI_CRAWLER_USER", Evidence: decidev1.BotEvidence_BOT_EVIDENCE_IP},
+		"unspecified evidence": {Kind: decidev1.BotKind_BOT_KIND_AI_AGENT, BotId: "OPENAI_CRAWLER_USER"},
+		"unknown evidence":     {Kind: decidev1.BotKind_BOT_KIND_AI_AGENT, BotId: "OPENAI_CRAWLER_USER", Evidence: decidev1.BotEvidence(999)},
 	} {
 		got := decisionFromProto(botDecision(identity))
 		if got.Reason.Type != ReasonBot || got.Reason.Bot == nil {
