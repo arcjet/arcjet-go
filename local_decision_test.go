@@ -135,6 +135,51 @@ func TestLocalEvaluatorBotCategoryConstants(t *testing.T) {
 	}
 }
 
+// TestLocalEvaluatorDetectsBotsAddedInCatalog83616dc runs the vendored wasm
+// with each new bot's User-Agent, so a wasm refreshed from an older catalog
+// fails. Meta Muse, also new, has no User-Agent pattern: it is identified only
+// by its signature, which Arcjet Cloud verifies.
+func TestLocalEvaluatorDetectsBotsAddedInCatalog83616dc(t *testing.T) {
+	for _, tc := range []struct {
+		botID     string
+		category  string
+		userAgent string
+	}{
+		{
+			"AI_MANAGED_AGENTS_AGENT", BotCategoryMonitor,
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 AIManagedAgents-Agent/1.0 (+https://agents.needmomentum.com/)",
+		},
+		{"ENFILADE_CRAWLER", BotCategoryUnknown, "EnfiladeBot/1.0 (+https://enfilade.guide/en/about-our-crawler)"},
+		{"FEEDER_ANDROID_FEEDFETCHER", BotCategoryFeedFetcher, "SpaceCowboys Android RSS Reader / 2.21.2(4040)"},
+		{"READ_YOU_FEEDFETCHER", BotCategoryFeedFetcher, "ReadYou/0.16.2(47)"},
+	} {
+		t.Run(tc.botID, func(t *testing.T) {
+			for _, entity := range []string{tc.botID, tc.category} {
+				opts := BotOptions{Mode: ModeLive, Deny: []string{entity}}
+				evaluator, err := newLocalEvaluator(context.Background(), []Rule{DetectBot(opts)}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				decision, err := evaluator.detectBot(context.Background(), opts, ProtectDetails{
+					IP:      "127.0.0.1",
+					Headers: map[string]string{"user-agent": tc.userAgent},
+				})
+				evaluator.close(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if decision == nil || !decision.liveDeny() {
+					t.Fatalf("expected a deny list of %s to deny %q, got %#v", entity, tc.userAgent, decision)
+				}
+				denied := decision.decision.GetReason().GetBotV2().GetDenied()
+				if !slices.Contains(denied, tc.botID) {
+					t.Fatalf("expected %s in denied, got %v", tc.botID, denied)
+				}
+			}
+		})
+	}
+}
+
 // TestLocalEvaluatorAIAgentAllowList checks that allowing BotCategoryAIAgent
 // lets an AI agent through but still denies an AI crawler, which is in
 // BotCategoryAI only.
