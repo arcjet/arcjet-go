@@ -210,6 +210,46 @@ func TestDecisionFromProtoBotIdentity(t *testing.T) {
 		t.Fatal("IsAIAgent() = true for a spoofed AI agent identity")
 	}
 
+	// A delegated Personal Agent Protocol session maps through with a
+	// signature.
+	delegated := decisionFromProto(botDecision(&decidev1.BotIdentity{
+		Kind:      decidev1.BotKind_BOT_KIND_AI_AGENT,
+		BotId:     "OPENAI_CRAWLER_USER",
+		Operator:  "chatgpt.com",
+		Evidence:  decidev1.BotEvidence_BOT_EVIDENCE_SIGNATURE,
+		Delegated: true,
+	}))
+	wantDelegated := &BotIdentity{Kind: BotKindAIAgent, BotID: "OPENAI_CRAWLER_USER", Operator: "chatgpt.com", Evidence: BotEvidenceSignature, Delegated: true}
+	if delegated.Reason.Bot == nil || !reflect.DeepEqual(delegated.Reason.Bot.Identity, wantDelegated) {
+		t.Fatalf("delegated identity = %#v, want %#v", delegated.Reason.Bot, wantDelegated)
+	}
+	if !delegated.IsAIAgent() {
+		t.Fatal("IsAIAgent() = false for a delegated AI agent identity")
+	}
+
+	// Only a signature can prove a delegated session, so delegated with any
+	// other evidence is dropped.
+	for _, ev := range []decidev1.BotEvidence{
+		decidev1.BotEvidence_BOT_EVIDENCE_UNVERIFIED,
+		decidev1.BotEvidence_BOT_EVIDENCE_FINGERPRINT,
+		decidev1.BotEvidence_BOT_EVIDENCE_IP,
+	} {
+		id := decisionFromProto(botDecision(&decidev1.BotIdentity{
+			Kind:      decidev1.BotKind_BOT_KIND_AI_AGENT,
+			BotId:     "OPENAI_CRAWLER_USER",
+			Evidence:  ev,
+			Delegated: true,
+		})).Reason.Bot.Identity
+		if id == nil || id.Delegated {
+			t.Fatalf("evidence %v: identity = %#v, want Delegated false", ev, id)
+		}
+	}
+
+	// A signed identity without the field is not delegated.
+	if got.Reason.Bot.Identity.Delegated {
+		t.Fatal("Delegated = true for an identity without the delegated field")
+	}
+
 	kinds := map[decidev1.BotKind]BotKind{
 		decidev1.BotKind_BOT_KIND_AI_AGENT:   BotKindAIAgent,
 		decidev1.BotKind_BOT_KIND_AI_CRAWLER: BotKindAICrawler,
@@ -292,6 +332,7 @@ func TestBotKindAndEvidenceUnmarshalJSON(t *testing.T) {
 	for _, in := range []BotReason{
 		{Denied: []string{"X"}, Identity: &BotIdentity{Kind: BotKindAIAgent, BotID: "X", Evidence: BotEvidenceIP}},
 		{Denied: []string{"X"}, Identity: &BotIdentity{Kind: BotKindAIAgent, BotID: "X", Evidence: BotEvidenceUnverified, Spoofed: true}},
+		{Denied: []string{"X"}, Identity: &BotIdentity{Kind: BotKindAIAgent, BotID: "X", Operator: "chatgpt.com", Evidence: BotEvidenceSignature, Delegated: true}},
 	} {
 		data, err := json.Marshal(in)
 		if err != nil {
@@ -307,6 +348,20 @@ func TestBotKindAndEvidenceUnmarshalJSON(t *testing.T) {
 	r := parseReason(json.RawMessage(`{"botV2":{"identity":{"kind":"BOT_KIND_AI_AGENT","botId":"X","evidence":"BOT_EVIDENCE_UNVERIFIED","spoofed":true}}}`))
 	if r.Bot == nil || r.Bot.Identity == nil || !r.Bot.Identity.Spoofed {
 		t.Fatalf("JSON wire spoofed identity = %#v", r.Bot)
+	}
+
+	// The JSON wire form carries delegated, kept only with a signature.
+	r = parseReason(json.RawMessage(`{"botV2":{"identity":{"kind":"BOT_KIND_AI_AGENT","botId":"X","operator":"chatgpt.com","evidence":"BOT_EVIDENCE_SIGNATURE","delegated":true}}}`))
+	if r.Bot == nil || r.Bot.Identity == nil || !r.Bot.Identity.Delegated {
+		t.Fatalf("JSON wire delegated identity = %#v", r.Bot)
+	}
+	r = parseReason(json.RawMessage(`{"botV2":{"identity":{"kind":"BOT_KIND_AI_AGENT","botId":"X","evidence":"BOT_EVIDENCE_IP","delegated":true}}}`))
+	if r.Bot == nil || r.Bot.Identity == nil || r.Bot.Identity.Delegated {
+		t.Fatalf("JSON wire delegated identity without a signature = %#v", r.Bot)
+	}
+	r = parseReason(json.RawMessage(`{"botV2":{"identity":{"kind":"BOT_KIND_AI_AGENT","botId":"X","evidence":"BOT_EVIDENCE_SIGNATURE"}}}`))
+	if r.Bot == nil || r.Bot.Identity == nil || r.Bot.Identity.Delegated {
+		t.Fatalf("JSON wire identity without delegated = %#v", r.Bot)
 	}
 }
 

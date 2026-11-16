@@ -443,6 +443,9 @@ Signals with no named bot), or `BotKindOther`. `Identity.Evidence` is
 `arcjet.BotEvidenceUnverified`, `BotEvidenceFingerprint`, `BotEvidenceIP`, or
 `BotEvidenceSignature`, from weakest to strongest. `Identity.Operator` is the
 operator's hostname, set only when a verified signature proves it.
+`Identity.Delegated` is true when the agent presented a verified Personal Agent
+Protocol session, so it acts for a user who delegated access to it. It is set
+only with `BotEvidenceSignature`, and the user is never identified.
 
 `decision.IsAIAgent()` reports an AI product fetching on demand for a person,
 such as ChatGPT-User or Claude-User:

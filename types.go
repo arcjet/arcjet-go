@@ -497,6 +497,11 @@ type BotIdentity struct {
 	// showed the request did not come from its operator. Evidence is then
 	// [BotEvidenceUnverified].
 	Spoofed bool `json:"spoofed,omitempty"`
+	// Delegated reports that the agent presented a verified Personal Agent
+	// Protocol session, so it acts for a user who delegated access to it. The
+	// user is never identified. It is set only with [BotEvidenceSignature]; it
+	// is false otherwise.
+	Delegated bool `json:"delegated,omitempty"`
 }
 
 // BotKind classifies the client behind a [BotIdentity]. Values are stored in

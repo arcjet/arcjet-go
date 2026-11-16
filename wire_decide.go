@@ -156,12 +156,16 @@ var reasonParsers = []struct {
 // parseBotReason decodes a bot reason. An identity whose kind or evidence the
 // SDK does not recognize (or that is unspecified) is dropped rather than
 // reported with an empty value, so BotReason.Identity is either nil or has a
-// known BotKind and BotEvidence.
+// known BotKind and BotEvidence. Delegated is kept only with
+// BotEvidenceSignature, the only evidence that can prove a delegated session.
 func parseBotReason(v json.RawMessage) (Reason, error) {
 	var r BotReason
 	err := json.Unmarshal(v, &r)
 	if r.Identity != nil && (r.Identity.Kind == "" || r.Identity.Evidence == "") {
 		r.Identity = nil
+	}
+	if r.Identity != nil && r.Identity.Evidence != BotEvidenceSignature {
+		r.Identity.Delegated = false
 	}
 	return Reason{Type: ReasonBot, Bot: &r}, err
 }
