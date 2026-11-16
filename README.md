@@ -433,6 +433,44 @@ its published ranges — which you may want to allow even when other signals
 would deny. `decision.IsMissingUserAgent()` reports a request a bot rule denied
 for having no `User-Agent` header, a common sign of an automated client.
 
+### Bot identity
+
+When Arcjet Cloud detects a bot, the bot reason carries the primary bot it
+found in `Reason.Bot.Identity`: the one with the strongest evidence when a
+request matches several. `Identity.Kind` is `arcjet.BotKindAIAgent`,
+`BotKindAICrawler`, `BotKindAutomation` (browser automation found by Arcjet
+Signals with no named bot), or `BotKindOther`. `Identity.Evidence` is
+`arcjet.BotEvidenceUnverified`, `BotEvidenceFingerprint`, `BotEvidenceIP`, or
+`BotEvidenceSignature`, from weakest to strongest. `Identity.Operator` is the
+operator's hostname, set only when a verified signature proves it.
+`Identity.Delegated` is true when the agent presented a verified Personal Agent
+Protocol session, so it acts for a user who delegated access to it. It is set
+only with `BotEvidenceSignature`, and the user is never identified.
+
+`decision.IsAIAgent()` reports an AI product fetching on demand for a person,
+such as ChatGPT-User or Claude-User:
+
+```go
+if decision.IsAIAgent() {
+	// Serve a lighter, agent-friendly response.
+}
+```
+
+`Identity` is nil when no bot was detected and on decisions the SDK makes
+locally, so `IsAIAgent()` relies on Arcjet Cloud results. `Identity.Spoofed` is
+true when a bot was claimed but IP or reverse DNS verification showed the
+request did not come from its operator; `IsAIAgent()` is false for such an
+identity.
+
+A bot identity is not authorization:
+
+- `BotEvidenceUnverified` is only what the User-Agent claims.
+- `BotEvidenceSignature` identifies the operator of the signing key directory,
+  which can be a hosted-browser platform such as Browserbase. It does not
+  identify the end user or what they intend.
+- `BotEvidenceIP` is only as reliable as the client IP the SDK resolves. Set
+  `Config.Proxies` when your application runs behind a proxy or load balancer.
+
 See the [Bot Protection docs](https://docs.arcjet.com/bot-protection) for more
 details.
 

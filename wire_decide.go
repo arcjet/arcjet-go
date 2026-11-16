@@ -119,16 +119,8 @@ var reasonParsers = []struct {
 		err := json.Unmarshal(v, &r)
 		return Reason{Type: ReasonRateLimit, RateLimit: &r}, err
 	}},
-	{"botV2", func(v json.RawMessage) (Reason, error) {
-		var r BotReason
-		err := json.Unmarshal(v, &r)
-		return Reason{Type: ReasonBot, Bot: &r}, err
-	}},
-	{"bot", func(v json.RawMessage) (Reason, error) {
-		var r BotReason
-		err := json.Unmarshal(v, &r)
-		return Reason{Type: ReasonBot, Bot: &r}, err
-	}},
+	{"botV2", parseBotReason},
+	{"bot", parseBotReason},
 	{"shield", func(v json.RawMessage) (Reason, error) {
 		var r ShieldReason
 		err := json.Unmarshal(v, &r)
@@ -159,6 +151,23 @@ var reasonParsers = []struct {
 		err := json.Unmarshal(v, &e)
 		return Reason{Type: ReasonError, Message: e.Message}, err
 	}},
+}
+
+// parseBotReason decodes a bot reason. An identity whose kind or evidence the
+// SDK does not recognize (or that is unspecified) is dropped rather than
+// reported with an empty value, so BotReason.Identity is either nil or has a
+// known BotKind and BotEvidence. Delegated is kept only with
+// BotEvidenceSignature, the only evidence that can prove a delegated session.
+func parseBotReason(v json.RawMessage) (Reason, error) {
+	var r BotReason
+	err := json.Unmarshal(v, &r)
+	if r.Identity != nil && (r.Identity.Kind == "" || r.Identity.Evidence == "") {
+		r.Identity = nil
+	}
+	if r.Identity != nil && r.Identity.Evidence != BotEvidenceSignature {
+		r.Identity.Delegated = false
+	}
+	return Reason{Type: ReasonBot, Bot: &r}, err
 }
 
 func parseReason(raw json.RawMessage) Reason {
