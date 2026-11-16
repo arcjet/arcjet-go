@@ -269,7 +269,7 @@ enforcing.
 go get github.com/arcjet/arcjet-go
 ```
 
-The SDK requires Go 1.25 or later.
+The SDK requires Go 1.26 or later.
 
 ## Prompt injection detection
 

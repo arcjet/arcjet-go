@@ -116,23 +116,11 @@ tidy:
     go -C examples/nethttp mod tidy
     go -C examples/agentframework mod tidy
 
-# Verify go.mod / go.sum are tidy (matches the CI tidy gate); fails if not.
+# Verify go.mod / go.sum are tidy without modifying files or requiring a clean tree.
 tidy-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    go mod tidy
-    go -C tools mod tidy
-    go -C sensitiveinfo/rampart mod tidy
-    go -C agentframework mod tidy
-    go -C examples/nethttp mod tidy
-    go -C examples/agentframework mod tidy
-    files=(go.mod go.sum tools/go.mod tools/go.sum \
-           sensitiveinfo/rampart/go.mod sensitiveinfo/rampart/go.sum \
-           agentframework/go.mod agentframework/go.sum \
-           examples/nethttp/go.mod examples/nethttp/go.sum \
-           examples/agentframework/go.mod examples/agentframework/go.sum)
-    if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
-      echo "error: go.mod / go.sum are not tidy. Run 'just tidy' and commit the changes." >&2
-      git --no-pager diff -- "${files[@]}"
-      exit 1
-    fi
+    go mod tidy -diff
+    go -C tools mod tidy -diff
+    go -C sensitiveinfo/rampart mod tidy -diff
+    go -C agentframework mod tidy -diff
+    go -C examples/nethttp mod tidy -diff
+    go -C examples/agentframework mod tidy -diff

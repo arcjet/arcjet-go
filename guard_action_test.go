@@ -167,8 +167,7 @@ func TestGuardActionOutOfRangePostureFailsClosed(t *testing.T) {
 	ran := false
 	_, err := GuardAction(context.Background(), client, GuardActionPolicy{Action: "refund.issued", OnGuardError: OnGuardError(2)},
 		func(context.Context) (int, error) { ran = true; return 1, nil })
-	var unavailable *GuardUnavailableError
-	if !errors.As(err, &unavailable) {
+	if _, ok := errors.AsType[*GuardUnavailableError](err); !ok {
 		t.Fatalf("err = %v, want *GuardUnavailableError", err)
 	}
 	if ran {
@@ -391,8 +390,7 @@ func TestGuardActionNilFn(t *testing.T) {
 	if !errors.Is(err, ErrNilAction) {
 		t.Fatalf("err = %v, want ErrNilAction", err)
 	}
-	var unavailable *GuardUnavailableError
-	if !errors.As(err, &unavailable) {
+	if _, ok := errors.AsType[*GuardUnavailableError](err); !ok {
 		t.Fatalf("err = %v, want *GuardUnavailableError", err)
 	}
 	if handler.guardCalls != 0 {
@@ -583,8 +581,7 @@ func TestGuardActionDenyWinsOverCoOccurringError(t *testing.T) {
 			OnGuardError: posture,
 			Inputs:       map[string]GuardPolicyInput{"body": GuardPolicyLocalString("user@example.com")},
 		}, func(context.Context) (struct{}, error) { ran = true; return struct{}{}, nil })
-		var denied *GuardDeniedError
-		if !errors.As(err, &denied) {
+		if _, ok := errors.AsType[*GuardDeniedError](err); !ok {
 			t.Fatalf("posture %v: err = %v, want *GuardDeniedError", posture, err)
 		}
 		if ran {

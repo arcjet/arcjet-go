@@ -153,8 +153,7 @@ func TestGuardReturnsWhenTheServerHangs(t *testing.T) {
 	// decodes a deadline_exceeded status off the wire it carries a plain
 	// string and the sentinel is lost. Both happen here, so a caller has to
 	// test the code. Asserting the sentinel either way would be flaky.
-	var connectErr *connect.Error
-	if !errors.As(err, &connectErr) {
+	if _, ok := errors.AsType[*connect.Error](err); !ok {
 		t.Fatalf("err = %#v, want *connect.Error", err)
 	}
 	if got := connect.CodeOf(err); got != connect.CodeDeadlineExceeded {

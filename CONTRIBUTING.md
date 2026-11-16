@@ -17,8 +17,7 @@ Six Go modules live in this repo:
   its ~15 MB embedded model does not ship to applications that do not use it.
 - `./agentframework/go.mod` — integrates Arcjet Guard with Microsoft Agent
   Framework for Go. It stays a separate module because that framework is a
-  public preview whose API may change, and because it needs a newer Go
-  version than the root module.
+  public preview whose API may change.
 - `./tools/go.mod` — a side module that pins development tools via Go's `tool`
   directive. Kept separate so tool transitives don't leak into consumer
   projects.
@@ -103,26 +102,27 @@ to `main`, and in the merge queue:
 
 - **Lint** (arm64, Go 1.26) — verifies `go.mod` / `tools/go.mod` are tidy,
   then runs golangci-lint and `govulncheck` for the SDK and Rampart backend.
-- **Test** (arm64 + amd64, each on Go 1.25 and Go 1.27) — `go build ./...`
-  and `go test -race -shuffle=on ./...`. The Go 1.25 legs are named
+- **Test** (arm64 + amd64, each on Go 1.26 and Go 1.27) — `go build ./...`
+  and `go test -race -shuffle=on ./...`. The Go 1.26 legs are named
   `Test (<os>)` and the Go 1.27 legs `Test (<os>, Go 1.27.x)`.
 - **agentframework module** (arm64, Go 1.26) — verifies
   `agentframework/go.mod` is tidy, then runs golangci-lint, `govulncheck`,
   build, and race tests.
 
-The Go 1.25 Test legs use the latest security-patched Go 1.25 release while
-`go.mod` keeps the public compatibility floor at Go 1.25.0. The Lint job uses
-the latest security-patched Go 1.26 release: `tools/go.mod` requires Go 1.26.0
-(golangci-lint and `govulncheck` are development tools, not part of the SDK's
-compatibility floor), and `govulncheck` then checks the patched standard
-library. Lint does not move to Go 1.27: the pinned golangci-lint panics inside
-staticcheck on the Go 1.27 standard library. The Go 1.27 Test legs use the
-latest Go 1.27 release, because Go 1.27 runs `encoding/json` on json/v2 and the
-SDK builds a different metadata encoder there (`metadata_jsonv2.go`). The
-agentframework job uses the latest security-patched Go 1.26 release to match
-`agentframework/go.mod`'s floor of Go 1.26.0. Action versions are pinned by
-commit SHA and the runner is locked down with `step-security/harden-runner`
-in egress-block mode.
+All six modules share the Go 1.26.0 compatibility floor. CI uses the latest
+security-patched Go 1.26 release for the floor Test legs, Lint, and the
+agentframework job. The tools module stays separate to keep development
+dependencies out of the SDK's consumer graph, not to require a newer Go version.
+Lint does not move to Go 1.27: the pinned golangci-lint panics inside staticcheck
+on the Go 1.27 standard library. For local validation, select a patched Go 1.26
+toolchain explicitly, for example `GOTOOLCHAIN=go1.26.11 just check`. A
+`toolchain` directive would not cap an already-newer Go installation.
+
+The Go 1.27 Test legs use the latest Go 1.27 release, because Go 1.27 runs
+`encoding/json` on json/v2 and the SDK builds a different metadata encoder
+there (`metadata_jsonv2.go`). The Go 1.26 legs also test
+`GOEXPERIMENT=jsonv2`. Action versions are pinned by commit SHA and the runner
+is locked down with `step-security/harden-runner` in egress-block mode.
 
 Changes under `.github/workflows/` also run
 [`.github/workflows/lint-workflows.yml`](.github/workflows/lint-workflows.yml),
@@ -149,15 +149,13 @@ module in a repository subdirectory needs that subdirectory in its tag.
    `replace` directives; downstream consumers ignore them. Leave
    `examples/agentframework/go.mod`'s `agentframework` requirement alone; it
    moves only with an agentframework release.
-4. Run `just tidy`. Then, with Go 1.25, run
-   `just fmt-check tidy-check build test`,
+4. With the latest patched Go 1.26 toolchain selected (for example,
+   `export GOTOOLCHAIN=go1.26.11`), run `just tidy`, then
+   `just fmt-check tidy-check lint lint-examples vuln build test`,
    `go -C examples/nethttp test ./...`, and
-   `go -C examples/agentframework test ./...`, and run `just lint vuln` with
-   the latest Go 1.26 release. The `just` recipes are the parts of `just check`,
-   split across two toolchains: the pinned golangci-lint panics on Go 1.27, and
-   on Go 1.25 the automatic toolchain switch runs the tools module (and builds
-   the agentframework module) with go1.26.0, whose standard-library
-   vulnerabilities fail `just vuln`.
+   `go -C examples/agentframework test ./...`. This uses the same toolchain
+   for the SDK and development tools, avoids the Go 1.27 linter panic, and
+   checks the patched standard library with `govulncheck`.
 5. Review the exported API changes since the previous release. Once v1 is
    published, incompatible API changes require a new major module version.
 6. Merge the release PR to `main`, then run the
