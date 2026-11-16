@@ -125,7 +125,7 @@ func platformIPDetails(r *http.Request, platform hostingPlatform, proxies []trus
 	case platformFlyIo:
 		return details(r.Header.Get("Fly-Client-Ip"), "fly-client-ip")
 	case platformVercel:
-		if found := details(r.Header.Get("X-Real-Ip"), "x-real-ip"); found.IP != "" {
+		if found := details(r.Header.Get("X-Real-IP"), "x-real-ip"); found.IP != "" {
 			return found
 		}
 		if ip := rightmostUntrustedXFF(r.Header.Get("X-Vercel-Forwarded-For"), proxies); ip != "" {
@@ -146,7 +146,7 @@ func platformIPDetails(r *http.Request, platform hostingPlatform, proxies []trus
 	case platformRailway:
 		// Railway sets X-Real-IP to the original client IP.
 		// https://docs.railway.com/networking/public-networking/specs-and-limits#technical-specifications
-		return details(r.Header.Get("X-Real-Ip"), "x-real-ip")
+		return details(r.Header.Get("X-Real-IP"), "x-real-ip")
 	}
 	return ClientIPDetails{Provenance: ClientIPProvenanceNone}
 }
