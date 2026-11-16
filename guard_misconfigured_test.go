@@ -89,8 +89,7 @@ func TestGuardActionDeniesEveryMisconfiguredClassUnderAllow(t *testing.T) {
 			ran := false
 			_, err := GuardAction(context.Background(), client, tc.policy,
 				func(context.Context) (struct{}, error) { ran = true; return struct{}{}, nil })
-			var unavailable *GuardUnavailableError
-			if !errors.As(err, &unavailable) {
+			if _, ok := errors.AsType[*GuardUnavailableError](err); !ok {
 				t.Fatalf("err = %v, want *GuardUnavailableError", err)
 			}
 			if !errors.Is(err, tc.cause) {

@@ -44,7 +44,7 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # Run govulncheck on the patched Go 1.26 standard library. The test
-          # matrix still covers the public Go 1.25 compatibility floor. The
+          # matrix also covers the public Go 1.26 compatibility floor. The
           # pinned golangci-lint panics on the Go 1.27 standard library.
           go-version: 1.26.x
           check-latest: true
@@ -104,7 +104,7 @@ jobs:
         run: go -C examples/nethttp test ./...
 
   test:
-    # The 1.25.x leg keeps the bare "Test (<os>)" name because the main
+    # The 1.26.x leg keeps the bare "Test (<os>)" name because the main
     # branch ruleset requires those check names.
     name: Test (${{ matrix.os }}${{ matrix.go-label }})
     strategy:
@@ -116,7 +116,7 @@ jobs:
         # output for invalid UTF-8, so the SDK builds a different metadata
         # encoder there (metadata_jsonv2.go rather than metadata_json.go).
         # Passing on the floor is not proof of passing on the newest release.
-        go: [1.25.x, 1.27.x]
+        go: [1.26.x, 1.27.x]
         include:
           - go: 1.27.x
             go-label: ", Go 1.27.x"
@@ -159,11 +159,11 @@ jobs:
         run: go test -race -shuffle=on ./...
 
       - name: Test with GOEXPERIMENT=jsonv2
-        # On Go 1.25 and 1.26 this experiment runs encoding/json on json/v2
+        # On Go 1.26 this experiment runs encoding/json on json/v2
         # and builds metadata_jsonv2_experiment.go, which no other leg
-        # compiles. Running it on the 1.25.x leg puts that file under a
+        # compiles. Running it on the 1.26.x leg puts that file under a
         # required check.
-        if: matrix.go == '1.25.x'
+        if: matrix.go == '1.26.x'
         env:
           GOEXPERIMENT: jsonv2
         run: go test -shuffle=on ./...
@@ -209,8 +209,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # The agentframework module requires Go 1.26 because Microsoft
-          # Agent Framework does. The root test matrix covers Go 1.25.
+          # Use the same patched Go 1.26 toolchain as the Lint job.
           go-version: 1.26.x
           check-latest: true
           cache-dependency-path: |

@@ -22,7 +22,7 @@ import (
 // valid value encodes to the same bytes.
 //
 // metadata_jsonv2_experiment.go is the same function for GOEXPERIMENT=jsonv2
-// on Go 1.25 and 1.26. It is a separate file because go.mod's go line is 1.25,
+// on Go 1.26. It is a separate file because go.mod's go line is 1.26,
 // and a Go 1.27 toolchain refuses the json/v2 API in a file of that version
 // unless its build constraint requires go1.27.
 func marshalJSON(value any) (string, error) {

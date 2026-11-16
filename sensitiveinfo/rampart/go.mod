@@ -1,6 +1,6 @@
 module github.com/arcjet/arcjet-go/sensitiveinfo/rampart
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/arcjet/arcjet-go v1.3.0

@@ -1,6 +1,6 @@
 module github.com/arcjet/arcjet-go/examples/nethttp
 
-go 1.25.0
+go 1.26.0
 
 // Use the SDK from this repository so changes are picked up without a release.
 // Remove this line to build against a published version.

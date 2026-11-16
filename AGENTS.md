@@ -58,9 +58,10 @@ release:
 | `examples/nethttp/`        | Runnable example server                                                            | Tidy-checked; compiled in the Lint job   |
 | `examples/agentframework/` | Runnable Microsoft Agent Framework example                                         | Tidy-checked; compiled in the 1.26 job   |
 
-The `agentframework` module needs Go 1.26 and has its own CI job; the `just`
-recipes cover it, and running them on a Go 1.25 machine downloads the 1.26
-toolchain on first use.
+All modules require Go 1.26.0 or later. Use the latest patched Go 1.26
+toolchain for local validation (for example, `GOTOOLCHAIN=go1.26.11 just check`);
+the pinned golangci-lint is not compatible with Go 1.27. The `agentframework`
+module retains its own CI job and is covered by the `just` recipes.
 
 The `just` recipes (`build`, `test`, `lint`, `tidy`) and CI fan out over the
 root, the rampart module, and the agentframework module, so `just check`
