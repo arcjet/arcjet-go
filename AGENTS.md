@@ -124,3 +124,8 @@ edit anything under `internal/local/*` that affects the generated bindings:
   collision when linked beside the monorepo's canonical decide proto; the
   Connect wire route is pinned by hand in the `*connect` packages. Do not
   hand-edit the `*.pb.go` files.
+- Releases are prepared by Release Please from conventional commit messages
+  (`feat:`, `fix:`, `deps:`, ...). Do not hand-edit `Version` in `types.go`,
+  the `x-release-please-version` requirement lines in the `go.mod` files, or
+  `.github/.release-please-manifest.json`; the release PR moves them together.
+  See [docs/RELEASING.md](docs/RELEASING.md).
