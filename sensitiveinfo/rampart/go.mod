@@ -4,16 +4,16 @@ go 1.26.0
 
 require (
 	github.com/arcjet/arcjet-go v1.3.0
-	golang.org/x/text v0.41.0
+	golang.org/x/text v0.44.0
 )
 
 require (
-	connectrpc.com/connect v1.21.0 // indirect
+	connectrpc.com/connect v1.21.1 // indirect
 	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	go.jetify.com/typeid v1.3.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 

@@ -277,7 +277,7 @@ func TestProtectUsesPlatformHeaderWhenEnvSet(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://example.com/", http.NoBody)
 	req.RemoteAddr = "10.0.0.1:443"
-	req.Header.Set("X-Real-Ip", "203.0.113.42")
+	req.Header.Set("X-Real-IP", "203.0.113.42")
 
 	client, err := NewClient(Config{Key: "ajkey_test"})
 	if err != nil {
