@@ -239,6 +239,14 @@ type EntityType string
 // LogValue implements [slog.LogValuer] so EntityType logs as its string form.
 func (e EntityType) LogValue() slog.Value { return slog.StringValue(string(e)) }
 
+// ModerationCategory classifies harmful content found by a content moderation
+// rule. See constants.go for the known categories.
+type ModerationCategory string
+
+// LogValue implements [slog.LogValuer] so ModerationCategory logs as its string
+// form.
+func (c ModerationCategory) LogValue() slog.Value { return slog.StringValue(string(c)) }
+
 // ArcjetError describes an error returned by Arcjet or a local guard rule.
 type ArcjetError struct {
 	Code    string `json:"code,omitempty"`

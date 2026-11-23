@@ -75,3 +75,13 @@ const (
 	SensitiveInfoState            EntityType = "STATE"
 	SensitiveInfoZipCode          EntityType = "ZIP_CODE"
 )
+
+// Content moderation categories reported in
+// GuardModerateContentResult.DetectedCategories. Arcjet may add categories, so
+// match on these without assuming the list is complete.
+const (
+	ModerationCategorySexuallyExplicit ModerationCategory = "SEXUALLY_EXPLICIT"
+	ModerationCategoryMisconduct       ModerationCategory = "MISCONDUCT"
+	ModerationCategoryHateSpeech       ModerationCategory = "HATE_SPEECH"
+	ModerationCategoryInsults          ModerationCategory = "INSULTS"
+)

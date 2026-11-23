@@ -1415,7 +1415,12 @@ for _, result := range decision.Results {
 	case result.PromptInjection != nil:
 		log.Printf("prompt injection detected=%v", result.PromptInjection.Detected)
 	case result.ModerateContent != nil:
-		log.Printf("content moderation detected=%v", result.ModerateContent.Detected)
+		// Detected is authoritative; DetectedCategories (such as
+		// arcjet.ModerationCategoryHateSpeech) can be empty, for example
+		// from an older server. Scores are never returned.
+		log.Printf("content moderation detected=%v categories=%v",
+			result.ModerateContent.Detected,
+			result.ModerateContent.DetectedCategories)
 	case result.LocalSensitiveInfo != nil:
 		log.Printf("sensitive info detected=%v types=%v",
 			result.LocalSensitiveInfo.Detected,
