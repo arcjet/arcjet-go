@@ -325,6 +325,16 @@ type GuardModerateContentResult struct {
 	Conclusion Conclusion         `json:"conclusion"`
 	Detected   bool               `json:"detected"`
 	Billing    *GuardBillingUsage `json:"billing,omitempty"`
+	// DetectedCategories lists the categories of harmful content detected,
+	// such as "HATE_SPEECH" or "INSULTS", in a fixed order rather than by
+	// score. Scores and thresholds are never returned.
+	//
+	// Detected is authoritative. DetectedCategories is empty when nothing was
+	// detected, and can also be empty when harmful content was detected but
+	// categories are unavailable, for example from an older server. New
+	// categories may be added, so treat an unrecognized value as harmful
+	// content of an unknown kind.
+	DetectedCategories []ModerationCategory `json:"detectedCategories,omitempty"`
 }
 
 // GuardBillingUsage contains metered usage for a Guard rule evaluation.

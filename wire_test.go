@@ -1081,3 +1081,29 @@ func TestConclusionUnmarshalJSONAcceptsAnEnumNumber(t *testing.T) {
 		t.Fatal("an object decoded as a conclusion")
 	}
 }
+
+func TestGuardDecisionFromProtoModerationCategories(t *testing.T) {
+	var populated decidev2.GuardResponse
+	if err := protojson.Unmarshal([]byte(`{"decision":{"ruleResults":[{"type":"GUARD_RULE_TYPE_MODERATE_CONTENT","moderateContent":{"conclusion":"GUARD_CONCLUSION_DENY","detected":true,"detectedCategories":["HATE_SPEECH","INSULTS","SOME_FUTURE_CATEGORY"]}}]}}`), &populated); err != nil {
+		t.Fatal(err)
+	}
+	mc := guardDecisionFromProto(&populated).Results[0].ModerateContent
+	if mc == nil || !mc.Detected {
+		t.Fatalf("moderation result not decoded: %#v", mc)
+	}
+	want := []ModerationCategory{ModerationCategoryHateSpeech, ModerationCategoryInsults, "SOME_FUTURE_CATEGORY"}
+	if !reflect.DeepEqual(mc.DetectedCategories, want) {
+		t.Fatalf("categories = %v, want %v (order and unknown values preserved)", mc.DetectedCategories, want)
+	}
+
+	// An older server sends no categories even when it detected something:
+	// Detected stays authoritative and the list is empty.
+	var older decidev2.GuardResponse
+	if err := protojson.Unmarshal([]byte(`{"decision":{"ruleResults":[{"type":"GUARD_RULE_TYPE_MODERATE_CONTENT","moderateContent":{"conclusion":"GUARD_CONCLUSION_DENY","detected":true}}]}}`), &older); err != nil {
+		t.Fatal(err)
+	}
+	mc = guardDecisionFromProto(&older).Results[0].ModerateContent
+	if mc == nil || !mc.Detected || len(mc.DetectedCategories) != 0 {
+		t.Fatalf("missing categories should decode as empty with Detected kept: %#v", mc)
+	}
+}
