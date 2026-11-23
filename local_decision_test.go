@@ -180,6 +180,65 @@ func TestLocalEvaluatorDetectsBotsAddedInCatalog83616dc(t *testing.T) {
 	}
 }
 
+// TestLocalEvaluatorDetectsBotsAddedInCatalogc413909 checks each new bot
+// against both its ID and category using the vendored wasm.
+func TestLocalEvaluatorDetectsBotsAddedInCatalogc413909(t *testing.T) {
+	evaluator := newLazyLocalEvaluator(nil)
+	defer evaluator.close(context.Background())
+
+	for _, tc := range []struct {
+		botID     string
+		category  string
+		userAgent string
+	}{
+		{"AGENTDRIVES_AGENT", BotCategoryAI, "AgentDrivesAgent/1.0"},
+		{"ANTHROPIC_CLAUDE_AGENT", BotCategoryAIAgent, "Claude-Agent/1.0"},
+		{"DART_HTTP", BotCategoryProgrammatic, "Dart/3.0 (dart:io)"},
+		{"ERLANG_HACKNEY", BotCategoryProgrammatic, "hackney/1.20"},
+		{"GO_COLLY", BotCategoryProgrammatic, "gocolly/colly"},
+		{"GO_RESTY", BotCategoryProgrammatic, "go-resty/2.0"},
+		{"JAVA_HTTP_CLIENT", BotCategoryProgrammatic, "Java-http-client/21"},
+		{"JAVA_URLCONNECTION", BotCategoryProgrammatic, "Java/21"},
+		{"JAVASCRIPT_BUN", BotCategoryProgrammatic, "Bun/1.0"},
+		{"JAVASCRIPT_DENO", BotCategoryProgrammatic, "Deno/2.0"},
+		{"JAVASCRIPT_NEEDLE", BotCategoryProgrammatic, "Needle/3.0"},
+		{"JAVASCRIPT_NODEJS_FETCH", BotCategoryProgrammatic, "node"},
+		{"JAVASCRIPT_UNDICI", BotCategoryProgrammatic, "undici"},
+		{"PERL_WWW_MECHANIZE", BotCategoryProgrammatic, "WWW-Mechanize/2.0"},
+		{"PHP_GUZZLE", BotCategoryProgrammatic, "GuzzleHttp/7.0"},
+		{"POWERSHELL", BotCategoryTool, "PowerShell/7.0"},
+		{"PYTHON_HTTPLIB2", BotCategoryProgrammatic, "Python-httplib2/0.22"},
+		{"PYTHON_PYCURL", BotCategoryProgrammatic, "PycURL/7.45"},
+		{"PYTHON_URLLIB3", BotCategoryProgrammatic, "python-urllib3/2.0"},
+		{"RUBY_FARADAY", BotCategoryProgrammatic, "Faraday v2.0"},
+		{"RUBY_HTTP_RB", BotCategoryProgrammatic, "http.rb/5.0"},
+		{"RUBY_MECHANIZE", BotCategoryProgrammatic, "sparklemotion/mechanize"},
+		{"RUBY_NET_HTTP", BotCategoryProgrammatic, "Ruby"},
+		{"RUBY_REST_CLIENT", BotCategoryProgrammatic, "rest-client/2.0"},
+		{"RUBY_TYPHOEUS", BotCategoryProgrammatic, "typhoeus/typhoeus"},
+	} {
+		t.Run(tc.botID, func(t *testing.T) {
+			for _, entity := range []string{tc.botID, tc.category} {
+				opts := BotOptions{Mode: ModeLive, Deny: []string{entity}}
+				decision, err := evaluator.detectBot(context.Background(), opts, ProtectDetails{
+					IP:      "127.0.0.1",
+					Headers: map[string]string{"user-agent": tc.userAgent},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if decision == nil || !decision.liveDeny() {
+					t.Fatalf("expected a deny list of %s to deny %q, got %#v", entity, tc.userAgent, decision)
+				}
+				denied := decision.decision.GetReason().GetBotV2().GetDenied()
+				if !slices.Contains(denied, tc.botID) {
+					t.Fatalf("expected %s in denied, got %v", tc.botID, denied)
+				}
+			}
+		})
+	}
+}
+
 // TestLocalEvaluatorAIAgentAllowList checks that allowing BotCategoryAIAgent
 // lets an AI agent through but still denies an AI crawler, which is in
 // BotCategoryAI only.
