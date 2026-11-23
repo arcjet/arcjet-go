@@ -768,6 +768,11 @@ for more details.
 
 ## Redacting sensitive information
 
+> [!WARNING]
+> The `redact` package is deprecated and no longer maintained. Existing
+> versions keep working, but they will not receive fixes, including security
+> fixes, and the package will be removed in a future release.
+
 The `github.com/arcjet/arcjet-go/redact` package detects and redacts sensitive
 information — emails, phone numbers, IP addresses, credit card numbers, and
 custom entities — entirely in-process. The text is never sent to Arcjet, which
