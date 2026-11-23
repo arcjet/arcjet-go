@@ -9,6 +9,9 @@
 //
 // A Redactor compiles the wasm component once and is safe to reuse across many
 // Redact calls. Closing it releases the wasm runtime.
+//
+// Deprecated: package redact is no longer maintained and will not receive
+// fixes, including security fixes. It will be removed in a future release.
 package redact
 
 import (
@@ -23,6 +26,9 @@ import (
 )
 
 // ErrClosed is returned by Redact when the Redactor has been closed.
+//
+// Deprecated: the redact package is no longer maintained and will not receive
+// fixes, including security fixes. It will be removed in a future release.
 var ErrClosed = errors.New("arcjet/redact: redactor is closed")
 
 // Standard sensitive-information entity names recognised by the component. Any
@@ -36,6 +42,9 @@ const (
 )
 
 // Options configures a Redactor.
+//
+// Deprecated: the redact package is no longer maintained and will not receive
+// fixes, including security fixes. It will be removed in a future release.
 type Options struct {
 	// Entities restricts redaction to the named entity types. When empty, every
 	// detected entity is redacted. Names not in the standard set (see the Entity
@@ -73,6 +82,9 @@ type Unredact func(string) string
 // Redactor redacts sensitive information using the Arcjet wasm component. It is
 // safe for concurrent use: many Redact calls may run at once, and Close waits
 // for in-flight calls to finish before tearing down the runtime.
+//
+// Deprecated: the redact package is no longer maintained and will not receive
+// fixes, including security fixes. It will be removed in a future release.
 type Redactor struct {
 	factory           *wasmredact.RedactFactory
 	entities          *[]wasmredact.SensitiveInfoEntity
@@ -89,6 +101,9 @@ type Redactor struct {
 // New compiles the redact component and returns a reusable Redactor. Compiling
 // the wasm module is expensive, so create one Redactor and share it; call Close
 // when done.
+//
+// Deprecated: the redact package is no longer maintained and will not receive
+// fixes, including security fixes. It will be removed in a future release.
 func New(ctx context.Context, opts Options) (*Redactor, error) {
 	cb := wasmredact.Callbacks{}
 
