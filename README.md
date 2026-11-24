@@ -693,7 +693,7 @@ The Rampart backend detects these entity types (pass any of them to
 | `SensitiveInfoEmail` | `EMAIL` | recognizer + model |
 | `SensitiveInfoPhoneNumber` | `PHONE_NUMBER` | model |
 | `SensitiveInfoIPAddress` | `IP_ADDRESS` | recognizer |
-| `SensitiveInfoCreditCardNumber` | `CREDIT_CARD_NUMBER` | recognizer (Luhn-validated) |
+| `SensitiveInfoCreditCardNumber` | `CREDIT_CARD_NUMBER` | Arcjet card detection (`arcjet.DetectCardNumbers`) |
 | `SensitiveInfoURL` | `URL` | recognizer + model |
 | `SensitiveInfoSSN` | `SSN` | recognizer |
 | `SensitiveInfoGivenName` | `GIVEN_NAME` | model |
@@ -711,10 +711,11 @@ The Rampart backend detects these entity types (pass any of them to
 | `SensitiveInfoState` | `STATE` | model |
 | `SensitiveInfoZipCode` | `ZIP_CODE` | model |
 
-Deterministic recognizers (email, URL, IP, SSN, Luhn-validated cards) run
-alongside the NER model and take precedence on overlapping text. Phone numbers
-are left to the model because their digit shape overlaps with financial and
-government identifiers.
+Deterministic recognizers (email, URL, IP, SSN) run alongside the NER model and
+take precedence on overlapping text. Phone numbers are left to the model
+because their digit shape overlaps with financial and government identifiers.
+Card numbers come from Arcjet's card detection, the same definition the bundled
+analyzer and the Arcjet server use, whatever recognizers are configured.
 
 > **Performance:** inference runs on the request path. Cost scales with input
 > length: text is scanned in 480-character windows, and each window takes one
@@ -778,7 +779,7 @@ information — emails, phone numbers, IP addresses, credit card numbers, and
 custom entities — entirely in-process. The text is never sent to Arcjet, which
 makes it suitable for scrubbing prompts before they reach a third-party LLM and
 restoring the values in the response. It runs the same WebAssembly component as
-`@arcjet/redact` and `arcjet.redact`, so all three SDKs redact identically.
+`@arcjet/redact`, so both redact identically.
 
 ```go
 import "github.com/arcjet/arcjet-go/redact"
@@ -799,7 +800,10 @@ answer := unredact(modelResponse)
 `redact.New` compiles the component once; reuse the `Redactor` across calls.
 Use `Options.Entities` to limit which entity types are redacted, and
 `Options.Detect` / `Options.Replace` to plug in custom detection and
-replacement logic. See the [Redaction docs](https://docs.arcjet.com/redact) for
+replacement logic. `redact.New` returns an error for an entity name that is
+not built in unless `Options.Detect` is set. `Redact` returns
+`redact.ErrNotReversible` when the text already contains a replacement it would
+produce, because `unredact` could not restore it reliably. See the [Redaction docs](https://docs.arcjet.com/redact) for
 more details.
 
 ## Shield WAF
