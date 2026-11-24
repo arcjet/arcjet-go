@@ -327,3 +327,49 @@ func TestRedactCrossingOverlap(t *testing.T) {
 		t.Fatalf("round trip: got %q, want %q", got, input)
 	}
 }
+
+func TestNewRejectsAnEntityThatIsNotBuiltIn(t *testing.T) {
+	ctx := context.Background()
+	for _, entities := range [][]string{{"emails"}, {"account", EntityEmail}} {
+		if _, err := New(ctx, Options{Entities: entities}); err == nil || !strings.Contains(err.Error(), "is not a built-in entity") {
+			t.Fatalf("New(%q) error = %v, want an error naming the entity", entities, err)
+		}
+	}
+	r, err := New(ctx, Options{Entities: []string{"account"}, Detect: func(tokens []string) []string { return make([]string, len(tokens)) }})
+	if err != nil {
+		t.Fatalf("New with Detect: %v", err)
+	}
+	r.Close(ctx)
+}
+
+func TestRedactRejectsTextThatAlreadyHoldsAReplacement(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{Entities: []string{EntityEmail}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	_, _, err = r.Redact(ctx, "They wrote <Redacted email #0> in the docs. Mine is quinn@example.com")
+	if !errors.Is(err, ErrNotReversible) {
+		t.Fatalf("Redact error = %v, want ErrNotReversible", err)
+	}
+}
+
+func TestRedactIdentityReplacementRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{Entities: []string{EntityEmail}, Replace: func(_, plaintext string) (string, bool) { return plaintext, true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	const input = "mail quinn@example.com"
+	redacted, unredact, err := r.Redact(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redacted != input || unredact(redacted) != input {
+		t.Fatalf("redacted %q, unredacted %q; want both %q", redacted, unredact(redacted), input)
+	}
+}

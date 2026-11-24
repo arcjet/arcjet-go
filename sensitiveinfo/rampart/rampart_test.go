@@ -295,3 +295,73 @@ func TestSensitiveInfoRuleDeniesInputOverLimit(t *testing.T) {
 		t.Fatalf("reason = %q, want %q", decision.Reason.Message, want)
 	}
 }
+
+func TestDetectCardNumbersWithRecognizersDisabled(t *testing.T) {
+	b, err := New(Options{Recognizers: []Recognizer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := "card 4111111111111111 on file"
+	res := detect(t, b, value, arcjet.SensitiveInfoEntities{Deny: true, Entities: []arcjet.EntityType{arcjet.SensitiveInfoCreditCardNumber}})
+	if got := joinedEntityText(res.Denied, value, arcjet.SensitiveInfoCreditCardNumber); got != "4111111111111111" {
+		t.Fatalf("CREDIT_CARD_NUMBER text = %q, want the card; denied=%+v", got, res.Denied)
+	}
+}
+
+func TestDefaultRecognizersLeaveCardsToTheAnalyzer(t *testing.T) {
+	for _, r := range DefaultRecognizers {
+		if spans := r("card 4111111111111111"); len(spans) > 0 {
+			for _, s := range spans {
+				if s.Type == arcjet.SensitiveInfoCreditCardNumber {
+					t.Fatalf("a default recognizer reported a card: %+v", s)
+				}
+			}
+		}
+	}
+}
+
+func TestMergeWithCards(t *testing.T) {
+	card := arcjet.DetectedSensitiveInfoEntity{Start: 5, End: 24, Type: arcjet.SensitiveInfoCreditCardNumber}
+	cases := []struct {
+		name        string
+		cards       []arcjet.DetectedSensitiveInfoEntity
+		recognizers []DetectedSpan
+		model       []DetectedSpan
+		want        []DetectedSpan
+	}{
+		{
+			name:  "the model's card labels are not used",
+			model: []DetectedSpan{{Start: 6, End: 11, Type: arcjet.SensitiveInfoCreditCardNumber}},
+			want:  []DetectedSpan{},
+		},
+		{
+			name:  "a longer overlapping span keeps the card",
+			cards: []arcjet.DetectedSensitiveInfoEntity{card},
+			model: []DetectedSpan{{Start: 0, End: 30, Type: arcjet.SensitiveInfoStreetName}},
+			want: []DetectedSpan{
+				{Start: 0, End: 30, Type: arcjet.SensitiveInfoStreetName},
+				{Start: 5, End: 24, Type: arcjet.SensitiveInfoCreditCardNumber},
+			},
+		},
+		{
+			name:        "a span within a card is dropped",
+			cards:       []arcjet.DetectedSensitiveInfoEntity{card},
+			recognizers: []DetectedSpan{{Start: 5, End: 24, Type: arcjet.SensitiveInfoSSN}},
+			model:       []DetectedSpan{{Start: 5, End: 24, Type: arcjet.SensitiveInfoBankAccount}},
+			want:        []DetectedSpan{{Start: 5, End: 24, Type: arcjet.SensitiveInfoCreditCardNumber}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeWithCards(tc.cards, tc.recognizers, tc.model)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %+v, want %+v", got, tc.want)
+				}
+			}
+		})
+	}
+}

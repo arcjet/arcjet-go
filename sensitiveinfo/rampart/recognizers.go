@@ -2,8 +2,7 @@ package rampart
 
 // Deterministic recognizers that mirror Rampart's redaction layer.
 //
-// Structured, validatable types (email, URL, IP, phone, SSN, Luhn-valid card
-// numbers) are handled here with patterns rather than by the model, which is
+// Structured, validatable types (email, URL, IP, phone, SSN) are handled here with patterns rather than by the model, which is
 // more reliable for them. Recognizers are pure and cheap relative to model
 // inference.
 //
@@ -414,6 +413,10 @@ func isPhoneTailByte(b byte) bool {
 
 // CreditCardRecognizer is the credit/debit card recognizer, validated with the
 // Luhn checksum.
+//
+// Deprecated: the backend detects card numbers with [arcjet.DetectCardNumbers],
+// the same definition the bundled analyzer and the server use, so this
+// recognizer is no longer in [DefaultRecognizers].
 func CreditCardRecognizer(value string) []DetectedSpan {
 	var result []DetectedSpan
 	for _, span := range matchAll(value, creditCardPattern, arcjet.SensitiveInfoCreditCardNumber) {
@@ -430,7 +433,6 @@ func CreditCardRecognizer(value string) []DetectedSpan {
 // overlaps with bank accounts, routing numbers, and other identifiers. A
 // pattern cannot validate which semantic type the digits represent.
 var DefaultRecognizers = []Recognizer{
-	CreditCardRecognizer,
 	SSNRecognizer,
 	EmailRecognizer,
 	URLRecognizer,

@@ -28,6 +28,7 @@ package rampart
 import (
 	"context"
 	"fmt"
+	"sort"
 	"unicode/utf8"
 
 	arcjet "github.com/arcjet/arcjet-go"
@@ -75,7 +76,9 @@ type Options struct {
 	MaxInputChars int
 
 	// Recognizers are the deterministic recognizers run alongside the model
-	// for structured, validatable types (email, URL, IP, phone, SSN, cards).
+	// for structured, validatable types (email, URL, IP, phone, SSN). Card
+	// numbers are always detected with [arcjet.DetectCardNumbers], whatever
+	// recognizers are configured.
 	// Nil uses [DefaultRecognizers]; an empty (non-nil) slice runs the model
 	// alone. Recognizer results take precedence over the model on overlapping
 	// text. This is the supported extension point for custom detection — the
@@ -199,9 +202,11 @@ func (b *backend) Detect(
 		return arcjet.SensitiveInfoResult{}, err
 	}
 	recognizerSpans := RunRecognizers(value, b.recognizers)
-
-	// Recognizers take precedence over the model on overlapping text.
-	merged := mergeSpans([][]DetectedSpan{recognizerSpans, modelSpans})
+	cards, err := arcjet.DetectCardNumbers(ctx, value)
+	if err != nil {
+		return arcjet.SensitiveInfoResult{}, err
+	}
+	merged := mergeWithCards(cards, recognizerSpans, modelSpans)
 
 	listed := make(map[arcjet.EntityType]struct{}, len(entities.Entities))
 	for _, e := range entities.Entities {
@@ -228,4 +233,48 @@ func (b *backend) Detect(
 		}
 	}
 	return result, nil
+}
+
+// mergeWithCards combines the card numbers from [arcjet.DetectCardNumbers]
+// with the recognizer and model spans. Card numbers come from Arcjet's card
+// detection alone, the same definition the bundled analyzer and the server
+// use, so the model's own card labels are ignored. Cards are kept apart from
+// the merge, where a longer overlapping span would otherwise replace them, and
+// a span that lies within a card names the same digits, so it is dropped.
+// Recognizers take precedence over the model on overlapping text.
+func mergeWithCards(cards []arcjet.DetectedSensitiveInfoEntity, recognizerSpans, modelSpans []DetectedSpan) []DetectedSpan {
+	cardSpans := make([]DetectedSpan, 0, len(cards))
+	for _, c := range cards {
+		cardSpans = append(cardSpans, DetectedSpan{Start: c.Start, End: c.End, Type: c.Type})
+	}
+	withinCard := func(span DetectedSpan) bool {
+		for _, c := range cardSpans {
+			if c.Start <= span.Start && span.End <= c.End {
+				return true
+			}
+		}
+		return false
+	}
+	keep := func(spans []DetectedSpan, dropCards bool) []DetectedSpan {
+		out := make([]DetectedSpan, 0, len(spans))
+		for _, span := range spans {
+			if (dropCards && span.Type == arcjet.SensitiveInfoCreditCardNumber) || withinCard(span) {
+				continue
+			}
+			out = append(out, span)
+		}
+		return out
+	}
+
+	others := mergeSpans([][]DetectedSpan{keep(recognizerSpans, false), keep(modelSpans, true)})
+	merged := make([]DetectedSpan, 0, len(cardSpans)+len(others))
+	merged = append(merged, cardSpans...)
+	merged = append(merged, others...)
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].Start != merged[j].Start {
+			return merged[i].Start < merged[j].Start
+		}
+		return merged[i].End < merged[j].End
+	})
+	return merged
 }

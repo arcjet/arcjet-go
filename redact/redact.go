@@ -31,6 +31,11 @@ import (
 // fixes, including security fixes. It will be removed in a future release.
 var ErrClosed = errors.New("arcjet/redact: redactor is closed")
 
+// ErrNotReversible is returned by Redact when the text already contains a
+// replacement it would produce, so Unredact could not restore it reliably. Use
+// a Replace function whose replacements cannot already appear in the text.
+var ErrNotReversible = errors.New("the text already contains a replacement it would produce")
+
 // Standard sensitive-information entity names recognised by the component. Any
 // other string passed in Options.Entities or returned from Options.Detect is
 // treated as a custom entity.
@@ -48,7 +53,8 @@ const (
 type Options struct {
 	// Entities restricts redaction to the named entity types. When empty, every
 	// detected entity is redacted. Names not in the standard set (see the Entity
-	// constants) are treated as custom entities surfaced by Detect.
+	// constants) are custom entities surfaced by Detect, and New returns an
+	// error for one when Detect is nil.
 	Entities []string
 
 	// ContextWindowSize is the number of adjacent tokens passed to Detect at a
@@ -105,6 +111,19 @@ type Redactor struct {
 // Deprecated: the redact package is no longer maintained and will not receive
 // fixes, including security fixes. It will be removed in a future release.
 func New(ctx context.Context, opts Options) (*Redactor, error) {
+	// Without Detect, nothing can identify a name that is not built in, so
+	// reject it rather than silently redacting nothing.
+	if opts.Detect == nil {
+		for _, name := range opts.Entities {
+			switch name {
+			case EntityEmail, EntityPhoneNumber, EntityIPAddress, EntityCreditCardNumber:
+			default:
+				return nil, fmt.Errorf("arcjet/redact: %q is not a built-in entity; use one of %q, %q, %q or %q, or set Detect",
+					name, EntityCreditCardNumber, EntityEmail, EntityIPAddress, EntityPhoneNumber)
+			}
+		}
+	}
+
 	cb := wasmredact.Callbacks{}
 
 	if opts.Detect != nil {
@@ -239,6 +258,22 @@ func (r *Redactor) Redact(ctx context.Context, candidate string) (redacted strin
 		pairs = append(pairs, e.Redacted, e.Original)
 	}
 	replacer := strings.NewReplacer(pairs...)
+
+	// Unredact restores every replacement it finds, so it must find only the
+	// replacements made here. Text that already held one would be "restored"
+	// to something it never was.
+	inserted := make(map[string]int, len(seen))
+	for _, e := range redactions {
+		if _, ok := seen[e.Redacted]; ok {
+			inserted[e.Redacted]++
+		}
+	}
+	for marker, n := range inserted {
+		if strings.Count(redacted, marker) != n {
+			return "", nil, fmt.Errorf("arcjet/redact: %w", ErrNotReversible)
+		}
+	}
+
 	unredact = func(input string) string { return replacer.Replace(input) }
 	return redacted, unredact, nil
 }
