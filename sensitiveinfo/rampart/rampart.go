@@ -76,12 +76,14 @@ type Options struct {
 	MaxInputChars int
 
 	// Recognizers are the deterministic recognizers run alongside the model
-	// for structured, validatable types (email, URL, IP, phone, SSN). Card
-	// numbers are always detected with [arcjet.DetectCardNumbers], whatever
-	// recognizers are configured.
-	// Nil uses [DefaultRecognizers]; an empty (non-nil) slice runs the model
-	// alone. Recognizer results take precedence over the model on overlapping
-	// text. This is the supported extension point for custom detection — the
+	// for structured, validatable types (email, URL, IP, phone, SSN).
+	// Nil uses [DefaultRecognizers]; an empty (non-nil) slice disables them,
+	// and the model and card detection still run. Recognizer results take
+	// precedence over the model on overlapping text.
+	//
+	// Card numbers are always detected with [arcjet.DetectCardNumbers],
+	// whatever recognizers are configured, and a recognizer's card labels are
+	// ignored. This is the supported extension point for custom detection — the
 	// rule's token-based Detect callback is ignored by this backend.
 	Recognizers []Recognizer
 }
@@ -202,10 +204,9 @@ func (b *backend) Detect(
 		return arcjet.SensitiveInfoResult{}, err
 	}
 	recognizerSpans := RunRecognizers(value, b.recognizers)
-	cards, err := arcjet.DetectCardNumbers(ctx, value)
-	if err != nil {
-		return arcjet.SensitiveInfoResult{}, err
-	}
+	// A card detection failure leaves the result incomplete. A denial found
+	// without it still stands; otherwise the failure is returned below.
+	cards, cardErr := arcjet.DetectCardNumbers(ctx, value)
 	merged := mergeWithCards(cards, recognizerSpans, modelSpans)
 
 	listed := make(map[arcjet.EntityType]struct{}, len(entities.Entities))
@@ -232,13 +233,22 @@ func (b *backend) Detect(
 			result.Allowed = append(result.Allowed, entity)
 		}
 	}
+	if cardErr != nil {
+		if len(result.Denied) == 0 {
+			return arcjet.SensitiveInfoResult{}, cardErr
+		}
+		if bctx.Log != nil {
+			bctx.Log.Warn("rampart: card detection failed, so card numbers were " +
+				"not scanned; denying on the other findings")
+		}
+	}
 	return result, nil
 }
 
 // mergeWithCards combines the card numbers from [arcjet.DetectCardNumbers]
 // with the recognizer and model spans. Card numbers come from Arcjet's card
 // detection alone, the same definition the bundled analyzer and the server
-// use, so the model's own card labels are ignored. Cards are kept apart from
+// use, so the model's and the recognizers' own card labels are ignored. Cards are kept apart from
 // the merge, where a longer overlapping span would otherwise replace them, and
 // a span that lies within a card names the same digits, so it is dropped.
 // Recognizers take precedence over the model on overlapping text.
@@ -255,10 +265,10 @@ func mergeWithCards(cards []arcjet.DetectedSensitiveInfoEntity, recognizerSpans,
 		}
 		return false
 	}
-	keep := func(spans []DetectedSpan, dropCards bool) []DetectedSpan {
+	keep := func(spans []DetectedSpan) []DetectedSpan {
 		out := make([]DetectedSpan, 0, len(spans))
 		for _, span := range spans {
-			if (dropCards && span.Type == arcjet.SensitiveInfoCreditCardNumber) || withinCard(span) {
+			if span.Type == arcjet.SensitiveInfoCreditCardNumber || withinCard(span) {
 				continue
 			}
 			out = append(out, span)
@@ -266,7 +276,7 @@ func mergeWithCards(cards []arcjet.DetectedSensitiveInfoEntity, recognizerSpans,
 		return out
 	}
 
-	others := mergeSpans([][]DetectedSpan{keep(recognizerSpans, false), keep(modelSpans, true)})
+	others := mergeSpans([][]DetectedSpan{keep(recognizerSpans), keep(modelSpans)})
 	merged := make([]DetectedSpan, 0, len(cardSpans)+len(others))
 	merged = append(merged, cardSpans...)
 	merged = append(merged, others...)

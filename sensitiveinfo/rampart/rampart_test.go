@@ -330,6 +330,11 @@ func TestMergeWithCards(t *testing.T) {
 		want        []DetectedSpan
 	}{
 		{
+			name:        "a recognizer's card labels are not used",
+			recognizers: []DetectedSpan{{Start: 6, End: 11, Type: arcjet.SensitiveInfoCreditCardNumber}},
+			want:        []DetectedSpan{},
+		},
+		{
 			name:  "the model's card labels are not used",
 			model: []DetectedSpan{{Start: 6, End: 11, Type: arcjet.SensitiveInfoCreditCardNumber}},
 			want:  []DetectedSpan{},

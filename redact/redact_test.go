@@ -373,3 +373,70 @@ func TestRedactIdentityReplacementRoundTrips(t *testing.T) {
 		t.Fatalf("redacted %q, unredacted %q; want both %q", redacted, unredact(redacted), input)
 	}
 }
+
+func TestRedactRejectsAReplacementUnredactWouldFindElsewhere(t *testing.T) {
+	ctx := context.Background()
+	// The replacement lands after a space, so the output holds three spaces
+	// and Unredact would restore the email one position early.
+	r, err := New(ctx, Options{Entities: []string{EntityEmail}, Replace: func(_, _ string) (string, bool) { return "  ", true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	if _, _, err := r.Redact(ctx, "a quinn@example.com"); !errors.Is(err, ErrNotReversible) {
+		t.Fatalf("Redact error = %v, want ErrNotReversible", err)
+	}
+}
+
+func TestRedactRejectsOneReplacementForDifferentValues(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{Entities: []string{EntityEmail}, Replace: func(_, _ string) (string, bool) { return "[email]", true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	if _, _, err := r.Redact(ctx, "mail a@example.com and b@example.com"); !errors.Is(err, ErrNotReversible) {
+		t.Fatalf("Redact error = %v, want ErrNotReversible", err)
+	}
+
+	const same = "mail a@example.com and a@example.com"
+	redacted, unredact, err := r.Redact(ctx, same)
+	if err != nil {
+		t.Fatalf("Redact of a repeated value: %v", err)
+	}
+	if redacted != "mail [email] and [email]" || unredact(redacted) != same {
+		t.Fatalf("redacted %q, unredacted %q", redacted, unredact(redacted))
+	}
+}
+
+// These cases differ between the previous issuer table and the shared card
+// definition, so they catch an old component being shipped.
+func TestRedactUsesTheSharedCardDefinition(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{Entities: []string{EntityCreditCardNumber}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	for _, card := range []string{"5500000000000004", "22040000000000006", "5500 0000-0000 0004"} {
+		redacted, _, err := r.Redact(ctx, "card "+card+" ok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if redacted != "card <Redacted credit card number #0> ok" {
+			t.Errorf("Redact(%q) = %q", card, redacted)
+		}
+	}
+
+	const formerlyDetected = "card 400000000000000002 ok"
+	redacted, _, err := r.Redact(ctx, formerlyDetected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redacted != formerlyDetected {
+		t.Errorf("Redact(%q) = %q, want it unchanged", formerlyDetected, redacted)
+	}
+}

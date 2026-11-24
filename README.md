@@ -714,8 +714,11 @@ The Rampart backend detects these entity types (pass any of them to
 Deterministic recognizers (email, URL, IP, SSN) run alongside the NER model and
 take precedence on overlapping text. Phone numbers are left to the model
 because their digit shape overlaps with financial and government identifiers.
-Card numbers come from Arcjet's card detection, the same definition the bundled
-analyzer and the Arcjet server use, whatever recognizers are configured.
+Card numbers come from Arcjet's card detection (`arcjet.DetectCardNumbers`), the
+same definition the bundled analyzer and the Arcjet server use, whatever
+recognizers are configured; a recognizer's or the model's card labels are
+ignored. An empty `Recognizers` slice disables the recognizers, not card
+detection or the model.
 
 > **Performance:** inference runs on the request path. Cost scales with input
 > length: text is scanned in 480-character windows, and each window takes one
@@ -791,6 +794,10 @@ if err != nil {
 defer r.Close(ctx)
 
 redacted, unredact, err := r.Redact(ctx, "Contact me at test@example.com")
+if err != nil {
+	// For example redact.ErrNotReversible; unredact is nil.
+	log.Fatal(err)
+}
 // redacted == "Contact me at <Redacted email #0>"
 
 // ...send `redacted` to the model, then restore the originals in the reply:

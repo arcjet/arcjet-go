@@ -31,9 +31,10 @@ import (
 // fixes, including security fixes. It will be removed in a future release.
 var ErrClosed = errors.New("arcjet/redact: redactor is closed")
 
-// ErrNotReversible is returned by Redact when the text already contains a
-// replacement it would produce, so Unredact could not restore it reliably. Use
-// a Replace function whose replacements cannot already appear in the text.
+// ErrNotReversible is returned by Redact when Unredact could not restore the
+// text reliably: the text already contains a replacement Redact would produce,
+// or one replacement stands for different values. Use a Replace function whose
+// replacements are unique to each value and cannot already appear in the text.
 var ErrNotReversible = errors.New("the text already contains a replacement it would produce")
 
 // Standard sensitive-information entity names recognised by the component. Any
@@ -74,8 +75,9 @@ type Options struct {
 	//
 	// For Unredact to round-trip, replacements must be non-empty and unique per
 	// distinct original value; the built-in redaction guarantees this with a
-	// "#N" suffix. Empty or duplicated replacements cannot be reversed and are
-	// dropped from the Unredact mapping.
+	// "#N" suffix. Redact returns ErrNotReversible when one replacement stands
+	// for different values. An empty replacement cannot be reversed, so
+	// Unredact leaves the value deleted.
 	Replace func(entity, plaintext string) (replacement string, ok bool)
 }
 
@@ -234,47 +236,64 @@ func (r *Redactor) Redact(ctx context.Context, candidate string) (redacted strin
 	var b strings.Builder
 	b.Grow(len(candidate))
 	pos := 0
+	type span struct{ start, end int }
+	inserted := make([]span, 0, len(redactions))
 	for _, e := range redactions {
 		b.WriteString(candidate[pos:e.Start])
+		inserted = append(inserted, span{b.Len(), b.Len() + len(e.Redacted)})
 		b.WriteString(e.Redacted)
 		pos = int(e.End)
 	}
 	b.WriteString(candidate[pos:])
 	redacted = b.String()
 
-	// Build the reverse mapping once. Skip empty or duplicate redaction markers:
-	// they can't be reversed unambiguously, and an empty marker would otherwise
-	// make Replacer splice the original between every byte.
-	seen := make(map[string]struct{}, len(redactions))
-	pairs := make([]string, 0, len(redactions)*2)
+	// The original for each replacement. A replacement must stand for one
+	// original, or Unredact could restore the wrong value. An empty
+	// replacement can't be found again, so it is left out.
+	originals := make(map[string]string, len(redactions))
+	texts := make([]string, 0, len(redactions))
 	for _, e := range redactions {
 		if e.Redacted == "" {
 			continue
 		}
-		if _, dup := seen[e.Redacted]; dup {
+		if existing, ok := originals[e.Redacted]; ok {
+			if existing != e.Original {
+				return "", nil, fmt.Errorf("arcjet/redact: %w", ErrNotReversible)
+			}
 			continue
 		}
-		seen[e.Redacted] = struct{}{}
-		pairs = append(pairs, e.Redacted, e.Original)
+		originals[e.Redacted] = e.Original
+		texts = append(texts, e.Redacted)
 	}
-	replacer := strings.NewReplacer(pairs...)
+	matcher := newReplacementMatcher(texts)
 
-	// Unredact restores every replacement it finds, so it must find only the
-	// replacements made here. Text that already held one would be "restored"
-	// to something it never was.
-	inserted := make(map[string]int, len(seen))
-	for _, e := range redactions {
-		if _, ok := seen[e.Redacted]; ok {
-			inserted[e.Redacted]++
+	// Unredact finds replacements in one pass, so it must find exactly the
+	// replacements made here, where they were made. Text that already held one
+	// would be "restored" to something it never was.
+	at := 0
+	for _, m := range matcher.find(redacted) {
+		for at < len(inserted) && inserted[at].start < m.start {
+			at++
 		}
-	}
-	for marker, n := range inserted {
-		if strings.Count(redacted, marker) != n {
+		if at == len(inserted) || inserted[at].start != m.start || inserted[at].end != m.start+len(m.text) {
 			return "", nil, fmt.Errorf("arcjet/redact: %w", ErrNotReversible)
 		}
+		at++
 	}
 
-	unredact = func(input string) string { return replacer.Replace(input) }
+	unredact = func(input string) string {
+		var out strings.Builder
+		cursor := 0
+		// Replaced text is never searched again, so a replacement that
+		// contains its original, or another replacement, cannot loop.
+		for _, m := range matcher.find(input) {
+			out.WriteString(input[cursor:m.start])
+			out.WriteString(originals[m.text])
+			cursor = m.start + len(m.text)
+		}
+		out.WriteString(input[cursor:])
+		return out.String()
+	}
 	return redacted, unredact, nil
 }
 

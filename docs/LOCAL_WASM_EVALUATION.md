@@ -112,6 +112,15 @@ the per-call work is just instantiation, which is cheap (~ms). This
 matches arcjet-py's `Component.from_file` (compile once) + fresh
 `Store`/`Instance` per call.
 
+### Standalone card detection: `DetectCardNumbers`
+
+`arcjet.DetectCardNumbers` runs the bundled analyzer for card numbers alone,
+outside any rule, so a `SensitiveInfoBackend` such as Rampart can report the
+same cards as the analyzer. It uses its own lazily created `localEvaluator`
+with no callbacks: the first call compiles the module (the same cost as a
+client's first local rule), and later calls only instantiate. A trap or failed
+allocation in the module is recovered and returned as an error with no cards.
+
 ## Rule wiring
 
 ### HTTP-path rules (in `local_decision.go`)
