@@ -808,10 +808,15 @@ answer := unredact(modelResponse)
 Use `Options.Entities` to limit which entity types are redacted, and
 `Options.Detect` / `Options.Replace` to plug in custom detection and
 replacement logic. `redact.New` returns an error for an entity name that is
-not built in unless `Options.Detect` is set. `Redact` returns
-`redact.ErrNotReversible` when the text already contains a replacement it would
-produce, because `unredact` could not restore it reliably. See the [Redaction docs](https://docs.arcjet.com/redact) for
-more details.
+not built in unless `Options.Detect` is set, and for a name that looks like a
+built-in one even when it is. `Redact` returns `redact.ErrNotReversible` when
+the text already contains a replacement it would produce, because `unredact`
+could not restore it reliably.
+
+Each `Redact` call numbers its placeholders from `#0`, so two calls can produce
+the same placeholder for different values. Only use an `unredact` function on
+text derived from its own call's output. See the
+[Redaction docs](https://docs.arcjet.com/redact) for more details.
 
 ## Shield WAF
 

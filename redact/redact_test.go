@@ -330,7 +330,7 @@ func TestRedactCrossingOverlap(t *testing.T) {
 
 func TestNewRejectsAnEntityThatIsNotBuiltIn(t *testing.T) {
 	ctx := context.Background()
-	for _, entities := range [][]string{{"emails"}, {"account", EntityEmail}} {
+	for _, entities := range [][]string{{"account"}, {"account", EntityEmail}} {
 		if _, err := New(ctx, Options{Entities: entities}); err == nil || !strings.Contains(err.Error(), "is not a built-in entity") {
 			t.Fatalf("New(%q) error = %v, want an error naming the entity", entities, err)
 		}
@@ -438,5 +438,17 @@ func TestRedactUsesTheSharedCardDefinition(t *testing.T) {
 	}
 	if redacted != formerlyDetected {
 		t.Errorf("Redact(%q) = %q, want it unchanged", formerlyDetected, redacted)
+	}
+}
+
+func TestNewRejectsANameThatLooksLikeABuiltInEntity(t *testing.T) {
+	ctx := context.Background()
+	detect := func(tokens []string) []string { return make([]string, len(tokens)) }
+	for _, name := range []string{"emails", "emial", "credit-card", "Phone_Number", "IP_ADDRESS"} {
+		for _, d := range []func([]string) []string{nil, detect} {
+			if _, err := New(ctx, Options{Entities: []string{name}, Detect: d}); err == nil || !strings.Contains(err.Error(), "looks like the built-in entity") {
+				t.Fatalf("New(%q, Detect set: %v) error = %v, want a lookalike error", name, d != nil, err)
+			}
+		}
 	}
 }

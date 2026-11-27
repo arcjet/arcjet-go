@@ -66,6 +66,10 @@ func TestValidateSensitiveInfoEntities(t *testing.T) {
 		{name: "declared type, declaring backend", deny: []EntityType{SensitiveInfoGivenName}, backend: declaresGivenName},
 		{name: "undeclared type, declaring backend", deny: []EntityType{SensitiveInfoSurname}, backend: declaresGivenName, wantErr: true},
 		{name: "custom label, declaring backend", deny: []EntityType{"MY_CUSTOM"}, backend: declaresGivenName, wantErr: true},
+		{name: "lookalike name, with detect", deny: []EntityType{"emails"}, hasDetect: true, wantErr: true},
+		{name: "lookalike name, opaque backend", allow: []EntityType{"credit-card"}, backend: opaque, wantErr: true},
+		{name: "lookalike name, typo", deny: []EntityType{"PHONE_NUMBRE"}, hasDetect: true, wantErr: true},
+		{name: "custom label not close to a built-in, with detect", deny: []EntityType{"ACCOUNT_ID"}, hasDetect: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

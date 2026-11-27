@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/arcjet/arcjet-go/internal/entityname"
 	wasmredact "github.com/arcjet/arcjet-go/internal/local/redact"
 )
 
@@ -113,6 +114,16 @@ type Redactor struct {
 // Deprecated: the redact package is no longer maintained and will not receive
 // fixes, including security fixes. It will be removed in a future release.
 func New(ctx context.Context, opts Options) (*Redactor, error) {
+	// A name that looks like a built-in entity is almost always a typo for it,
+	// and Detect would never report it.
+	builtins := []string{EntityCreditCardNumber, EntityEmail, EntityIPAddress, EntityPhoneNumber}
+	for _, name := range opts.Entities {
+		if meant := entityname.LookalikeBuiltin(name, builtins); meant != "" {
+			return nil, fmt.Errorf("arcjet/redact: %q looks like the built-in entity %q; use %q, or give a custom entity a name that is not close to a built-in one",
+				name, meant, meant)
+		}
+	}
+
 	// Without Detect, nothing can identify a name that is not built in, so
 	// reject it rather than silently redacting nothing.
 	if opts.Detect == nil {
