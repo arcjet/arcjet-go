@@ -64,6 +64,7 @@ func TestSignedBotPolicies(t *testing.T) {
 		"RIVER_CRAWLER", "ENFILADE_CRAWLER", "META_MUSE", "AHREFS_CRAWLER", "EXA_USER",
 		"SHAPBOT", "SHAP_USER", "DUCKDUCKGO_CRAWLER", "AI_MANAGED_AGENTS_AGENT",
 		"AGENTDRIVES_AGENT", "GEEDO_CRAWLER_SHOP", "IBOU_SEARCH", "META_WEBINDEXER", "NAVER_CRAWLER",
+		"ECHELONGRAPH_RADAR",
 		BotCategoryAI, BotCategoryAIAgent, BotCategoryGoogle, BotCategorySearchEngine,
 		BotCategoryTool, BotCategoryMonitor, BotCategoryMeta, BotCategoryUnknown,
 		"SIGNED_BOT:https://bot.example.com/.well-known/http-message-signatures-directory",
