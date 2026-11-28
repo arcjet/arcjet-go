@@ -685,6 +685,14 @@ Pass the text to scan with `arcjet.WithSensitiveInfoValue`. `Allow` and `Deny`
 are mutually exclusive: `Deny` blocks the listed entity types, while `Allow`
 blocks every type _except_ those listed.
 
+A name in `Allow` or `Deny` that is not built in but looks like a built-in
+type is rejected, even with `Detect` or a backend that declares it in
+`SupportedEntities`: equal to one with case and punctuation ignored or, at five
+or more letters and digits, a prefix of one or one edit away (`EMAILS`,
+`EMIAL`, `credit-card`, `STREET`). Use the exact built-in name, or rename an
+intentional lookalike in both the rule and the detector or backend that
+reports it. `SensitiveInfo` and `GuardSensitiveInfo` behave the same way.
+
 The Rampart backend detects these entity types (pass any of them to
 `Allow`/`Deny`, or use `rampart.Entities()` for the whole set):
 
@@ -693,7 +701,7 @@ The Rampart backend detects these entity types (pass any of them to
 | `SensitiveInfoEmail` | `EMAIL` | recognizer + model |
 | `SensitiveInfoPhoneNumber` | `PHONE_NUMBER` | model |
 | `SensitiveInfoIPAddress` | `IP_ADDRESS` | recognizer |
-| `SensitiveInfoCreditCardNumber` | `CREDIT_CARD_NUMBER` | recognizer (Luhn-validated) |
+| `SensitiveInfoCreditCardNumber` | `CREDIT_CARD_NUMBER` | Arcjet card detection (`arcjet.DetectCardNumbers`) |
 | `SensitiveInfoURL` | `URL` | recognizer + model |
 | `SensitiveInfoSSN` | `SSN` | recognizer |
 | `SensitiveInfoGivenName` | `GIVEN_NAME` | model |
@@ -711,10 +719,14 @@ The Rampart backend detects these entity types (pass any of them to
 | `SensitiveInfoState` | `STATE` | model |
 | `SensitiveInfoZipCode` | `ZIP_CODE` | model |
 
-Deterministic recognizers (email, URL, IP, SSN, Luhn-validated cards) run
-alongside the NER model and take precedence on overlapping text. Phone numbers
-are left to the model because their digit shape overlaps with financial and
-government identifiers.
+Deterministic recognizers (email, URL, IP, SSN) run alongside the NER model and
+take precedence on overlapping text. Phone numbers are left to the model
+because their digit shape overlaps with financial and government identifiers.
+Card numbers come from Arcjet's card detection (`arcjet.DetectCardNumbers`), the
+same definition the bundled analyzer and the Arcjet server use, whatever
+recognizers are configured; a recognizer's or the model's card labels are
+ignored. An empty `Recognizers` slice disables the recognizers, not card
+detection or the model.
 
 > **Performance:** inference runs on the request path. Cost scales with input
 > length: text is scanned in 480-character windows, and each window takes one
@@ -778,7 +790,7 @@ information — emails, phone numbers, IP addresses, credit card numbers, and
 custom entities — entirely in-process. The text is never sent to Arcjet, which
 makes it suitable for scrubbing prompts before they reach a third-party LLM and
 restoring the values in the response. It runs the same WebAssembly component as
-`@arcjet/redact` and `arcjet.redact`, so all three SDKs redact identically.
+`@arcjet/redact`, so both redact identically.
 
 ```go
 import "github.com/arcjet/arcjet-go/redact"
@@ -790,6 +802,10 @@ if err != nil {
 defer r.Close(ctx)
 
 redacted, unredact, err := r.Redact(ctx, "Contact me at test@example.com")
+if err != nil {
+	// For example redact.ErrNotReversible; unredact is nil.
+	log.Fatal(err)
+}
 // redacted == "Contact me at <Redacted email #0>"
 
 // ...send `redacted` to the model, then restore the originals in the reply:
@@ -799,8 +815,16 @@ answer := unredact(modelResponse)
 `redact.New` compiles the component once; reuse the `Redactor` across calls.
 Use `Options.Entities` to limit which entity types are redacted, and
 `Options.Detect` / `Options.Replace` to plug in custom detection and
-replacement logic. See the [Redaction docs](https://docs.arcjet.com/redact) for
-more details.
+replacement logic. `redact.New` returns an error for an entity name that is
+not built in unless `Options.Detect` is set, and for a name that looks like a
+built-in one even when it is. `Redact` returns `redact.ErrNotReversible` when
+the text already contains a replacement it would produce, because `unredact`
+could not restore it reliably.
+
+Each `Redact` call numbers its placeholders from `#0`, so two calls can produce
+the same placeholder for different values. Only use an `unredact` function on
+text derived from its own call's output. See the
+[Redaction docs](https://docs.arcjet.com/redact) for more details.
 
 ## Shield WAF
 

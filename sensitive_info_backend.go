@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"unicode/utf8"
+
+	"github.com/arcjet/arcjet-go/internal/entityname"
 )
 
 // SensitiveInfoBackend is the engine for sensitive-information detection. Pass
@@ -80,7 +82,10 @@ type SensitiveInfoBackendOptions struct {
 // detect. When a backend implements it, the SDK validates a rule's Allow/Deny
 // lists against this set and rejects a type the backend cannot produce (which
 // would otherwise be silently ignored, never matching). Backends that do not
-// implement it are trusted to handle any listed type.
+// implement it are trusted to handle any listed type. Either way, a listed
+// name that looks like a built-in type is rejected before this set is
+// consulted, so a backend label close to a built-in one (such as
+// "credit-card") must be renamed in both the backend and the rule.
 type SensitiveInfoBackendEntitySupporter interface {
 	// SupportedEntities returns every entity type the backend can detect.
 	SupportedEntities() []EntityType
@@ -153,6 +158,18 @@ var nativeSensitiveInfoTypes = map[EntityType]struct{}{
 // [SensitiveInfoBackendEntitySupporter]; otherwise the backend is trusted.
 // Without either, only the bundled analyzer's native types are allowed.
 func validateSensitiveInfoEntities(allow, deny []EntityType, backend SensitiveInfoBackend, hasDetect bool) error {
+	// A name that looks like a built-in type is almost always a typo for it,
+	// and a custom Detect or a backend would never report it.
+	for _, list := range [][]EntityType{allow, deny} {
+		for _, t := range list {
+			if meant := entityname.LookalikeBuiltin(string(t), builtinEntityNames); meant != "" {
+				return fmt.Errorf("arcjet: sensitive info: %w: %q looks like the built-in "+
+					"type %q; use %q, or give a custom type a name that is not close to a built-in one",
+					ErrUnsupportedEntityType, string(t), meant, meant)
+			}
+		}
+	}
+
 	if hasDetect {
 		return nil
 	}
@@ -180,6 +197,15 @@ func validateSensitiveInfoEntities(allow, deny []EntityType, backend SensitiveIn
 	}
 	return nil
 }
+
+// builtinEntityNames lists every built-in entity type, for the lookalike check.
+var builtinEntityNames = func() []string {
+	names := make([]string, 0, len(guardPolicyEntityTypes))
+	for t := range guardPolicyEntityTypes {
+		names = append(names, string(t))
+	}
+	return names
+}()
 
 // sensitiveInfoSupportedTypes returns the set of entity types considered
 // detectable for validation. With no backend it is the bundled analyzer's

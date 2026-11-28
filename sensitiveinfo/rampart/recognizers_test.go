@@ -342,8 +342,8 @@ func TestPhoneRecognizer(t *testing.T) {
 }
 
 func TestDefaultRecognizersOrder(t *testing.T) {
-	if len(DefaultRecognizers) != 5 {
-		t.Fatalf("len(DefaultRecognizers) = %d, want 5", len(DefaultRecognizers))
+	if len(DefaultRecognizers) != 4 {
+		t.Fatalf("len(DefaultRecognizers) = %d, want 4", len(DefaultRecognizers))
 	}
 	// Verify the order matches Python's default_recognizers by probing each
 	// recognizer with an input only it should match.
@@ -351,7 +351,6 @@ func TestDefaultRecognizersOrder(t *testing.T) {
 		value    string
 		wantType arcjet.EntityType
 	}{
-		{"4111111111111111", arcjet.SensitiveInfoCreditCardNumber},
 		{"123-45-6789", arcjet.SensitiveInfoSSN},
 		{"a@b.co", arcjet.SensitiveInfoEmail},
 		{"https://example.com", arcjet.SensitiveInfoURL},
@@ -385,11 +384,8 @@ func TestRunRecognizers(t *testing.T) {
 		default:
 		}
 	}
-	if !haveCard || !haveEmail {
-		t.Errorf("RunRecognizers(%q) = %+v, want both card and email spans", value, spans)
-	}
-	// Card recognizer runs first, so its span comes before the email span.
-	if len(spans) >= 2 && spans[0].Type != arcjet.SensitiveInfoCreditCardNumber {
-		t.Errorf("expected first span from credit card recognizer, got %q", spans[0].Type)
+	// Card numbers come from arcjet.DetectCardNumbers, not a recognizer.
+	if haveCard || !haveEmail {
+		t.Errorf("RunRecognizers(%q) = %+v, want only the email span", value, spans)
 	}
 }

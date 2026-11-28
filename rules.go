@@ -368,8 +368,16 @@ type SensitiveInfoOptions struct {
 	// Mode controls whether the rule enforces denials or only reports them.
 	Mode Mode
 	// Allow lists entity types allowed in scanned text.
+	//
+	// A name in Allow or Deny that is not built in but looks like a built-in
+	// type is rejected, even with Detect or a backend that declares it: equal
+	// to one with case and punctuation ignored or, at five or more letters and
+	// digits, a prefix of one or one edit away ("EMAILS", "credit-card",
+	// "STREET"). Rename an intentional lookalike in both this list and the
+	// detector or backend that reports it.
 	Allow []EntityType
-	// Deny lists entity types denied in scanned text.
+	// Deny lists entity types denied in scanned text. Names are checked as for
+	// Allow.
 	Deny []EntityType
 	// Backend is the detection engine for this rule. Set it to a backend from
 	// github.com/arcjet/arcjet-go/sensitiveinfo/rampart (created once with

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/arcjet/arcjet-go/internal/entityname"
 	wasmredact "github.com/arcjet/arcjet-go/internal/local/redact"
 )
 
@@ -30,6 +31,12 @@ import (
 // Deprecated: the redact package is no longer maintained and will not receive
 // fixes, including security fixes. It will be removed in a future release.
 var ErrClosed = errors.New("arcjet/redact: redactor is closed")
+
+// ErrNotReversible is returned by Redact when Unredact could not restore the
+// text reliably: the text already contains a replacement Redact would produce,
+// or one replacement stands for different values. Use a Replace function whose
+// replacements are unique to each value and cannot already appear in the text.
+var ErrNotReversible = errors.New("the text already contains a replacement it would produce")
 
 // Standard sensitive-information entity names recognised by the component. Any
 // other string passed in Options.Entities or returned from Options.Detect is
@@ -48,7 +55,8 @@ const (
 type Options struct {
 	// Entities restricts redaction to the named entity types. When empty, every
 	// detected entity is redacted. Names not in the standard set (see the Entity
-	// constants) are treated as custom entities surfaced by Detect.
+	// constants) are custom entities surfaced by Detect, and New returns an
+	// error for one when Detect is nil.
 	Entities []string
 
 	// ContextWindowSize is the number of adjacent tokens passed to Detect at a
@@ -68,8 +76,9 @@ type Options struct {
 	//
 	// For Unredact to round-trip, replacements must be non-empty and unique per
 	// distinct original value; the built-in redaction guarantees this with a
-	// "#N" suffix. Empty or duplicated replacements cannot be reversed and are
-	// dropped from the Unredact mapping.
+	// "#N" suffix. Redact returns ErrNotReversible when one replacement stands
+	// for different values. An empty replacement cannot be reversed, so
+	// Unredact leaves the value deleted.
 	Replace func(entity, plaintext string) (replacement string, ok bool)
 }
 
@@ -105,6 +114,29 @@ type Redactor struct {
 // Deprecated: the redact package is no longer maintained and will not receive
 // fixes, including security fixes. It will be removed in a future release.
 func New(ctx context.Context, opts Options) (*Redactor, error) {
+	// A name that looks like a built-in entity is almost always a typo for it,
+	// and Detect would never report it.
+	builtins := []string{EntityCreditCardNumber, EntityEmail, EntityIPAddress, EntityPhoneNumber}
+	for _, name := range opts.Entities {
+		if meant := entityname.LookalikeBuiltin(name, builtins); meant != "" {
+			return nil, fmt.Errorf("arcjet/redact: %q looks like the built-in entity %q; use %q, or give a custom entity a name that is not close to a built-in one",
+				name, meant, meant)
+		}
+	}
+
+	// Without Detect, nothing can identify a name that is not built in, so
+	// reject it rather than silently redacting nothing.
+	if opts.Detect == nil {
+		for _, name := range opts.Entities {
+			switch name {
+			case EntityEmail, EntityPhoneNumber, EntityIPAddress, EntityCreditCardNumber:
+			default:
+				return nil, fmt.Errorf("arcjet/redact: %q is not a built-in entity; use one of %q, %q, %q or %q, or set Detect",
+					name, EntityCreditCardNumber, EntityEmail, EntityIPAddress, EntityPhoneNumber)
+			}
+		}
+	}
+
 	cb := wasmredact.Callbacks{}
 
 	if opts.Detect != nil {
@@ -208,39 +240,7 @@ func (r *Redactor) Redact(ctx context.Context, candidate string) (redacted strin
 	}
 	redactions := inst.Redact(ctx, candidate, cfg)
 
-	// Rebuild the string in one forward pass. start/end are byte offsets into
-	// candidate (matching Go indexing), and the component returns spans in
-	// ascending, non-overlapping order; an out-of-order/out-of-range span would
-	// panic on the slice and surface as an error rather than corrupt output.
-	var b strings.Builder
-	b.Grow(len(candidate))
-	pos := 0
-	for _, e := range redactions {
-		b.WriteString(candidate[pos:e.Start])
-		b.WriteString(e.Redacted)
-		pos = int(e.End)
-	}
-	b.WriteString(candidate[pos:])
-	redacted = b.String()
-
-	// Build the reverse mapping once. Skip empty or duplicate redaction markers:
-	// they can't be reversed unambiguously, and an empty marker would otherwise
-	// make Replacer splice the original between every byte.
-	seen := make(map[string]struct{}, len(redactions))
-	pairs := make([]string, 0, len(redactions)*2)
-	for _, e := range redactions {
-		if e.Redacted == "" {
-			continue
-		}
-		if _, dup := seen[e.Redacted]; dup {
-			continue
-		}
-		seen[e.Redacted] = struct{}{}
-		pairs = append(pairs, e.Redacted, e.Original)
-	}
-	replacer := strings.NewReplacer(pairs...)
-	unredact = func(input string) string { return replacer.Replace(input) }
-	return redacted, unredact, nil
+	return apply(candidate, redactions)
 }
 
 func entityFromName(name string) wasmredact.SensitiveInfoEntity {
@@ -273,4 +273,97 @@ func entityName(e wasmredact.SensitiveInfoEntity) string {
 	default:
 		return ""
 	}
+}
+
+// span is a byte range of the redacted text.
+type span struct{ start, end int }
+
+// apply replaces each redaction in candidate and returns the Unredact that
+// restores it, or [ErrNotReversible] when Unredact could not restore it
+// reliably.
+func apply(candidate string, redactions []wasmredact.RedactedSensitiveInfoEntity) (string, Unredact, error) {
+	redacted, inserted := rebuild(candidate, redactions)
+
+	// The original for each replacement. A replacement must stand for one
+	// original, or Unredact could restore the wrong value. An empty
+	// replacement can't be found again, so it is left out.
+	originals := make(map[string]string, len(redactions))
+	texts := make([]string, 0, len(redactions))
+	for _, e := range redactions {
+		if e.Redacted == "" {
+			continue
+		}
+		if existing, ok := originals[e.Redacted]; ok {
+			if existing != e.Original {
+				return "", nil, fmt.Errorf("arcjet/redact: %w", ErrNotReversible)
+			}
+			continue
+		}
+		originals[e.Redacted] = e.Original
+		texts = append(texts, e.Redacted)
+	}
+	matcher := newReplacementMatcher(texts)
+
+	// Unredact finds replacements in one pass, so it must find exactly the
+	// replacements made here, where they were made. Text that already held one
+	// would be "restored" to something it never was.
+	if !matchesInserted(matcher.find(redacted), inserted) {
+		return "", nil, fmt.Errorf("arcjet/redact: %w", ErrNotReversible)
+	}
+
+	unredact := func(input string) string {
+		var out strings.Builder
+		cursor := 0
+		// Replaced text is never searched again, so a replacement that
+		// contains its original, or another replacement, cannot loop.
+		for _, m := range matcher.find(input) {
+			out.WriteString(input[cursor:m.start])
+			out.WriteString(originals[m.text])
+			cursor = m.start + len(m.text)
+		}
+		out.WriteString(input[cursor:])
+		return out.String()
+	}
+	return redacted, unredact, nil
+}
+
+// rebuild returns candidate with each redaction's replacement in place, and
+// where each non-empty replacement landed in the result.
+//
+// The string is rebuilt in one forward pass. Start and End are byte offsets
+// into candidate (matching Go indexing), and the component returns spans in
+// ascending, non-overlapping order; an out-of-order or out-of-range span would
+// panic on the slice and surface as an error rather than corrupt output. An
+// empty replacement is a deletion that Unredact never finds, so it has no
+// span.
+func rebuild(candidate string, redactions []wasmredact.RedactedSensitiveInfoEntity) (string, []span) {
+	var b strings.Builder
+	b.Grow(len(candidate))
+	pos := 0
+	inserted := make([]span, 0, len(redactions))
+	for _, e := range redactions {
+		b.WriteString(candidate[pos:e.Start])
+		if e.Redacted != "" {
+			inserted = append(inserted, span{b.Len(), b.Len() + len(e.Redacted)})
+		}
+		b.WriteString(e.Redacted)
+		pos = int(e.End)
+	}
+	b.WriteString(candidate[pos:])
+	return b.String(), inserted
+}
+
+// matchesInserted reports whether the replacements found in the redacted text
+// are exactly those inserted there, one to one and at the same places.
+// inserted holds the non-empty replacements in order.
+func matchesInserted(found []replacementMatch, inserted []span) bool {
+	if len(found) != len(inserted) {
+		return false
+	}
+	for i, m := range found {
+		if inserted[i].start != m.start || inserted[i].end != m.start+len(m.text) {
+			return false
+		}
+	}
+	return true
 }

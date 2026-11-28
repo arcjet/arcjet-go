@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	wasmredact "github.com/arcjet/arcjet-go/internal/local/redact"
 )
 
 func TestRedactDetectsStandardEntities(t *testing.T) {
@@ -325,5 +327,190 @@ func TestRedactCrossingOverlap(t *testing.T) {
 	}
 	if got := unredact(redacted); got != input {
 		t.Fatalf("round trip: got %q, want %q", got, input)
+	}
+}
+
+func TestNewRejectsAnEntityThatIsNotBuiltIn(t *testing.T) {
+	ctx := context.Background()
+	for _, entities := range [][]string{{"account"}, {"account", EntityEmail}} {
+		if _, err := New(ctx, Options{Entities: entities}); err == nil || !strings.Contains(err.Error(), "is not a built-in entity") {
+			t.Fatalf("New(%q) error = %v, want an error naming the entity", entities, err)
+		}
+	}
+	r, err := New(ctx, Options{Entities: []string{"account"}, Detect: func(tokens []string) []string { return make([]string, len(tokens)) }})
+	if err != nil {
+		t.Fatalf("New with Detect: %v", err)
+	}
+	r.Close(ctx)
+}
+
+func TestRedactRejectsTextThatAlreadyHoldsAReplacement(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{Entities: []string{EntityEmail}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	_, _, err = r.Redact(ctx, "They wrote <Redacted email #0> in the docs. Mine is quinn@example.com")
+	if !errors.Is(err, ErrNotReversible) {
+		t.Fatalf("Redact error = %v, want ErrNotReversible", err)
+	}
+}
+
+func TestRedactIdentityReplacementRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{Entities: []string{EntityEmail}, Replace: func(_, plaintext string) (string, bool) { return plaintext, true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	const input = "mail quinn@example.com"
+	redacted, unredact, err := r.Redact(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redacted != input || unredact(redacted) != input {
+		t.Fatalf("redacted %q, unredacted %q; want both %q", redacted, unredact(redacted), input)
+	}
+}
+
+func TestRedactRejectsAReplacementUnredactWouldFindElsewhere(t *testing.T) {
+	ctx := context.Background()
+	// The replacement lands after a space, so the output holds three spaces
+	// and Unredact would restore the email one position early.
+	r, err := New(ctx, Options{Entities: []string{EntityEmail}, Replace: func(_, _ string) (string, bool) { return "  ", true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	if _, _, err := r.Redact(ctx, "a quinn@example.com"); !errors.Is(err, ErrNotReversible) {
+		t.Fatalf("Redact error = %v, want ErrNotReversible", err)
+	}
+}
+
+func TestRedactRejectsOneReplacementForDifferentValues(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{Entities: []string{EntityEmail}, Replace: func(_, _ string) (string, bool) { return "[email]", true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	if _, _, err := r.Redact(ctx, "mail a@example.com and b@example.com"); !errors.Is(err, ErrNotReversible) {
+		t.Fatalf("Redact error = %v, want ErrNotReversible", err)
+	}
+
+	const same = "mail a@example.com and a@example.com"
+	redacted, unredact, err := r.Redact(ctx, same)
+	if err != nil {
+		t.Fatalf("Redact of a repeated value: %v", err)
+	}
+	if redacted != "mail [email] and [email]" || unredact(redacted) != same {
+		t.Fatalf("redacted %q, unredacted %q", redacted, unredact(redacted))
+	}
+}
+
+// These cases differ between the previous issuer table and the shared card
+// definition, so they catch an old component being shipped.
+func TestRedactUsesTheSharedCardDefinition(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, Options{Entities: []string{EntityCreditCardNumber}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+
+	for _, card := range []string{"5500000000000004", "22040000000000006", "5500 0000-0000 0004"} {
+		redacted, _, err := r.Redact(ctx, "card "+card+" ok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if redacted != "card <Redacted credit card number #0> ok" {
+			t.Errorf("Redact(%q) = %q", card, redacted)
+		}
+	}
+
+	// Unrelated numbers beside the card, separated only by spaces, stay as
+	// they are.
+	const beside = "card 12 5500 0000-0000 0004 77 ok"
+	redactedBeside, unredactBeside, err := r.Redact(ctx, beside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redactedBeside != "card 12 <Redacted credit card number #0> 77 ok" {
+		t.Errorf("Redact(%q) = %q", beside, redactedBeside)
+	}
+	if got := unredactBeside(redactedBeside); got != beside {
+		t.Errorf("Unredact = %q, want %q", got, beside)
+	}
+
+	const formerlyDetected = "card 400000000000000002 ok"
+	redacted, _, err := r.Redact(ctx, formerlyDetected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redacted != formerlyDetected {
+		t.Errorf("Redact(%q) = %q, want it unchanged", formerlyDetected, redacted)
+	}
+}
+
+func TestNewRejectsANameThatLooksLikeABuiltInEntity(t *testing.T) {
+	ctx := context.Background()
+	detect := func(tokens []string) []string { return make([]string, len(tokens)) }
+	for _, name := range []string{"emails", "emial", "credit-card", "Phone_Number", "IP_ADDRESS"} {
+		for _, d := range []func([]string) []string{nil, detect} {
+			if _, err := New(ctx, Options{Entities: []string{name}, Detect: d}); err == nil || !strings.Contains(err.Error(), "looks like the built-in entity") {
+				t.Fatalf("New(%q, Detect set: %v) error = %v, want a lookalike error", name, d != nil, err)
+			}
+		}
+	}
+}
+
+func TestApplyKeepsADeletionBeforeAnAdjacentReplacement(t *testing.T) {
+	// Two touching spans: the first is deleted and the second replaced. The
+	// tokenizer splits on whitespace, so the component does not return these
+	// today; apply must still handle them.
+	const candidate = "aaBB rest"
+	redactions := []wasmredact.RedactedSensitiveInfoEntity{
+		{Start: 0, End: 2, Original: "aa", Redacted: ""},
+		{Start: 2, End: 4, Original: "BB", Redacted: "[B]"},
+	}
+	redacted, unredact, err := apply(candidate, redactions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redacted != "[B] rest" {
+		t.Fatalf("redacted = %q, want %q", redacted, "[B] rest")
+	}
+	if got := unredact(redacted); got != "BB rest" {
+		t.Fatalf("Unredact = %q, want the first value deleted and the second restored", got)
+	}
+}
+
+func TestMatchesInsertedIsOneToOne(t *testing.T) {
+	found := []replacementMatch{{start: 5, text: "[B]"}}
+	if !matchesInserted(found, []span{{5, 8}}) {
+		t.Fatal("a replacement found where it was inserted was rejected")
+	}
+	for _, tc := range []struct {
+		name     string
+		found    []replacementMatch
+		inserted []span
+	}{
+		{"an insertion with no match", nil, []span{{5, 8}}},
+		{"an insertion skipped before a match", found, []span{{1, 4}, {5, 8}}},
+		{"a match with no insertion", found, nil},
+		{"a match at another place", found, []span{{9, 12}}},
+		{"a match of another length", found, []span{{5, 7}}},
+	} {
+		if matchesInserted(tc.found, tc.inserted) {
+			t.Errorf("%s was accepted", tc.name)
+		}
+	}
+	if !matchesInserted(nil, nil) {
+		t.Fatal("no replacements were rejected")
 	}
 }

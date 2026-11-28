@@ -64,10 +64,13 @@ The NER model detects: `GIVEN_NAME`, `SURNAME`, `EMAIL`, `PHONE_NUMBER`, `URL`,
 `TAX_ID`, `BANK_ACCOUNT`, `ROUTING_NUMBER`, `GOVERNMENT_ID`, `PASSPORT`,
 `DRIVERS_LICENSE`, `BUILDING_NUMBER`, `STREET_NAME`, `SECONDARY_ADDRESS`,
 `CITY`, `STATE`, `ZIP_CODE`. Deterministic recognizers additionally cover
-`EMAIL`, `URL`, `IP_ADDRESS`, `SSN`, and `CREDIT_CARD_NUMBER`. Phone numbers are
-left to the model because their digit shape overlaps with financial and
-government identifiers (recognizer results take precedence over the model on
-overlapping text).
+`EMAIL`, `URL`, `IP_ADDRESS`, and `SSN`. Phone numbers are left to the model
+because their digit shape overlaps with financial and government identifiers
+(recognizer results take precedence over the model on overlapping text).
+
+`CREDIT_CARD_NUMBER` is detected by Arcjet's own card detection
+(`arcjet.DetectCardNumbers`), the same as the bundled analyzer, whatever
+recognizers are configured. The model's card labels are not used.
 
 `rampart.Entities()` returns the full set, handy for
 `Deny: rampart.Entities()`.
