@@ -20,6 +20,10 @@ func TestLookalikeBuiltin(t *testing.T) {
 		{"URLS", ""},
 		{"INVOICE", ""},
 		{"SSNS", ""},
+		// Letters in any script count: a non-ASCII suffix makes its own name,
+		// and one non-ASCII substitution is still one edit.
+		{"EMAIL地址", ""},
+		{"EMA\u0406L", "EMAIL"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -44,7 +48,7 @@ func TestWithinOneEdit(t *testing.T) {
 		{"em", "email", false},
 	}
 	for _, tt := range tests {
-		if got := withinOneEdit(tt.a, tt.b); got != tt.want {
+		if got := withinOneEdit([]rune(tt.a), []rune(tt.b)); got != tt.want {
 			t.Errorf("withinOneEdit(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
 		}
 	}
