@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	wasmredact "github.com/arcjet/arcjet-go/internal/local/redact"
 )
 
 func TestRedactDetectsStandardEntities(t *testing.T) {
@@ -467,20 +469,46 @@ func TestNewRejectsANameThatLooksLikeABuiltInEntity(t *testing.T) {
 	}
 }
 
-func TestMatchesInsertedIgnoresDeletions(t *testing.T) {
-	// A value deleted right before another value's replacement: the deletion
-	// is not in inserted, so the replacement found at its offset matches.
+func TestApplyKeepsADeletionBeforeAnAdjacentReplacement(t *testing.T) {
+	// Two touching spans: the first is deleted and the second replaced. The
+	// tokenizer splits on whitespace, so the component does not return these
+	// today; apply must still handle them.
+	const candidate = "aaBB rest"
+	redactions := []wasmredact.RedactedSensitiveInfoEntity{
+		{Start: 0, End: 2, Original: "aa", Redacted: ""},
+		{Start: 2, End: 4, Original: "BB", Redacted: "[B]"},
+	}
+	redacted, unredact, err := apply(candidate, redactions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redacted != "[B] rest" {
+		t.Fatalf("redacted = %q, want %q", redacted, "[B] rest")
+	}
+	if got := unredact(redacted); got != "BB rest" {
+		t.Fatalf("Unredact = %q, want the first value deleted and the second restored", got)
+	}
+}
+
+func TestMatchesInsertedIsOneToOne(t *testing.T) {
 	found := []replacementMatch{{start: 5, text: "[B]"}}
 	if !matchesInserted(found, []span{{5, 8}}) {
-		t.Fatal("a replacement after an adjacent deletion was rejected")
+		t.Fatal("a replacement found where it was inserted was rejected")
 	}
-	// A match where nothing was inserted, or of a different length, is not
-	// reversible.
-	if matchesInserted(found, []span{{9, 12}}) {
-		t.Fatal("a replacement where none was inserted was accepted")
-	}
-	if matchesInserted(found, []span{{5, 7}}) {
-		t.Fatal("a replacement of a different length was accepted")
+	for _, tc := range []struct {
+		name     string
+		found    []replacementMatch
+		inserted []span
+	}{
+		{"an insertion with no match", nil, []span{{5, 8}}},
+		{"an insertion skipped before a match", found, []span{{1, 4}, {5, 8}}},
+		{"a match with no insertion", found, nil},
+		{"a match at another place", found, []span{{9, 12}}},
+		{"a match of another length", found, []span{{5, 7}}},
+	} {
+		if matchesInserted(tc.found, tc.inserted) {
+			t.Errorf("%s was accepted", tc.name)
+		}
 	}
 	if !matchesInserted(nil, nil) {
 		t.Fatal("no replacements were rejected")
