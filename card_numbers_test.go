@@ -39,22 +39,30 @@ var cardDefinitionCases = []struct {
 	{"Mastercard 55", "5500000000000004"},
 	{"Mir at 17 digits", "22040000000000006"},
 	{"mixed separators", "5500 0000-0000 0004"},
+	// Unrelated numbers beside the card, separated only by spaces, stay out
+	// of its span.
+	{"numbers beside the card", "5500 0000-0000 0004"},
 	{"no 18-digit numbers starting with 4", ""},
 }
 
 const formerlyDetected = "400000000000000002"
 
-func cardDefinitionText(card string) string {
-	if card == "" {
-		return "card " + formerlyDetected + " ok"
+// cardDefinitionText returns the text for a case and the card's offset in it.
+func cardDefinitionText(name, card string) (string, int) {
+	switch {
+	case card == "":
+		return "card " + formerlyDetected + " ok", 0
+	case name == "numbers beside the card":
+		return "card 12 " + card + " 77 ok", len("card 12 ")
+	default:
+		return "card " + card + " ok", len("card ")
 	}
-	return "card " + card + " ok"
 }
 
 func TestDetectCardNumbersUsesTheSharedDefinition(t *testing.T) {
 	for _, tc := range cardDefinitionCases {
 		t.Run(tc.name, func(t *testing.T) {
-			text := cardDefinitionText(tc.card)
+			text, start := cardDefinitionText(tc.name, tc.card)
 			cards, err := DetectCardNumbers(context.Background(), text)
 			if err != nil {
 				t.Fatal(err)
@@ -65,7 +73,6 @@ func TestDetectCardNumbersUsesTheSharedDefinition(t *testing.T) {
 				}
 				return
 			}
-			start := len("card ")
 			want := DetectedSensitiveInfoEntity{Start: start, End: start + len(tc.card), Type: SensitiveInfoCreditCardNumber}
 			if len(cards) != 1 || cards[0] != want {
 				t.Fatalf("got %+v, want %+v", cards, want)

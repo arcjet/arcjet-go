@@ -685,6 +685,14 @@ Pass the text to scan with `arcjet.WithSensitiveInfoValue`. `Allow` and `Deny`
 are mutually exclusive: `Deny` blocks the listed entity types, while `Allow`
 blocks every type _except_ those listed.
 
+A name in `Allow` or `Deny` that is not built in but looks like a built-in
+type is rejected, even with `Detect` or a backend that declares it in
+`SupportedEntities`: equal to one with case and punctuation ignored or, at five
+or more letters and digits, a prefix of one or one edit away (`EMAILS`,
+`EMIAL`, `credit-card`, `STREET`). Use the exact built-in name, or rename an
+intentional lookalike in both the rule and the detector or backend that
+reports it. `SensitiveInfo` and `GuardSensitiveInfo` behave the same way.
+
 The Rampart backend detects these entity types (pass any of them to
 `Allow`/`Deny`, or use `rampart.Entities()` for the whole set):
 

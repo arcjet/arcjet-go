@@ -431,6 +431,20 @@ func TestRedactUsesTheSharedCardDefinition(t *testing.T) {
 		}
 	}
 
+	// Unrelated numbers beside the card, separated only by spaces, stay as
+	// they are.
+	const beside = "card 12 5500 0000-0000 0004 77 ok"
+	redactedBeside, unredactBeside, err := r.Redact(ctx, beside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redactedBeside != "card 12 <Redacted credit card number #0> 77 ok" {
+		t.Errorf("Redact(%q) = %q", beside, redactedBeside)
+	}
+	if got := unredactBeside(redactedBeside); got != beside {
+		t.Errorf("Unredact = %q, want %q", got, beside)
+	}
+
 	const formerlyDetected = "card 400000000000000002 ok"
 	redacted, _, err := r.Redact(ctx, formerlyDetected)
 	if err != nil {
@@ -450,5 +464,25 @@ func TestNewRejectsANameThatLooksLikeABuiltInEntity(t *testing.T) {
 				t.Fatalf("New(%q, Detect set: %v) error = %v, want a lookalike error", name, d != nil, err)
 			}
 		}
+	}
+}
+
+func TestMatchesInsertedIgnoresDeletions(t *testing.T) {
+	// A value deleted right before another value's replacement: the deletion
+	// is not in inserted, so the replacement found at its offset matches.
+	found := []replacementMatch{{start: 5, text: "[B]"}}
+	if !matchesInserted(found, []span{{5, 8}}) {
+		t.Fatal("a replacement after an adjacent deletion was rejected")
+	}
+	// A match where nothing was inserted, or of a different length, is not
+	// reversible.
+	if matchesInserted(found, []span{{9, 12}}) {
+		t.Fatal("a replacement where none was inserted was accepted")
+	}
+	if matchesInserted(found, []span{{5, 7}}) {
+		t.Fatal("a replacement of a different length was accepted")
+	}
+	if !matchesInserted(nil, nil) {
+		t.Fatal("no replacements were rejected")
 	}
 }

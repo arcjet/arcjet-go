@@ -247,11 +247,14 @@ func (r *Redactor) Redact(ctx context.Context, candidate string) (redacted strin
 	var b strings.Builder
 	b.Grow(len(candidate))
 	pos := 0
-	type span struct{ start, end int }
 	inserted := make([]span, 0, len(redactions))
 	for _, e := range redactions {
 		b.WriteString(candidate[pos:e.Start])
-		inserted = append(inserted, span{b.Len(), b.Len() + len(e.Redacted)})
+		// An empty replacement is a deletion that Unredact never finds, so
+		// only non-empty ones are matched against below.
+		if e.Redacted != "" {
+			inserted = append(inserted, span{b.Len(), b.Len() + len(e.Redacted)})
+		}
 		b.WriteString(e.Redacted)
 		pos = int(e.End)
 	}
@@ -281,15 +284,8 @@ func (r *Redactor) Redact(ctx context.Context, candidate string) (redacted strin
 	// Unredact finds replacements in one pass, so it must find exactly the
 	// replacements made here, where they were made. Text that already held one
 	// would be "restored" to something it never was.
-	at := 0
-	for _, m := range matcher.find(redacted) {
-		for at < len(inserted) && inserted[at].start < m.start {
-			at++
-		}
-		if at == len(inserted) || inserted[at].start != m.start || inserted[at].end != m.start+len(m.text) {
-			return "", nil, fmt.Errorf("arcjet/redact: %w", ErrNotReversible)
-		}
-		at++
+	if !matchesInserted(matcher.find(redacted), inserted) {
+		return "", nil, fmt.Errorf("arcjet/redact: %w", ErrNotReversible)
 	}
 
 	unredact = func(input string) string {
@@ -338,4 +334,24 @@ func entityName(e wasmredact.SensitiveInfoEntity) string {
 	default:
 		return ""
 	}
+}
+
+// span is a byte range of the redacted text.
+type span struct{ start, end int }
+
+// matchesInserted reports whether every replacement found in the redacted text
+// is one inserted there, at the same place. inserted holds the non-empty
+// replacements in order.
+func matchesInserted(found []replacementMatch, inserted []span) bool {
+	at := 0
+	for _, m := range found {
+		for at < len(inserted) && inserted[at].start < m.start {
+			at++
+		}
+		if at == len(inserted) || inserted[at].start != m.start || inserted[at].end != m.start+len(m.text) {
+			return false
+		}
+		at++
+	}
+	return true
 }

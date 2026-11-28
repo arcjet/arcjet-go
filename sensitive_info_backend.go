@@ -82,7 +82,10 @@ type SensitiveInfoBackendOptions struct {
 // detect. When a backend implements it, the SDK validates a rule's Allow/Deny
 // lists against this set and rejects a type the backend cannot produce (which
 // would otherwise be silently ignored, never matching). Backends that do not
-// implement it are trusted to handle any listed type.
+// implement it are trusted to handle any listed type. Either way, a listed
+// name that looks like a built-in type is rejected before this set is
+// consulted, so a backend label close to a built-in one (such as
+// "credit-card") must be renamed in both the backend and the rule.
 type SensitiveInfoBackendEntitySupporter interface {
 	// SupportedEntities returns every entity type the backend can detect.
 	SupportedEntities() []EntityType
